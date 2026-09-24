@@ -83,7 +83,7 @@ type systemUpdateErrorEnvelope struct {
 	Message string `json:"message"`
 }
 
-func newSystemHandlerTestRouter(t *testing.T, updateSvc *systemHandlerUpdateServiceStub, repo *memoryIdempotencyRepoStub) *gin.Engine {
+func newSystemHandlerTestRouter(t *testing.T, updateSvc systemUpdateService, repo *memoryIdempotencyRepoStub) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	service.SetDefaultIdempotencyCoordinator(nil)
@@ -101,7 +101,52 @@ func newSystemHandlerTestRouter(t *testing.T, updateSvc *systemHandlerUpdateServ
 	router.POST("/api/v1/admin/system/update", handler.PerformUpdate)
 	router.POST("/api/v1/admin/system/rollback", handler.Rollback)
 	router.GET("/api/v1/admin/system/rollback-versions", handler.GetRollbackVersions)
+	router.GET("/api/v1/admin/system/version", handler.GetVersion)
 	return router
+}
+
+func TestSystemHandlerRejectsSourceBuildUpdateAPIs(t *testing.T) {
+	for _, buildType := range []string{"source", "custom"} {
+		for _, operation := range []struct {
+			name, method, path, body string
+		}{
+			{"update", http.MethodPost, "/api/v1/admin/system/update", ""},
+			{"rollback-backup", http.MethodPost, "/api/v1/admin/system/rollback", ""},
+			{"rollback-version", http.MethodPost, "/api/v1/admin/system/rollback", `{"version":"0.2.7"}`},
+			{"rollback-list", http.MethodGet, "/api/v1/admin/system/rollback-versions", ""},
+		} {
+			t.Run(buildType+"/"+operation.name, func(t *testing.T) {
+				// Use the real update service. Missing clients make any accidental
+				// upstream lookup fail the test before a binary could be replaced.
+				svc := service.NewUpdateService(nil, nil, "0.2.8+getoken.r248", buildType)
+				router := newSystemHandlerTestRouter(t, svc, newMemoryIdempotencyRepoStub())
+				req := httptest.NewRequest(operation.method, operation.path, strings.NewReader(operation.body))
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Idempotency-Key", buildType+"-"+operation.name)
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+				var body struct {
+					Reason  string `json:"reason"`
+					Message string `json:"message"`
+				}
+				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+				require.Equal(t, "SOURCE_BUILD_UPDATE_REQUIRED", body.Reason)
+				require.Contains(t, body.Message, "preserving local patches")
+			})
+		}
+	}
+}
+
+func TestSystemHandlerVersionIncludesCustomBuildCapabilities(t *testing.T) {
+	svc := &systemHandlerUpdateServiceStub{updateInfo: &service.UpdateInfo{
+		CurrentVersion: "0.2.8+getoken.r248", BuildType: "custom", OnlineUpdateSupported: false,
+	}}
+	router := newSystemHandlerTestRouter(t, svc, newMemoryIdempotencyRepoStub())
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/system/version", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"code":0,"message":"success","data":{"version":"0.2.8+getoken.r248","build_type":"custom","online_update_supported":false}}`, rec.Body.String())
 }
 
 func requireSystemLockStatus(t *testing.T, repo *memoryIdempotencyRepoStub, wantStatus string) {

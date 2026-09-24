@@ -83,7 +83,7 @@
                 <div class="inline-flex items-center gap-2">
                   <span
                     v-if="currentVersion"
-                    class="text-2xl font-bold text-gray-900 dark:text-white"
+                    class="break-all text-2xl font-bold text-gray-900 dark:text-white"
                     >v{{ currentVersion }}</span
                   >
                   <span v-else class="text-2xl font-bold text-gray-400 dark:text-dark-500">--</span>
@@ -112,6 +112,11 @@
                       : t('version.upToDate')
                   }}
                 </p>
+              </div>
+
+              <div v-if="isCustomBuild" class="mb-3 rounded-lg bg-blue-50 p-2 text-left dark:bg-blue-900/20">
+                <p class="text-xs font-medium text-blue-700 dark:text-blue-300">{{ t('version.customMode') }}</p>
+                <p class="mt-1 text-xs text-blue-600 dark:text-blue-400">{{ t('version.customModeHint') }}</p>
               </div>
 
               <!-- Priority 1: Update error (must check before hasUpdate) -->
@@ -231,7 +236,7 @@
                 </button>
               </div>
 
-              <!-- Priority 3: Update available for source build - show git pull hint -->
+              <!-- Priority 3: Source/custom builds update through their build workflow -->
               <div v-else-if="hasUpdate && !isReleaseBuild" class="space-y-2">
                 <a
                   v-if="releaseInfo?.html_url && releaseInfo.html_url !== '#'"
@@ -268,8 +273,9 @@
                     <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
                   </svg>
                 </a>
-                <!-- Source build hint -->
+                <!-- Custom builds already show their workflow above. -->
                 <div
+                  v-if="!isCustomBuild"
                   class="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 p-2 dark:border-blue-800/50 dark:bg-blue-900/20"
                 >
                   <svg
@@ -414,7 +420,7 @@
                           />
                         </svg>
                         <p class="min-w-0 flex-1 text-xs leading-4 text-blue-600 dark:text-blue-400">
-                          {{ t('version.rollbackSourceHint') }}
+                          {{ isCustomBuild ? t('version.rollbackCustomHint') : t('version.rollbackSourceHint') }}
                         </p>
                       </div>
 
@@ -728,8 +734,10 @@ const activeManualCommand = computed(() =>
   manualTab.value === 'docker' ? dockerRollbackCommand.value : scriptRollbackCommand.value
 )
 
-// Only show update check for release builds (binary/docker deployment)
-const isReleaseBuild = computed(() => buildType.value === 'release')
+// Check upstream versions for every build, but use binary update controls only
+// when the server supports them.
+const isReleaseBuild = computed(() => buildType.value === 'release' && appStore.onlineUpdateSupported)
+const isCustomBuild = computed(() => buildType.value === 'custom')
 
 function toggleDropdown() {
   dropdownOpen.value = !dropdownOpen.value
@@ -752,6 +760,7 @@ async function refreshVersion(force = true) {
 }
 
 async function handleUpdate() {
+  if (!isAdmin.value || !isReleaseBuild.value) return
   if (updating.value) return
 
   updating.value = true
@@ -797,7 +806,7 @@ async function toggleRollbackPanel() {
 }
 
 async function loadRollbackVersions() {
-  if (!isAdmin.value) return
+  if (!isAdmin.value || !isReleaseBuild.value) return
   rollbackVersionsLoading.value = true
   rollbackVersionsError.value = ''
   try {
@@ -826,7 +835,7 @@ function formatPublishedAt(publishedAt: string): string {
 }
 
 async function handleRollback() {
-  if (!isAdmin.value) return
+  if (!isAdmin.value || !isReleaseBuild.value) return
   if (rollingBack.value || !selectedRollbackVersion.value) return
 
   rollingBack.value = true

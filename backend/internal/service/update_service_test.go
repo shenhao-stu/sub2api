@@ -31,10 +31,11 @@ type updateServiceGitHubClientStub struct {
 	release        *GitHubRelease
 	recentReleases []*GitHubRelease
 	recentErr      error
+	latestErr      error
 }
 
 func (s *updateServiceGitHubClientStub) FetchLatestRelease(context.Context, string) (*GitHubRelease, error) {
-	return s.release, nil
+	return s.release, s.latestErr
 }
 
 func (s *updateServiceGitHubClientStub) FetchRecentReleases(context.Context, string, int) ([]*GitHubRelease, error) {
@@ -184,4 +185,52 @@ func TestUpdateServiceRollbackToVersionAcceptsVPrefix(t *testing.T) {
 	require.Error(t, err)
 	require.NotErrorIs(t, err, ErrRollbackVersionNotAllowed)
 	require.Contains(t, err.Error(), "no compatible release found")
+}
+
+func TestUpdateServiceCustomBuildCannotReplaceBinary(t *testing.T) {
+	for _, buildType := range []string{"source", "custom", "", "unknown"} {
+		t.Run(buildType, func(t *testing.T) {
+			// Nil clients also prove rejection precedes network/cache access.
+			svc := NewUpdateService(nil, nil, "0.2.8+getoken.r248", buildType)
+			require.ErrorIs(t, svc.PerformUpdate(context.Background()), ErrSourceBuildUpdateRequired)
+			require.ErrorIs(t, svc.Rollback(), ErrSourceBuildUpdateRequired)
+			require.ErrorIs(t, svc.RollbackToVersion(context.Background(), "0.2.7"), ErrSourceBuildUpdateRequired)
+			require.ErrorIs(t, svc.applyReleaseAssets(context.Background(), nil), ErrSourceBuildUpdateRequired)
+			_, err := svc.ListRollbackVersions(context.Background())
+			require.ErrorIs(t, err, ErrSourceBuildUpdateRequired)
+		})
+	}
+}
+
+func TestUpdateServiceBuildMetadataDoesNotAdvertiseFalseUpgrade(t *testing.T) {
+	for _, current := range []string{"0.2.8+getoken.r248", "v0.2.8+getoken.r248", "0.2.8-r248"} {
+		require.Equal(t, 0, compareVersions(current, "0.2.8"), current)
+		require.Equal(t, -1, compareVersions(current, "0.2.9"), current)
+		require.Equal(t, 1, compareVersions(current, "0.2.7"), current)
+	}
+}
+
+func TestUpdateServiceBuildCapabilitiesAcrossCheckPaths(t *testing.T) {
+	for _, buildType := range []string{"custom", "source", "release"} {
+		t.Run(buildType, func(t *testing.T) {
+			cache := &updateServiceCacheStub{}
+			github := &updateServiceGitHubClientStub{release: &GitHubRelease{TagName: "v0.2.8"}}
+			svc := NewUpdateService(cache, github, "0.2.8+getoken.r248", buildType)
+			check := func(force bool) *UpdateInfo {
+				info, err := svc.CheckUpdate(context.Background(), force)
+				require.NoError(t, err)
+				require.Equal(t, "0.2.8+getoken.r248", info.CurrentVersion)
+				require.False(t, info.HasUpdate)
+				require.Equal(t, buildType, info.BuildType)
+				require.Equal(t, buildType == "release", info.OnlineUpdateSupported)
+				return info
+			}
+			require.False(t, check(true).Cached)
+			require.True(t, check(false).Cached)
+			github.latestErr = errors.New("offline")
+			require.NotEmpty(t, check(true).Warning)
+			cache.data = ""
+			require.NotEmpty(t, check(true).Warning)
+		})
+	}
 }

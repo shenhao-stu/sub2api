@@ -62,9 +62,14 @@ func NewSystemHandler(updateSvc systemUpdateService, lockSvc *service.SystemOper
 // GetVersion returns the current version
 // GET /api/v1/admin/system/version
 func (h *SystemHandler) GetVersion(c *gin.Context) {
-	info, _ := h.updateSvc.CheckUpdate(c.Request.Context(), false)
+	info, err := h.updateSvc.CheckUpdate(c.Request.Context(), false)
+	if response.ErrorFrom(c, err) {
+		return
+	}
 	response.Success(c, gin.H{
-		"version": info.CurrentVersion,
+		"version":                 info.CurrentVersion,
+		"build_type":              info.BuildType,
+		"online_update_supported": info.OnlineUpdateSupported,
 	})
 }
 
@@ -132,8 +137,7 @@ func (h *SystemHandler) PerformUpdate(c *gin.Context) {
 // GET /api/v1/admin/system/rollback-versions
 func (h *SystemHandler) GetRollbackVersions(c *gin.Context) {
 	versions, err := h.updateSvc.ListRollbackVersions(c.Request.Context())
-	if err != nil {
-		response.Error(c, http.StatusInternalServerError, err.Error())
+	if response.ErrorFrom(c, err) {
 		return
 	}
 	response.Success(c, gin.H{

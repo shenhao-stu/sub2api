@@ -25,6 +25,7 @@ import (
 var (
 	ErrNoUpdateAvailable         = infraerrors.Conflict("ALREADY_UP_TO_DATE", "no update available; current version is latest")
 	ErrRollbackVersionNotAllowed = infraerrors.BadRequest("ROLLBACK_VERSION_NOT_ALLOWED", "version is not in the allowed rollback list")
+	ErrSourceBuildUpdateRequired = infraerrors.Conflict("SOURCE_BUILD_UPDATE_REQUIRED", "This source or custom build must be updated by merging upstream changes, preserving local patches, and rebuilding. Roll back by deploying a previously verified custom build.")
 )
 
 const (
@@ -64,7 +65,7 @@ type UpdateService struct {
 	cache          UpdateCache
 	githubClient   GitHubReleaseClient
 	currentVersion string
-	buildType      string // "source" for manual builds, "release" for CI builds
+	buildType      string // "source", "custom", or "release" (official binary updates)
 }
 
 // NewUpdateService creates a new UpdateService
@@ -79,13 +80,14 @@ func NewUpdateService(cache UpdateCache, githubClient GitHubReleaseClient, versi
 
 // UpdateInfo contains update information
 type UpdateInfo struct {
-	CurrentVersion string       `json:"current_version"`
-	LatestVersion  string       `json:"latest_version"`
-	HasUpdate      bool         `json:"has_update"`
-	ReleaseInfo    *ReleaseInfo `json:"release_info,omitempty"`
-	Cached         bool         `json:"cached"`
-	Warning        string       `json:"warning,omitempty"`
-	BuildType      string       `json:"build_type"` // "source" or "release"
+	CurrentVersion        string       `json:"current_version"`
+	LatestVersion         string       `json:"latest_version"`
+	HasUpdate             bool         `json:"has_update"`
+	ReleaseInfo           *ReleaseInfo `json:"release_info,omitempty"`
+	Cached                bool         `json:"cached"`
+	Warning               string       `json:"warning,omitempty"`
+	BuildType             string       `json:"build_type"` // "source", "custom", or "release"
+	OnlineUpdateSupported bool         `json:"online_update_supported"`
 }
 
 // ReleaseInfo contains GitHub release details
@@ -147,11 +149,12 @@ func (s *UpdateService) CheckUpdate(ctx context.Context, force bool) (*UpdateInf
 			return cached, nil
 		}
 		return &UpdateInfo{
-			CurrentVersion: s.currentVersion,
-			LatestVersion:  s.currentVersion,
-			HasUpdate:      false,
-			Warning:        err.Error(),
-			BuildType:      s.buildType,
+			CurrentVersion:        s.currentVersion,
+			LatestVersion:         s.currentVersion,
+			HasUpdate:             false,
+			Warning:               err.Error(),
+			BuildType:             s.buildType,
+			OnlineUpdateSupported: s.supportsOnlineUpdate(),
 		}, nil
 	}
 
@@ -163,6 +166,9 @@ func (s *UpdateService) CheckUpdate(ctx context.Context, force bool) (*UpdateInf
 // PerformUpdate downloads and applies the update
 // Uses atomic file replacement pattern for safe in-place updates
 func (s *UpdateService) PerformUpdate(ctx context.Context) error {
+	if !s.supportsOnlineUpdate() {
+		return ErrSourceBuildUpdateRequired
+	}
 	info, err := s.CheckUpdate(ctx, true)
 	if err != nil {
 		return err
@@ -179,6 +185,9 @@ func (s *UpdateService) PerformUpdate(ctx context.Context) error {
 // verifies its checksum, and atomically swaps the running binary.
 // Shared by PerformUpdate (latest) and RollbackToVersion (specific older version).
 func (s *UpdateService) applyReleaseAssets(ctx context.Context, releaseAssets []Asset) error {
+	if !s.supportsOnlineUpdate() {
+		return ErrSourceBuildUpdateRequired
+	}
 	// Find matching archive and checksum for current platform
 	archiveName := s.getArchiveName()
 	var downloadURL string
@@ -281,6 +290,9 @@ func (s *UpdateService) applyReleaseAssets(ctx context.Context, releaseAssets []
 
 // Rollback restores the previous version
 func (s *UpdateService) Rollback() error {
+	if !s.supportsOnlineUpdate() {
+		return ErrSourceBuildUpdateRequired
+	}
 	exePath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to get executable path: %w", err)
@@ -307,6 +319,9 @@ func (s *UpdateService) Rollback() error {
 // strictly older than the current version (the current version itself is excluded),
 // newest first. Draft and prerelease entries are skipped.
 func (s *UpdateService) ListRollbackVersions(ctx context.Context) ([]RollbackVersion, error) {
+	if !s.supportsOnlineUpdate() {
+		return nil, ErrSourceBuildUpdateRequired
+	}
 	releases, err := s.fetchRollbackCandidates(ctx)
 	if err != nil {
 		return nil, err
@@ -327,6 +342,9 @@ func (s *UpdateService) ListRollbackVersions(ctx context.Context) ([]RollbackVer
 // The target must be one of the versions returned by ListRollbackVersions;
 // anything else (including the current version) is rejected.
 func (s *UpdateService) RollbackToVersion(ctx context.Context, version string) error {
+	if !s.supportsOnlineUpdate() {
+		return ErrSourceBuildUpdateRequired
+	}
 	target := strings.TrimPrefix(strings.TrimSpace(version), "v")
 	if target == "" {
 		return ErrRollbackVersionNotAllowed
@@ -427,8 +445,9 @@ func (s *UpdateService) fetchLatestRelease(ctx context.Context) (*UpdateInfo, er
 			HTMLURL:     release.HTMLURL,
 			Assets:      assets,
 		},
-		Cached:    false,
-		BuildType: s.buildType,
+		Cached:                false,
+		BuildType:             s.buildType,
+		OnlineUpdateSupported: s.supportsOnlineUpdate(),
 	}, nil
 }
 
@@ -613,12 +632,13 @@ func (s *UpdateService) getFromCache(ctx context.Context) (*UpdateInfo, error) {
 	}
 
 	return &UpdateInfo{
-		CurrentVersion: s.currentVersion,
-		LatestVersion:  cached.Latest,
-		HasUpdate:      compareVersions(s.currentVersion, cached.Latest) < 0,
-		ReleaseInfo:    cached.ReleaseInfo,
-		Cached:         true,
-		BuildType:      s.buildType,
+		CurrentVersion:        s.currentVersion,
+		LatestVersion:         cached.Latest,
+		HasUpdate:             compareVersions(s.currentVersion, cached.Latest) < 0,
+		ReleaseInfo:           cached.ReleaseInfo,
+		Cached:                true,
+		BuildType:             s.buildType,
+		OnlineUpdateSupported: s.supportsOnlineUpdate(),
 	}, nil
 }
 
@@ -638,6 +658,7 @@ func (s *UpdateService) saveToCache(ctx context.Context, info *UpdateInfo) {
 }
 
 // compareVersions compares two semantic versions
+// Build metadata identifies local patches but does not change the upstream version.
 func compareVersions(current, latest string) int {
 	currentParts := parseVersion(current)
 	latestParts := parseVersion(latest)
@@ -655,7 +676,7 @@ func compareVersions(current, latest string) int {
 
 func parseVersion(v string) [3]int {
 	v = strings.TrimPrefix(v, "v")
-	if idx := strings.IndexByte(v, '-'); idx != -1 {
+	if idx := strings.IndexAny(v, "-+"); idx != -1 {
 		v = v[:idx]
 	}
 	parts := strings.Split(v, ".")
@@ -666,4 +687,11 @@ func parseVersion(v string) [3]int {
 		}
 	}
 	return result
+}
+
+// Only explicitly official release builds may replace their executable with
+// upstream binaries. Keep this check server-side: a hidden UI button is not a
+// safeguard for patched builds, and older clients can still call these APIs.
+func (s *UpdateService) supportsOnlineUpdate() bool {
+	return s.buildType == "release"
 }
