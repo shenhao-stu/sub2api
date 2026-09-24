@@ -1649,13 +1649,6 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	if account.Type == AccountTypeOAuth && bodyLooksLikeSSE {
 		return s.handleSSEToJSON(resp, c, account, body, originalModel, mappedModel)
 	}
-	if account != nil && account.IsGrok() && isOpenAIResponsesCompactPath(c) {
-		body, err = convertGrokResponseToOpenAICompact(body)
-		if err != nil {
-			return nil, fmt.Errorf("convert Grok compact response: %w", err)
-		}
-	}
-
 	usageValue, usageOK := extractOpenAIUsageFromJSONBytes(body)
 	if !usageOK {
 		if bodyLooksLikeSSE {
@@ -1665,6 +1658,14 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	}
 	usage := &usageValue
 	logOpenAISuccessMissingUsage(ctx, c, account, resp, usage, "json", false)
+	if account != nil && account.IsGrok() && isGrokCompactRequest(c) {
+		converted, convertErr := convertGrokResponseToOpenAICompact(body)
+		if convertErr != nil {
+			return &openaiNonStreamingResult{OpenAIUsage: usage, usage: usage, responseID: extractOpenAIResponseIDFromJSONBytes(body)},
+				s.writeOpenAINonStreamingProtocolError(resp, c, "Invalid Grok compaction response", usage)
+		}
+		body = converted
+	}
 
 	// Replace model in response if needed
 	if originalModel != mappedModel {
@@ -1792,6 +1793,14 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		}
 		restoredBody = restoreCodexToolNamesFromContext(c, restoredBody)
 		body = restoredBody
+		if account != nil && account.IsGrok() && isGrokCompactRequest(c) {
+			converted, convertErr := convertGrokResponseToOpenAICompact(body)
+			if convertErr != nil {
+				return &openaiNonStreamingResult{OpenAIUsage: usage, usage: usage, responseID: extractOpenAIResponseIDFromJSONBytes(body)},
+					s.writeOpenAINonStreamingProtocolError(resp, c, "Invalid Grok compaction response", usage)
+			}
+			body = converted
+		}
 	} else {
 		if originalModel != mappedModel {
 			bodyText = s.replaceModelInSSEBody(bodyText, mappedModel, originalModel)

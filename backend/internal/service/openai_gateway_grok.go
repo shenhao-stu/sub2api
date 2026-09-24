@@ -66,10 +66,20 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 	// OpenAI /responses/compact is not a native xAI endpoint. Convert it into a
 	// normal Grok Responses turn that asks for a structured summary, then map the
 	// reply back to an OpenAI compaction item on the way out.
-	if isOpenAIResponsesCompactPath(c) {
+	grokCompact := isGrokCompactRequest(c)
+	if grokCompact {
 		patchedBody, err = buildGrokCompactRequestBody(patchedBody)
 		if err != nil {
 			return nil, err
+		}
+		if reqStream && isOpenAINativeCompactionV2(c) {
+			MarkOpenAICompactClientStream(c)
+			interval := time.Duration(0)
+			if s.cfg != nil {
+				interval = time.Duration(s.cfg.Gateway.StreamKeepaliveInterval) * time.Second
+			}
+			stopKeepalive := StartOpenAICompactSSEKeepalive(c, interval)
+			defer stopKeepalive()
 		}
 	}
 	// Derive the identity from the request xAI will actually see. This makes
@@ -242,7 +252,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 	imageCount := 0
 	var imageOutputSizes []string
 	var streamErr error
-	if reqStream {
+	if reqStream && !grokCompact {
 		maxLineSize := defaultMaxLineSize
 		if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
 			maxLineSize = s.cfg.Gateway.MaxLineSize

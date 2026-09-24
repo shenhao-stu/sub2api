@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
@@ -33,7 +34,7 @@ If the prior conversation contains a note about files at /tmp/compaction/segment
 
 func buildGrokCompactRequestBody(body []byte) ([]byte, error) {
 	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := decodeOpenAIJSONUseNumber(body, &payload); err != nil {
 		return nil, fmt.Errorf("decode compact request: %w", err)
 	}
 
@@ -41,6 +42,17 @@ func buildGrokCompactRequestBody(body []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Native remote compaction v2 uses this control item on /responses. xAI
+	// rejects it with 422; translate its intent to the existing summary turn,
+	// retaining every conversation/tool item and any prior compaction state.
+	history := make([]any, 0, len(input))
+	for _, raw := range input {
+		if item, ok := raw.(map[string]any); ok && item["type"] == "compaction_trigger" {
+			continue
+		}
+		history = append(history, raw)
+	}
+	input = history
 	input = append(input, map[string]any{
 		"type": "message",
 		"role": "user",
@@ -62,6 +74,10 @@ func buildGrokCompactRequestBody(body []byte) ([]byte, error) {
 		return nil, fmt.Errorf("encode compact request: %w", err)
 	}
 	return encoded, nil
+}
+
+func isGrokCompactRequest(c *gin.Context) bool {
+	return isOpenAIResponsesCompactPath(c) || isOpenAINativeCompactionV2(c)
 }
 
 func normalizeGrokCompactInput(value any) ([]any, error) {
@@ -141,6 +157,9 @@ func convertGrokResponseToOpenAICompact(body []byte) ([]byte, error) {
 	var response map[string]any
 	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	if status := strings.TrimSpace(stringValue(response["status"])); status != "" && status != "completed" {
+		return nil, fmt.Errorf("compaction response is not complete: %s", status)
 	}
 	output, ok := response["output"].([]any)
 	if !ok {
