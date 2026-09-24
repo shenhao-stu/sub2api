@@ -4,11 +4,55 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 	"github.com/tidwall/gjson"
 )
+
+var grokDiagnosticCredentialPattern = regexp.MustCompile(`(?i)\b(?:Bearer\s+[A-Za-z0-9._~+/=-]+|xai-[A-Za-z0-9_-]+)`)
+
+func sanitizeGrokUpstreamDiagnostic(message string) string {
+	message = grokDiagnosticCredentialPattern.ReplaceAllString(message, "[REDACTED]")
+	return logredact.RedactText(sanitizeUpstreamErrorMessage(message), "api_key", "apikey", "authorization", "cookie", "set-cookie")
+}
+
+func extractGrokUpstreamErrorMessage(body []byte) string {
+	for _, candidate := range grokStructuredErrorMessageCandidates(body) {
+		if message := sanitizeGrokUpstreamDiagnostic(candidate); message != "" {
+			return truncateString(message, 2048)
+		}
+	}
+	return ""
+}
+
+// An unattributed 403, even with generic text or an edge HTML page, does not
+// establish an account failure and must not quarantine or rotate the pool.
+func isGrokOpaqueForbidden(status int, body []byte) bool {
+	if status != http.StatusForbidden || isGrokContentPolicyRejection(status, body) ||
+		grokAccountAccessMessage(extractGrokUpstreamErrorMessage(body)) || isGrokSpendingLimitError(body) {
+		return false
+	}
+	var payload any
+	if json.Unmarshal(body, &payload) == nil && grokStructuredAccountAccessMarker(payload) {
+		return false
+	}
+	return classifyGrokUpstreamFailure(status, body, "").Class == GrokFailureNone
+}
+
+func (s *OpenAIGatewayService) grokUpstreamErrorDetail(body []byte) string {
+	if s == nil || s.cfg == nil || !s.cfg.Gateway.LogUpstreamErrorBody {
+		return ""
+	}
+	maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
+	if maxBytes <= 0 {
+		maxBytes = 2048
+	}
+	detail, _ := sanitizeErrorBodyForStorage(sanitizeGrokUpstreamDiagnostic(string(body)), maxBytes)
+	return detail
+}
 
 // isGrokContentPolicyRejection identifies request-scoped safety refusals from
 // xAI. These failures are caused by the prompt or media, so retrying another
@@ -116,7 +160,13 @@ func isGrokAccountAccessCode(value string) bool {
 		"subscription_required",
 		"entitlement_required",
 		"not_entitled",
-		"plan_required":
+		"plan_required",
+		"invalid_api_key",
+		"api_key_expired",
+		"api_key_revoked",
+		"invalid_token",
+		"token_expired",
+		"authentication_error":
 		// permission-denied is omitted: xAI reuses it for both entitlement
 		// refusals and request-scoped safety blocks, so the message decides.
 		return true
@@ -136,7 +186,15 @@ func grokAccountAccessMessage(value string) bool {
 		"user has been suspended",
 		"subscription required",
 		"entitlement required",
+		"entitlement denied",
 		"not entitled",
+		"invalid api key",
+		"invalid api_key",
+		"invalid token",
+		"token expired",
+		"expired token",
+		"invalid credentials",
+		"authentication failed",
 	} {
 		if strings.Contains(lower, phrase) {
 			return true
@@ -198,7 +256,7 @@ func grokContentPolicyClientMessage(responseBody []byte) string {
 // Free-usage / empty-output / billing bodies also failover even when the HTTP
 // status alone would not (e.g. 400 with free-usage-exhausted).
 func (s *OpenAIGatewayService) shouldFailoverGrokUpstreamError(statusCode int, responseBody []byte) bool {
-	if isGrokContentPolicyRejection(statusCode, responseBody) {
+	if isGrokContentPolicyRejection(statusCode, responseBody) || isGrokOpaqueForbidden(statusCode, responseBody) || isGrokUnknownInputItemTypeError(statusCode, responseBody) {
 		return false
 	}
 	// A 422 emitted by xAI's ModelInput decoder is account/runtime compatibility,
@@ -213,6 +271,21 @@ func (s *OpenAIGatewayService) shouldFailoverGrokUpstreamError(statusCode int, r
 		return decision.ShouldFailover
 	}
 	return s.shouldFailoverUpstreamError(statusCode)
+}
+
+func isGrokUnknownInputItemTypeError(statusCode int, responseBody []byte) bool {
+	if statusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	for _, candidate := range grokStructuredErrorMessageCandidates(responseBody) {
+		message := strings.ToLower(candidate)
+		inputPath := strings.Contains(message, "input[") || strings.Contains(message, "input.")
+		decoder := strings.Contains(message, "decode") || strings.Contains(message, "deserializ")
+		if inputPath && decoder && strings.Contains(message, "unknown item type") {
+			return true
+		}
+	}
+	return false
 }
 
 func isGrokDecoderCompatibilityError(statusCode int, responseBody []byte) bool {

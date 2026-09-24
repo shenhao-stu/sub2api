@@ -191,7 +191,10 @@ func TestForwardAsAnthropic_BufferedResponseFailed_Failover(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	ssePayload := buildResponsesFailedSSEStream("rate_limit_error", "Rate limit reached")
+	// Zero-usage throttling remains replayable. Metered errors are covered by
+	// TestOpenAIMeteredTerminalFailureDoesNotReplay.
+	ssePayload := strings.ReplaceAll(buildResponsesFailedSSEStream("rate_limit_error", "Rate limit reached"), `"input_tokens":10`, `"input_tokens":0`)
+	ssePayload = strings.ReplaceAll(ssePayload, `"total_tokens":10`, `"total_tokens":0`)
 
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,

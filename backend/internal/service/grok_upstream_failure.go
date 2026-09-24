@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -34,8 +35,8 @@ const (
 
 // GrokUpstreamFailureDecision is a pure classification result. Callers map it
 // onto existing account state helpers (tempUnscheduleGrok / rateLimitGrok).
-// BlockModel is retained for observability; the current scheduler does not
-// implement per-model soft-blocks, so free-usage deliberately never sets it.
+// Cooldown is the policy bound; transient failures use the shared streak
+// state to decide whether and how long to pause the account/model pair.
 type GrokUpstreamFailureDecision struct {
 	Class          GrokUpstreamFailureClass
 	Model          string
@@ -62,10 +63,10 @@ var (
 // Priority (body/code first, status second):
 //  1. free-usage exhausted → account cool, no model block, failover
 //  2. billing hard quota → longer cool, failover
-//  3. empty model output → short cool + optional model soft-block marker, failover
+//  3. empty model output → bounded model failure streak, failover
 //  4. model capacity → short cool, failover
 //  5. bare rate-limit / 429 without free-usage language → cool, failover
-//  6. bare 5xx → brief cool, failover
+//  6. bare 5xx → bounded model failure streak, failover
 //  7. validation / client errors without quota language → no cool
 //
 // Content-policy 403s must be filtered by the caller before invoking this.
@@ -133,11 +134,11 @@ func classifyGrokUpstreamFailure(statusCode int, responseBody []byte, requestedM
 	if isGrokEmptyModelOutputText(low) || isGrokEmptyModelOutputCode(code) {
 		return GrokUpstreamFailureDecision{
 			Class:          GrokFailureEmptyUpstream,
-			Model:          model,
-			Cooldown:       4 * time.Minute,
+			Model:          strings.TrimSpace(requestedModel),
+			Cooldown:       openAIModelTransientLongCooldown,
 			ShouldCooldown: true,
 			ShouldFailover: true,
-			BlockModel:     model != "",
+			BlockModel:     strings.TrimSpace(requestedModel) != "",
 			Reason:         firstNonEmpty(text, "empty model output"),
 		}
 	}
@@ -168,13 +169,15 @@ func classifyGrokUpstreamFailure(statusCode int, responseBody []byte, requestedM
 		}
 	}
 
-	// Upstream 5xx — brief cool. Empty-output synthetic 502 already handled above.
+	// Upstream 5xx uses the bounded account/model failure streak below.
 	if statusCode >= 500 && statusCode <= 599 {
 		return GrokUpstreamFailureDecision{
 			Class:          GrokFailureServer,
-			Cooldown:       2 * time.Minute,
+			Model:          strings.TrimSpace(requestedModel),
+			Cooldown:       openAIModelTransientLongCooldown,
 			ShouldCooldown: true,
 			ShouldFailover: true,
+			BlockModel:     strings.TrimSpace(requestedModel) != "",
 			Reason:         firstNonEmpty(text, "server error"),
 		}
 	}
@@ -585,8 +588,14 @@ func (s *OpenAIGatewayService) applyGrokUpstreamFailureDecision(
 		}
 		// Keep the historical 402/payment reason for ops UI + regression tests.
 		reason = "grok payment required"
-	case GrokFailureEmptyUpstream:
-		reason = "grok empty model output"
+	case GrokFailureEmptyUpstream, GrokFailureServer:
+		transient := s.recordOpenAIAccountModelTransientFailure(account, decision.Model, time.Now())
+		if transient.FailureStreak > 0 {
+			slog.Warn("grok_model_transient_state", "account_id", account.ID,
+				"model", decision.Model, "failure_streak", transient.FailureStreak,
+				"cooldown_ms", transient.Cooldown.Milliseconds())
+		}
+		return true
 	case GrokFailureModelCapacity:
 		// Capacity is scoped to the requested model. Never persist an account-wide
 		// unschedulable state for this transient class; the failover loop performs
@@ -599,8 +608,6 @@ func (s *OpenAIGatewayService) applyGrokUpstreamFailureDecision(
 		// phrasing still cools here via ShouldCooldown from the classifier, but
 		// the handler only invokes this for non-RateLimit classes.
 		return false
-	case GrokFailureServer:
-		reason = "grok upstream temporary error"
 	case GrokFailureCompatibility:
 		// Deliberately no account mutation. The caller uses ShouldFailover to
 		// retry another account; cooling a pool for a request-shape mismatch

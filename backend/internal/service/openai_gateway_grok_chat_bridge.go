@@ -497,8 +497,11 @@ func grokChatResponsesCacheIntentBody(body []byte) ([]byte, error) {
 }
 
 func grokChatResponsesBridgeModel(model string) bool {
+	if GrokSupportsXHighReasoningEffort(model) {
+		return true
+	}
 	switch strings.ToLower(xai.StripGrokProviderPrefix(strings.TrimSpace(model))) {
-	case "grok-4.5", "grok-4.6", "grok-4.6-latest":
+	case "grok-4.5":
 		return true
 	default:
 		return false
@@ -665,6 +668,7 @@ func (s *OpenAIGatewayService) forwardGrokChatCompletionsViaResponses(
 			result.RequestID = firstNonEmpty(resp.Header.Get("x-request-id"), resp.Header.Get("xai-request-id"))
 		}
 		result.ReasoningEffort = extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
+		result.ServiceTier = resolvedOpenAIUpstreamServiceTier(c, extractOpenAIServiceTierFromBody(responsesBody))
 	}
 	return result, err
 }

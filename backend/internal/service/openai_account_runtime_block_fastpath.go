@@ -93,7 +93,7 @@ func isOpenAIAccount(account *Account) bool {
 // handleOpenAIAccountUpstreamError expects canonicalModel to be the model used
 // for scheduling after applying account mapping exactly once.
 func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, canonicalModel ...string) bool {
-	if account != nil && account.Platform == PlatformGrok && isGrokContentPolicyRejection(statusCode, responseBody) {
+	if account != nil && account.Platform == PlatformGrok && (isGrokContentPolicyRejection(statusCode, responseBody) || isGrokOpaqueForbidden(statusCode, responseBody)) {
 		return false
 	}
 	// Any non-2xx upstream HTTP response means the model request was actually sent.

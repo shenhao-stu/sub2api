@@ -869,7 +869,7 @@ func TestGetRequestCredentialCancellationAndBudgetDoNotMutateAccount(t *testing.
 
 	t.Run("request credential budget stops safely", func(t *testing.T) {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
-		c.Set(grokCredentialFailoverDeadlineKey, time.Now().Add(-time.Second))
+		c.Set(grokCredentialFailoverRemainingKey, time.Duration(0))
 
 		_, _, err := svc.getRequestCredential(context.Background(), c, account)
 		var failoverErr *UpstreamFailoverError
@@ -1071,7 +1071,7 @@ func TestGetRequestCredentialBudgetBoundsBlockedConditionalMutation(t *testing.T
 	})
 	svc := &OpenAIGatewayService{accountRepo: repo, grokTokenProvider: provider}
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Set(grokCredentialFailoverDeadlineKey, time.Now().Add(40*time.Millisecond))
+	c.Set(grokCredentialFailoverRemainingKey, 40*time.Millisecond)
 
 	startedAt := time.Now()
 	token, kind, err := svc.getRequestCredential(context.Background(), c, account)

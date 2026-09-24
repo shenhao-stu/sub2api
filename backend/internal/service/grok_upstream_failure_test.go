@@ -51,7 +51,7 @@ func TestClassifyGrokUpstreamFailure_EmptyUpstream(t *testing.T) {
 	require.True(t, d.ShouldCooldown)
 	require.True(t, d.ShouldFailover)
 	require.True(t, d.BlockModel)
-	require.Equal(t, 4*time.Minute, d.Cooldown)
+	require.Equal(t, openAIModelTransientLongCooldown, d.Cooldown)
 }
 
 func TestClassifyGrokUpstreamFailure_ModelCapacityUsesShortCooldown(t *testing.T) {
@@ -217,20 +217,24 @@ func TestHandleGrokAccountUpstreamError_FreeUsageUsesUpstreamReset(t *testing.T)
 	require.WithinDuration(t, time.Now().Add(time.Hour), repo.lastRateLimitResetAt, 2*time.Second)
 }
 
-func TestHandleGrokAccountUpstreamError_EmptyOutputCoolsAccount(t *testing.T) {
+func TestHandleGrokAccountUpstreamError_EmptyOutputBacksOffOnlyModel(t *testing.T) {
 	repo := &grokQuotaAccountRepo{}
 	svc := &OpenAIGatewayService{accountRepo: repo}
 	account := &Account{ID: 9102, Platform: PlatformGrok, Type: AccountTypeOAuth}
-	before := time.Now()
+	ctx := withGrokTeamRateLimitModel(context.Background(), "grok-4.7")
 
 	svc.handleGrokAccountUpstreamError(
-		context.Background(), account, http.StatusBadGateway, nil,
+		ctx, account, http.StatusBadGateway, nil,
 		[]byte(`empty model output: no content/tool_calls`),
 	)
 
-	require.Equal(t, 1, repo.tempUnschedCalls)
-	require.Equal(t, "grok empty model output", repo.lastTempUnschedReason)
-	require.WithinDuration(t, before.Add(4*time.Minute), repo.lastTempUnschedUntil, time.Second)
+	require.Zero(t, repo.tempUnschedCalls)
+	require.False(t, svc.isOpenAIAccountRequestRuntimeBlocked(account, "grok-4.7"))
+	svc.handleGrokAccountUpstreamError(ctx, account, http.StatusBadGateway, nil, []byte(`empty model output: no content/tool_calls`))
+	require.True(t, svc.isOpenAIAccountRequestRuntimeBlocked(account, "grok-4.7"))
+	require.False(t, svc.isOpenAIAccountRequestRuntimeBlocked(account, "grok-4.6"))
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+	require.Zero(t, repo.tempUnschedCalls)
 }
 
 func TestHandleGrokAccountUpstreamError_MultiAgentCapacityBlocksOnlyThatModel(t *testing.T) {

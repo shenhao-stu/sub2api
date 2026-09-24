@@ -52,7 +52,7 @@ func sanitizeGrokResponsesModelInput(body []byte) ([]byte, error) {
 
 		itemType := strings.ToLower(strings.TrimSpace(grokStringValue(item["type"])))
 		role := strings.ToLower(strings.TrimSpace(grokStringValue(item["role"])))
-		if role == "tool" || role == "function" || isGrokReplayOutputType(itemType) {
+		if itemType != "agent_message" && (role == "tool" || role == "function" || isGrokReplayOutputType(itemType)) {
 			callID := outputIDs[index]
 			rawOutput := firstNonNilGrokJSONValue(item["output"], item["content"], item["results"])
 			output, nestedImages := normalizeGrokToolOutput(rawOutput, callID)
@@ -69,6 +69,14 @@ func sanitizeGrokResponsesModelInput(body []byte) ([]byte, error) {
 		pendingOutputImages = pendingOutputImages[:0]
 
 		switch itemType {
+		case "agent_message":
+			var err error
+			item, err = grokAgentMessage(item)
+			if err != nil {
+				return nil, fmt.Errorf("convert Grok input[%d] agent_message: %w", index, err)
+			}
+			filtered = append(filtered, item)
+			continue
 		case "text", "input_text", "output_text":
 			text := strings.TrimSpace(grokStringValue(item["text"]))
 			if text == "" {
@@ -399,7 +407,7 @@ func pairGrokReplayCallIDs(items []any) (map[int]string, map[int]string) {
 		}
 		itemType := strings.ToLower(strings.TrimSpace(grokStringValue(item["type"])))
 		role := strings.ToLower(strings.TrimSpace(grokStringValue(item["role"])))
-		if role != "tool" && role != "function" && !isGrokReplayOutputType(itemType) {
+		if itemType == "agent_message" || (role != "tool" && role != "function" && !isGrokReplayOutputType(itemType)) {
 			continue
 		}
 		alias := firstNonEmptyGrokString(item["call_id"], item["tool_call_id"], item["id"])

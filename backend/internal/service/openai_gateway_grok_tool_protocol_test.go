@@ -223,7 +223,7 @@ func TestForwardGrokResponsesClientToolNameConflictReturns400(t *testing.T) {
 	require.Nil(t, result)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	require.Equal(t, "invalid_request_error", gjson.Get(recorder.Body.String(), "error.type").String())
-	require.Equal(t, "tools", gjson.Get(recorder.Body.String(), "error.param").String())
+	require.False(t, gjson.Get(recorder.Body.String(), "error.param").Exists())
 	require.Contains(t, gjson.Get(recorder.Body.String(), "error.message").String(), "conflicts")
 	require.Empty(t, upstream.requests, "an ambiguous request must not reach xAI")
 }
@@ -249,7 +249,7 @@ func TestForwardGrokResponsesMalformedToolSearchOutputReturns400BeforeUpstream(t
 	require.Nil(t, result)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	require.Equal(t, "invalid_request_error", gjson.Get(recorder.Body.String(), "error.type").String())
-	require.Equal(t, "tools", gjson.Get(recorder.Body.String(), "error.param").String())
+	require.False(t, gjson.Get(recorder.Body.String(), "error.param").Exists())
 	require.Contains(t, gjson.Get(recorder.Body.String(), "error.message").String(), "call_id")
 	require.Empty(t, upstream.requests, "malformed lowered output must not reach xAI")
 }

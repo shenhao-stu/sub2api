@@ -165,7 +165,7 @@ func (s *OpenAIGatewayService) resolveCCFallbackTarget(account *Account) (apiKey
 	return apiKey, targetURL, nil
 }
 
-// sendCCUpstreamRequest 构建并发送 CC 上游请求：分离的上游 context、OpenAI HTTP
+// sendCCUpstreamRequest 构建并发送 CC 上游请求：分离的上游 context、平台 HTTP
 // profile、标准头（含流式 Accept 切换）、客户端 header 白名单透传、自定义 UA 与
 // 账号级 header 覆写，最后经代理发出。传输层失败（DNS/TCP/TLS，无 HTTP 响应）
 // 统一由 handleOpenAIUpstreamTransportError 归一为 failover。
@@ -197,7 +197,11 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	// OpenAIForwardResult（例如 503/传输失败）时使用。每次发送都覆盖，
 	// 避免 Gin context 在账号 failover 尝试之间残留旧端点。
 	SetActualOpenAIUpstreamEndpoint(c, "/v1/chat/completions")
-	upstreamReq = upstreamReq.WithContext(WithHTTPUpstreamProfile(upstreamReq.Context(), HTTPUpstreamProfileOpenAI))
+	profile := HTTPUpstreamProfileOpenAI
+	if account.Platform == PlatformGrok {
+		profile = HTTPUpstreamProfileGrok
+	}
+	upstreamReq = upstreamReq.WithContext(WithHTTPUpstreamProfile(upstreamReq.Context(), profile))
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("Authorization", "Bearer "+bearerToken)
 	if stream {

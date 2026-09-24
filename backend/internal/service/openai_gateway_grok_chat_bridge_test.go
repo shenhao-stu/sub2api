@@ -479,6 +479,8 @@ func TestForwardGrokChatViaResponsesTraeCompatibilityFieldsKeepCacheRoute(t *tes
 	require.Equal(t, "Return concise JSON", gjson.GetBytes(upstream.lastBody, "instructions").String())
 	require.Equal(t, "json_object", gjson.GetBytes(upstream.lastBody, "text.format.type").String())
 	require.Equal(t, "priority", gjson.GetBytes(upstream.lastBody, "service_tier").String())
+	require.NotNil(t, result.ServiceTier)
+	require.Equal(t, "priority", *result.ServiceTier)
 	require.False(t, gjson.GetBytes(upstream.lastBody, "stop").Exists())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "reasoning").Exists())
 	require.Contains(t, gjson.GetBytes(upstream.lastBody, "input.1.content").String(), "<thinking>I should use lookup</thinking>")

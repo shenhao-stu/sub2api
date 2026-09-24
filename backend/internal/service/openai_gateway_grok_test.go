@@ -3057,13 +3057,6 @@ func TestHandleGrokAccountUpstreamErrorTempUnschedulesNonRateLimitStates(t *test
 			wantMinCooldown: 30*time.Minute - time.Second,
 			wantMaxCooldown: 30*time.Minute + time.Second,
 		},
-		{
-			name:            "upstream temporary error",
-			status:          http.StatusInternalServerError,
-			wantReason:      "grok upstream temporary error",
-			wantMinCooldown: 2*time.Minute - time.Second,
-			wantMaxCooldown: 2*time.Minute + time.Second,
-		},
 	}
 
 	for _, tt := range tests {
@@ -3073,7 +3066,11 @@ func TestHandleGrokAccountUpstreamErrorTempUnschedulesNonRateLimitStates(t *test
 			svc := &OpenAIGatewayService{accountRepo: repo}
 			before := time.Now()
 
-			svc.handleGrokAccountUpstreamError(context.Background(), account, tt.status, tt.headers, nil)
+			var body []byte
+			if tt.status == http.StatusForbidden {
+				body = []byte(`{"error":{"message":"subscription required"}}`)
+			}
+			svc.handleGrokAccountUpstreamError(context.Background(), account, tt.status, tt.headers, body)
 
 			require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
 			require.Equal(t, 1, repo.tempUnschedCalls)
@@ -3124,19 +3121,16 @@ func TestHandleGrokAccountUpstreamError5xxRespectsPoolMode(t *testing.T) {
 		require.Empty(t, account.TempUnschedulableReason)
 	})
 
-	t.Run("non-pool mode keeps two minute cooldown", func(t *testing.T) {
+	t.Run("unknown model never expands to account cooldown", func(t *testing.T) {
 		account := &Account{ID: 612, Platform: PlatformGrok, Type: AccountTypeAPIKey}
 		repo := &grokQuotaAccountRepo{}
 		svc := &OpenAIGatewayService{accountRepo: repo}
-		before := time.Now()
-
+		svc.handleGrokAccountUpstreamError(context.Background(), account, http.StatusBadGateway, nil, nil)
 		svc.handleGrokAccountUpstreamError(context.Background(), account, http.StatusBadGateway, nil, nil)
 
-		require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
-		require.Equal(t, 1, repo.tempUnschedCalls)
-		require.Equal(t, account.ID, repo.lastTempUnschedID)
-		require.Equal(t, "grok upstream temporary error", repo.lastTempUnschedReason)
-		require.WithinDuration(t, before.Add(2*time.Minute), repo.lastTempUnschedUntil, time.Second)
+		require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+		require.Zero(t, repo.tempUnschedCalls)
+		require.Zero(t, svc.getOpenAIAccountModelTransientState().size())
 	})
 }
 

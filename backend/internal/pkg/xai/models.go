@@ -84,6 +84,7 @@ func (o ModelMappingOptions) defaultText() string {
 
 var defaultModels = []Model{
 	// Text
+	{ID: "grok-4.7", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok 4.7"},
 	{ID: "grok-4.6", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok 4.6"},
 	{ID: "grok-4.5", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok 4.5"},
 	{ID: "grok-4.3", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok 4.3"},
@@ -104,6 +105,10 @@ var defaultModels = []Model{
 // accepted by the Responses path: client-facing / undated aliases → canonical
 // upstream ID. Used by DefaultModelMapping and IsGrokTextResponsesModelID.
 var grokTextResponsesModelAliases = map[string]string{
+	"grok-4.7":                     "grok-4.7",
+	"grok-4.7-latest":              "grok-4.7",
+	"grok-4.7-fast":                "grok-4.7-build-fast",
+	"grok-4.7-build-fast":          "grok-4.7-build-fast",
 	"grok":                         DefaultTextModel,
 	"grok-latest":                  DefaultTextModel,
 	"grok-4.6":                     "grok-4.6",
@@ -160,6 +165,12 @@ func ModelMappingWithOptions(opts ModelMappingOptions) map[string]string {
 		mapping[model.ID] = model.ID
 	}
 	for alias, canonical := range grokTextResponsesModelAliases {
+		// Build Fast is a paid-account capability. Operators must opt verified
+		// accounts in with an explicit mapping; a default/free account cannot
+		// gain the route merely by inheriting the public model catalog.
+		if canonical == "grok-4.7-build-fast" {
+			continue
+		}
 		// Remap aliases that pointed at DefaultTextModel constant to runtime default.
 		if (alias == "grok" || alias == "grok-latest") && canonical == DefaultTextModel {
 			mapping[alias] = defaultText

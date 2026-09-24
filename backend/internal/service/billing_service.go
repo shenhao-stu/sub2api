@@ -862,6 +862,19 @@ func (s *BillingService) initFallbackPricing() {
 		LongContextOutputMultiplier:   2,
 	}
 
+	// Grok 4.7 shares 4.6's official card. Build Fast is a distinct model at
+	// twice that price, not a second service-tier surcharge or Flex discount.
+	grok47 := *s.fallbackPrices["grok-4.6"]
+	s.fallbackPrices["grok-4.7"] = &grok47
+	grok47Fast := grok47
+	grok47Fast.InputPricePerToken *= 2
+	grok47Fast.OutputPricePerToken *= 2
+	grok47Fast.CacheReadPricePerToken *= 2
+	fixedTier := 1.0
+	grok47Fast.FastMultiplier = &fixedTier
+	grok47Fast.FlexMultiplier = &fixedTier
+	s.fallbackPrices["grok-4.7-build-fast"] = &grok47Fast
+
 	// xAI Grok 4.3: $1.25 input / $0.20 cached / $2.50 output below 200k;
 	// long-context rates are $2.50 / $0.40 / $5.
 	s.fallbackPrices["grok-4.3"] = &ModelPricing{
@@ -1133,6 +1146,10 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	}
 
 	switch modelLower {
+	case "grok-4.7", "grok-4.7-latest":
+		return s.fallbackPrices["grok-4.7"]
+	case "grok-4.7-fast", "grok-4.7-build-fast":
+		return s.fallbackPrices["grok-4.7-build-fast"]
 	case "grok", "grok-latest", "grok-4.6", "grok-4.6-latest":
 		return s.fallbackPrices["grok-4.6"]
 	case "grok-4.5", "grok-4.5-latest":
@@ -1238,6 +1255,9 @@ func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
 func (s *BillingService) getModelPricingAt(model string, pricingAt time.Time) (*ModelPricing, error) {
 	// 标准化模型名称（转小写）
 	model = strings.ToLower(model)
+	if xai.IsGrokModelID(model) {
+		model = xai.ResolveGrokTextResponsesModelID(model)
+	}
 
 	// 1. 优先从动态价格服务获取
 	if s.pricingService != nil {

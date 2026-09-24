@@ -197,6 +197,10 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	// 7. Handle error response with failover
 	if resp.StatusCode >= 400 {
 		respBody, upstreamMsg := s.readOpenAIUpstreamError(resp)
+		if result, meteredErr := s.handleMeteredOpenAIHTTPError(ctx, c, account, resp, respBody, upstreamBody, originalModel, billingModel, upstreamModel, clientStream, startTime); result != nil {
+			return result, meteredErr
+		}
+
 		if account.Platform == PlatformGrok {
 			kind := "http_error"
 			if s.shouldFailoverGrokUpstreamError(resp.StatusCode, respBody) {
@@ -342,7 +346,9 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				observer.ObserveOpenAI([]byte(payload), strings.TrimSpace(gjson.Get(payload, "type").String()))
 				usageOnlyChunk := isOpenAIChatUsageOnlyStreamChunk(payload)
 				if u := extractCCStreamUsage(payload); u != nil {
-					usage = *u
+					if openAIUsageHasTokens(u) || !openAIUsageHasTokens(&usage) {
+						usage = *u
+					}
 				}
 				if firstTokenMs == nil && !usageOnlyChunk {
 					elapsed := int(time.Since(startTime).Milliseconds())
@@ -414,18 +420,25 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			zap.Bool("saw_sse_data", terminal.sawDataLine),
 			zap.Bool("client_output_started", clientOutputStarted),
 		)
-		if !clientOutputStarted {
+		if !clientOutputStarted && !openAIUsageHasTokens(&usage) {
 			// 响应头尚未提交：可以透明换号重试，客户端不会看到半截流。
 			return nil, newOpenAIRawStreamTruncatedFailoverError(c, account, requestID, cause)
 		}
 		// 已写出语义字节：无法再 failover，改为带类型的上游错误。handler 会据此
 		// 补发 SSE error 帧并把本次请求计入 SLA 失败。
+		if !clientOutputStarted && openAIUsageHasTokens(&usage) {
+			writeChatCompletionsErrorWithUsage(c, http.StatusBadGateway, "upstream_error", "Upstream stream ended before completion", &usage)
+		}
 		recordOpenAIRawStreamTruncation(c, account, requestID, cause, "http_error")
 		return resultWithUsage(), newOpenAIUpstreamStreamReadError(cause)
 	}
 
 	if scanErr == nil && !clientDisconnected && !clientOutputStarted {
 		if refusalDetector.IsSilentRefusal() {
+			if openAIUsageHasTokens(&usage) {
+				writeChatCompletionsErrorWithUsage(c, http.StatusBadGateway, "upstream_error", "Upstream returned an empty response", &usage)
+				return resultWithUsage(), errors.New("upstream silent refusal after reported usage")
+			}
 			return nil, newOpenAISilentRefusalFailoverError(c, account, requestID)
 		}
 		if len(pendingLines) > 0 {

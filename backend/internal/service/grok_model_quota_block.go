@@ -24,11 +24,7 @@ var globalGrokModelQuotaBlocks = &grokModelQuotaBlockStore{
 	items: make(map[string]grokModelQuotaBlock),
 }
 
-const (
-	grokModelQuotaBlockDefaultTTL = 2 * time.Hour
-	grokModelQuotaBlockMaxTTL     = 6 * time.Hour
-	grokModelQuotaBlockMinTTL     = 20 * time.Minute
-)
+const grokModelQuotaBlockMaxTTL = 6 * time.Hour
 
 func grokModelQuotaBlockKey(accountID int64, model string) string {
 	return strings.TrimSpace(strings.ToLower(model)) + "|" + strconv.FormatInt(accountID, 10)
@@ -41,8 +37,8 @@ func markGrokModelQuotaBlock(accountID int64, model string, until time.Time) {
 		return
 	}
 	now := time.Now()
-	if !until.After(now.Add(grokModelQuotaBlockMinTTL)) {
-		until = now.Add(grokModelQuotaBlockDefaultTTL)
+	if !until.After(now) {
+		return
 	}
 	if max := now.Add(grokModelQuotaBlockMaxTTL); until.After(max) {
 		until = max

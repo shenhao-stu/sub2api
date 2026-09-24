@@ -2071,7 +2071,7 @@ func TestOpenAIStreamingResponseFailedAfterOutputSanitizesVerboseResponseForClie
 	require.NotContains(t, body, "You are GPT-5.1 running in the Codex CLI")
 	require.NotContains(t, body, `"instructions"`)
 	require.NotContains(t, body, `"output"`)
-	require.NotContains(t, body, `"usage"`)
+	require.Contains(t, body, `"usage":{"input_tokens":123`)
 }
 
 func TestOpenAIStreamingContextWindowResponseFailedBeforeOutputPassesThrough(t *testing.T) {
@@ -2680,7 +2680,7 @@ func TestOpenAIStreamingPassthroughResponseFailedAfterOutputSanitizesVerboseResp
 	require.NotContains(t, body, "You are GPT-5.1 running in the Codex CLI")
 	require.NotContains(t, body, `"instructions"`)
 	require.NotContains(t, body, `"output"`)
-	require.NotContains(t, body, `"usage"`)
+	require.Contains(t, body, `"usage":{"input_tokens":123`)
 }
 
 func TestOpenAIStreamingPassthroughResponseDoneWithoutDoneMarkerStillSucceeds(t *testing.T) {

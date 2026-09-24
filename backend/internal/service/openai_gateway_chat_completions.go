@@ -404,6 +404,10 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	// 8. Handle error response with failover
 	if resp.StatusCode >= 400 {
 		respBody, upstreamMsg := s.readOpenAIUpstreamError(resp)
+		if result, meteredErr := s.handleMeteredOpenAIHTTPError(ctx, c, account, resp, respBody, responsesBody, originalModel, billingModel, upstreamModel, clientStream, startTime); result != nil {
+			return result, meteredErr
+		}
+
 		if !agentIdentityTaskRecoveryWasTried(ctx) && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
 			expectedTaskID := account.GetCredential("task_id")
 			if err := s.recoverAgentIdentityTask(ctx, account, expectedTaskID); err != nil {
@@ -438,20 +442,22 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	}
 	stampOpenAIResponsesUpstreamEndpoint(c, result)
 
-	// cyber_policy：标记已设、error 已按 Chat Completions 格式发给客户端。丢弃 result、
-	// 返回哨兵，使 handler 落入 tokens=0 免费用量行（对齐 /v1/responses），不计费、不 failover。
+	// Keep the cyber audit mark and error, and retain measured usage for the
+	// normal billing path. The handler fallback is only needed without a result.
 	if GetOpsCyberPolicy(c) != nil {
 		if handleErr == nil {
 			handleErr = errOpenAICyberPolicyForwarded
 		}
-		return nil, handleErr
+		if result == nil || !openAIUsageHasTokens(&result.Usage) {
+			return nil, handleErr
+		}
 	}
 
 	// Propagate ServiceTier and ReasoningEffort to result for billing.
 	// 计费 tier 优先采用上游回显值；上游未回显时回退到最终出站 body（经过
 	// fast policy filter/force 之后）里的 tier，policy filter 删掉字段后不再
 	// 按原请求 Fast 计费。
-	if handleErr == nil && result != nil {
+	if result != nil {
 		if tier := resolvedOpenAIUpstreamServiceTier(c, extractOpenAIServiceTierFromBody(responsesBody)); tier != nil {
 			result.ServiceTier = tier
 		}
@@ -542,13 +548,20 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	requestID := resp.Header.Get("x-request-id")
 
 	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(resp, c, "openai chat_completions buffered", requestID)
+	partialResult := func() *OpenAIForwardResult {
+		return openAICompatMeteredResult(c, resp, usage, originalModel, billingModel, upstreamModel, startTime)
+	}
 	if err != nil {
+		if openAIUsageHasTokens(&usage) {
+			writeChatCompletionsErrorWithUsage(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream response", &usage)
+			return partialResult(), err
+		}
 		return nil, s.newOpenAICompatBufferedReadFailoverError(c, account, resp, requestID, err)
 	}
 
 	if finalResponse == nil {
-		writeChatCompletionsError(c, http.StatusBadGateway, "api_error", "Upstream stream ended without a terminal response event")
-		return nil, fmt.Errorf("upstream stream ended without terminal event")
+		writeChatCompletionsErrorWithUsage(c, http.StatusBadGateway, "api_error", "Upstream stream ended without a terminal response event", &usage)
+		return partialResult(), fmt.Errorf("upstream stream ended without terminal event")
 	}
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
@@ -559,7 +572,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	if strings.TrimSpace(finalResponse.Status) == "failed" {
 		payload, _ := json.Marshal(gin.H{"type": "response.failed", "response": finalResponse})
 		// cyber_policy 致命不可重试：不 failover，以 Chat Completions 错误格式回写（F4），
-		// 标记供 handler 事后写风控/邮件/tokens=0 用量行。
+		// 标记供 handler 事后记录风控与真实用量。
 		if hit, code, msg := detectOpenAICyberPolicy(payload); hit {
 			MarkOpsCyberPolicy(c, CyberPolicyMark{
 				Code:           code,
@@ -573,12 +586,15 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 			if clientMsg == "" {
 				clientMsg = "Request blocked by upstream cyber-security policy"
 			}
-			writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", clientMsg)
-			return nil, fmt.Errorf("openai cyber_policy: %s", msg)
+			writeChatCompletionsErrorWithUsage(c, http.StatusBadRequest, "invalid_request_error", clientMsg, &usage)
+			return openAICompatMeteredResult(c, resp, usage, originalModel, billingModel, upstreamModel, startTime), fmt.Errorf("openai cyber_policy: %s", msg)
 		}
 		message := openAICompatFailedResponseMessage(finalResponse)
-		if openAIStreamFailedEventShouldFailover(payload, message) {
+		if !openAIUsageHasTokens(&usage) && openAIStreamFailedEventShouldFailover(payload, message) {
 			return nil, s.newOpenAIStreamFailoverErrorWithModel(c, account, false, requestID, payload, message, upstreamModel, resp.Header)
+		}
+		if openAIUsageHasTokens(&usage) {
+			s.handleOpenAIStreamTerminalAccountSideEffects(c, account, payload, message, resp.Header, upstreamModel)
 		}
 		message = s.recordOpenAIStreamUpstreamError(c, account, false, requestID, "http_error", payload, message)
 		// response.failed 到达在 HTTP 200 SSE 流上，无真实 HTTP 错误码；统一走语义
@@ -590,11 +606,11 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 				errMsg = message
 			}
 			MarkResponseCommitted(c)
-			writeChatCompletionsError(c, status, errType, errMsg)
-			return nil, fmt.Errorf("upstream response failed (passthrough): %s", errMsg)
+			writeChatCompletionsErrorWithUsage(c, status, errType, errMsg, &usage)
+			return partialResult(), fmt.Errorf("upstream response failed (passthrough): %s", errMsg)
 		}
-		writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", message)
-		return nil, fmt.Errorf("upstream response failed: %s", message)
+		writeChatCompletionsErrorWithUsage(c, http.StatusBadGateway, "upstream_error", message, &usage)
+		return partialResult(), fmt.Errorf("upstream response failed: %s", message)
 	}
 	if strings.TrimSpace(finalResponse.Status) == "completed" {
 		logOpenAISuccessMissingUsage(c.Request.Context(), c, account, resp, &usage, "response.completed", false)
@@ -697,7 +713,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	upstreamModel string,
 	startTime time.Time,
 	requestBodyLen int,
-) (*OpenAIForwardResult, error) {
+) (_ *OpenAIForwardResult, forwardErr error) {
 	requestID := resp.Header.Get("x-request-id")
 	writeStreamHeaders := s.newStreamHeaderWriter(c, resp.Header)
 
@@ -763,6 +779,20 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		return out
 	}
 
+	defer func() {
+		if forwardErr == nil || terminalEventType != "" || clientDisconnected || !openAIUsageHasTokens(&usage) {
+			return
+		}
+		const message = "Upstream stream ended before completion"
+		if !c.Writer.Written() {
+			writeChatCompletionsErrorWithUsage(c, http.StatusBadGateway, "upstream_error", message, &usage)
+			return
+		}
+		payload, _ := json.Marshal(openAIMeteredErrorMetadata(c, openAIErrorBodyWithUsage(gin.H{"error": gin.H{"type": "upstream_error", "message": message}}, &usage)))
+		_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", payload)
+		c.Writer.Flush()
+	}()
+
 	processDataLine := func(payload string) bool {
 		payload = string(restoreCodexToolNamesFromContext(c, []byte(payload)))
 		if firstChunk {
@@ -789,12 +819,6 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		isTerminalEvent := isOpenAICompatResponsesTerminalEvent(event.Type)
 		if isTerminalEvent {
 			terminalEventType = strings.TrimSpace(event.Type)
-			if event.Usage != nil {
-				usage = copyOpenAIUsageFromResponsesUsage(event.Usage)
-			}
-			if event.Response != nil && event.Response.Usage != nil {
-				usage = copyOpenAIUsageFromResponsesUsage(event.Response.Usage)
-			}
 		}
 		if strings.TrimSpace(event.Type) == "response.failed" || strings.TrimSpace(event.Type) == "error" {
 			payloadBytes := []byte(payload)
@@ -818,7 +842,8 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 					if clientMsg == "" {
 						clientMsg = "Request blocked by upstream cyber-security policy"
 					}
-					if _, err := fmt.Fprint(c.Writer, buildChatStreamErrorSSE(code, clientMsg)); err == nil {
+					payload, _ := json.Marshal(openAIMeteredErrorMetadata(c, openAIErrorBodyWithUsage(gin.H{"error": gin.H{"type": "invalid_request_error", "code": code, "message": clientMsg}}, &usage)))
+					if _, err := fmt.Fprintf(c.Writer, "data: %s\n\n", payload); err == nil {
 						_, _ = fmt.Fprint(c.Writer, "data: [DONE]\n\n")
 						if fl, ok := c.Writer.(http.Flusher); ok {
 							fl.Flush()
@@ -828,13 +853,14 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 					// finalizeStream 的 [DONE] 同样发不出去，统一抑制。
 					clientDisconnected = true
 				}
+				streamNonFailoverErr = errOpenAICyberPolicyForwarded
 				return true
 			}
 			shouldFailover := openAIStreamFailedEventShouldFailover(payloadBytes, message)
 			if strings.TrimSpace(event.Type) == "error" {
 				shouldFailover = openAIStreamErrorEventShouldFailover(payloadBytes, message)
 			}
-			if !clientOutputStarted && shouldFailover {
+			if !clientOutputStarted && !openAIUsageHasTokens(&usage) && shouldFailover {
 				streamFailoverErr = s.newOpenAIStreamFailoverErrorWithModel(c, account, false, requestID, payloadBytes, message, upstreamModel, resp.Header)
 				return true
 			}
@@ -851,14 +877,14 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				defaultStatus, defaultErrType, defaultMsg = status, errType, errMsg
 				MarkResponseCommitted(c)
 			}
-			errorPayload, _ := json.Marshal(gin.H{
+			errorPayload, _ := json.Marshal(openAIMeteredErrorMetadata(c, openAIErrorBodyWithUsage(gin.H{
 				"error": gin.H{
 					"type":    defaultErrType,
 					"message": defaultMsg,
 				},
-			})
+			}, &usage)))
 			if c != nil && c.Writer != nil && !c.Writer.Written() {
-				writeChatCompletionsError(c, defaultStatus, defaultErrType, defaultMsg)
+				writeChatCompletionsErrorWithUsage(c, defaultStatus, defaultErrType, defaultMsg, &usage)
 				clientOutputStarted = true
 			} else if c != nil && c.Writer != nil && !clientDisconnected {
 				if _, err := fmt.Fprintf(c.Writer, "data: %s\n\n", errorPayload); err != nil {
@@ -972,6 +998,10 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		}
 		if !clientDisconnected && !clientOutputStarted {
 			if refusalDetector.IsSilentRefusal() {
+				if openAIUsageHasTokens(&usage) {
+					writeChatCompletionsErrorWithUsage(c, http.StatusBadGateway, "upstream_error", "Upstream returned an empty response", &usage)
+					return resultWithUsage(), errors.New("upstream silent refusal after reported usage")
+				}
 				return nil, newOpenAISilentRefusalFailoverError(c, account, requestID)
 			}
 			if len(pendingSSE) > 0 {
@@ -1184,13 +1214,17 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 
 // writeChatCompletionsError writes an error response in OpenAI Chat Completions format.
 func writeChatCompletionsError(c *gin.Context, statusCode int, errType, message string) {
+	writeChatCompletionsErrorWithUsage(c, statusCode, errType, message)
+}
+
+func writeChatCompletionsErrorWithUsage(c *gin.Context, statusCode int, errType, message string, usage ...*OpenAIUsage) {
 	MarkResponseCommitted(c)
-	c.JSON(statusCode, gin.H{
+	c.JSON(statusCode, openAIMeteredErrorMetadata(c, openAIErrorBodyWithUsage(gin.H{
 		"error": gin.H{
 			"type":    errType,
 			"message": message,
 		},
-	})
+	}, usage...)))
 }
 
 // buildChatStreamErrorSSE builds one SSE data frame carrying an OpenAI chat

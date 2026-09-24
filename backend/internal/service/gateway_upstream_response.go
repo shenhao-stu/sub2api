@@ -1076,6 +1076,13 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				outputBlocks, data, usagePatch, err := processSSEEvent(pendingEventLines)
 				pendingEventLines = pendingEventLines[:0]
 				if err != nil {
+					if usage.hasObservedTokens() {
+						if !clientDisconnected {
+							sendErrorEvent("upstream_error", sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage([]byte(data))))
+							MarkResponseCommitted(c)
+						}
+						return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, err
+					}
 					if clientDisconnected {
 						return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: true}, nil
 					}

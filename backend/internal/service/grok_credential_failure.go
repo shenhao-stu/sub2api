@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -15,11 +16,11 @@ import (
 )
 
 const (
-	grokCredentialFailoverDeadlineKey = "grok_credential_failover_deadline"
-	grokCredentialFailoverBudget      = 15 * time.Second
-	grokCredentialMutationTimeout     = 5 * time.Second
-	grokCredentialMutationConfirmWait = 250 * time.Millisecond
-	grokCredentialCacheCleanupTimeout = 500 * time.Millisecond
+	grokCredentialFailoverRemainingKey = "grok_credential_failover_remaining"
+	grokCredentialFailoverBudget       = 15 * time.Second
+	grokCredentialMutationTimeout      = 5 * time.Second
+	grokCredentialMutationConfirmWait  = 250 * time.Millisecond
+	grokCredentialCacheCleanupTimeout  = 500 * time.Millisecond
 
 	GrokCredentialUnavailableClientMessage = "No healthy Grok OAuth account is currently available"
 
@@ -218,19 +219,40 @@ func grokCredentialAcquisitionContext(ctx context.Context, c *gin.Context) (cont
 	if c == nil {
 		return ctx, nil, false
 	}
-	deadline := time.Time{}
-	if raw, ok := c.Get(grokCredentialFailoverDeadlineKey); ok {
-		deadline, _ = raw.(time.Time)
+	remaining := grokCredentialFailoverBudget
+	if raw, exists := c.Get(grokCredentialFailoverRemainingKey); exists {
+		var valid bool
+		remaining, valid = raw.(time.Duration)
+		if !valid {
+			return ctx, nil, true
+		}
+	} else {
+		c.Set(grokCredentialFailoverRemainingKey, remaining)
 	}
-	if deadline.IsZero() {
-		deadline = time.Now().Add(grokCredentialFailoverBudget)
-		c.Set(grokCredentialFailoverDeadlineKey, deadline)
-	}
-	if !time.Now().Before(deadline) {
+	if remaining <= 0 {
 		return ctx, nil, true
 	}
-	acquireCtx, cancel := context.WithDeadline(ctx, deadline)
-	return acquireCtx, cancel, false
+	started := time.Now()
+	acquireCtx, cancel := context.WithTimeout(ctx, remaining)
+	var settled sync.Once
+	return acquireCtx, func() {
+		settled.Do(func() {
+			cancel()
+			// Account failover acquires credentials sequentially. Charge the whole
+			// acquisition, including state confirmation, but never the upstream gap.
+			c.Set(grokCredentialFailoverRemainingKey, grokCredentialBudgetAfter(remaining, time.Since(started)))
+		})
+	}, false
+}
+
+func grokCredentialBudgetAfter(remaining, elapsed time.Duration) time.Duration {
+	if remaining <= 0 || elapsed >= remaining {
+		return 0
+	}
+	if elapsed <= 0 {
+		return remaining
+	}
+	return remaining - elapsed
 }
 
 func classifyGrokCredentialFailure(account *Account, err error) grokCredentialFailureClass {

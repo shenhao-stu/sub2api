@@ -851,6 +851,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					truncateString(sseErr.RawData, 1000),
 				)
 
+				if partial := partialStreamUsageResult(c, resp, streamResult, originalModel, mappedModel, startTime, err); partial != nil {
+					return partial, err
+				}
 				return nil, &UpstreamFailoverError{
 					StatusCode:   semanticStatus,
 					ResponseBody: body,
