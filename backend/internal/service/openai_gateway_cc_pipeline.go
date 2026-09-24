@@ -199,7 +199,7 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	SetActualOpenAIUpstreamEndpoint(c, "/v1/chat/completions")
 	profile := HTTPUpstreamProfileOpenAI
 	if account.Platform == PlatformGrok {
-		profile = HTTPUpstreamProfileGrok
+		profile = grokHTTPProfile(stream)
 	}
 	upstreamReq = upstreamReq.WithContext(WithHTTPUpstreamProfile(upstreamReq.Context(), profile))
 	upstreamReq.Header.Set("Content-Type", "application/json")

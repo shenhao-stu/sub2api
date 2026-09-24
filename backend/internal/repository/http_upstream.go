@@ -559,6 +559,9 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 	settings = s.applyProfilePoolSettings(settings, upstreamProfile)
 	// TLS 指纹客户端使用独立的缓存键，加 "tls:" 前缀
 	cacheKey := "tls:" + buildCacheKey(isolation, proxyKey, accountID, upstreamProtocolModeDefault)
+	if upstreamProfile == service.HTTPUpstreamProfileGrokNonstream {
+		cacheKey += ":grok_nonstream"
+	}
 	poolKey := buildPoolKey(settings, upstreamProtocolModeDefault) + ":tls"
 
 	now := time.Now()
@@ -722,6 +725,9 @@ func (s *httpUpstreamService) getClientEntry(proxyURL string, accountID int64, a
 	settings = s.applyProfilePoolSettings(settings, profile)
 	// 构建缓存键（根据隔离策略不同）
 	cacheKey := buildCacheKey(isolation, proxyKey, accountID, protocolMode)
+	if profile == service.HTTPUpstreamProfileGrokNonstream {
+		cacheKey += ":grok_nonstream"
+	}
 	// 构建连接池配置键（用于检测配置变更）
 	poolKey := buildPoolKey(settings, protocolMode)
 
@@ -970,6 +976,11 @@ func (s *httpUpstreamService) applyProfilePoolSettings(settings poolSettings, pr
 		if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIResponseHeaderTimeout > 0 {
 			settings.responseHeaderTimeout = time.Duration(s.cfg.Gateway.OpenAIResponseHeaderTimeout) * time.Second
 		}
+	case service.HTTPUpstreamProfileGrokNonstream:
+		settings.responseHeaderTimeout = 240 * time.Second
+		if s != nil && s.cfg != nil && s.cfg.Gateway.GrokNonstreamResponseHeaderTimeout > 0 {
+			settings.responseHeaderTimeout = time.Duration(s.cfg.Gateway.GrokNonstreamResponseHeaderTimeout) * time.Second
+		}
 	case service.HTTPUpstreamProfileGrok:
 		// Grok can stall before its first byte under capacity pressure. Keep the
 		// generic 600s gateway timeout from turning one request into a 10-minute
@@ -1059,7 +1070,7 @@ func (s *httpUpstreamService) resolveProtocolMode(profile service.HTTPUpstreamPr
 	if profile == service.HTTPUpstreamProfileLongStream {
 		return upstreamProtocolModeLongStreamH2
 	}
-	if profile == service.HTTPUpstreamProfileGrok {
+	if profile == service.HTTPUpstreamProfileGrok || profile == service.HTTPUpstreamProfileGrokNonstream {
 		return upstreamProtocolModeGrok
 	}
 	if profile != service.HTTPUpstreamProfileOpenAI {

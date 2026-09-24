@@ -104,6 +104,7 @@ func TestGrokChatHeaderTimeoutSkipsPoolReplay(t *testing.T) {
 			cfg.Default.RateMultiplier = 1
 			cfg.Gateway.MaxAccountSwitches = 1
 			cfg.Gateway.GrokResponseHeaderTimeout = 1
+			cfg.Gateway.GrokNonstreamResponseHeaderTimeout = 1
 			cfg.Security.URLAllowlist.AllowInsecureHTTP = true
 			cfg.Security.URLAllowlist.AllowPrivateHosts = true
 			accountRepo := &grokStreamFailoverAccountRepo{

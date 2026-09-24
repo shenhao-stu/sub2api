@@ -7,10 +7,11 @@ import "context"
 type HTTPUpstreamProfile string
 
 const (
-	HTTPUpstreamProfileDefault    HTTPUpstreamProfile = ""
-	HTTPUpstreamProfileOpenAI     HTTPUpstreamProfile = "openai"
-	HTTPUpstreamProfileGrok       HTTPUpstreamProfile = "grok"
-	HTTPUpstreamProfileLongStream HTTPUpstreamProfile = "long_stream"
+	HTTPUpstreamProfileDefault       HTTPUpstreamProfile = ""
+	HTTPUpstreamProfileOpenAI        HTTPUpstreamProfile = "openai"
+	HTTPUpstreamProfileGrok          HTTPUpstreamProfile = "grok"
+	HTTPUpstreamProfileGrokNonstream HTTPUpstreamProfile = "grok_nonstream"
+	HTTPUpstreamProfileLongStream    HTTPUpstreamProfile = "long_stream"
 )
 
 type httpUpstreamProfileContextKey struct{}
@@ -38,11 +39,19 @@ func HTTPUpstreamProfileFromContext(ctx context.Context) HTTPUpstreamProfile {
 		return HTTPUpstreamProfileDefault
 	}
 	switch profile {
-	case HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileGrok, HTTPUpstreamProfileLongStream:
+	case HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileGrok, HTTPUpstreamProfileGrokNonstream, HTTPUpstreamProfileLongStream:
 		return profile
 	default:
 		return HTTPUpstreamProfileDefault
 	}
+}
+
+// JSON waits for the full generation; SSE only waits for its initial headers.
+func grokHTTPProfile(stream bool) HTTPUpstreamProfile {
+	if !stream {
+		return HTTPUpstreamProfileGrokNonstream
+	}
+	return HTTPUpstreamProfileGrok
 }
 
 // WithHTTPUpstreamRedirectsDisabled prevents credential-bearing probes from

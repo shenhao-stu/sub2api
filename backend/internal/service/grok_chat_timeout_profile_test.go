@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,21 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGrokResponsesBudgetFollowsActualOutboundMode(t *testing.T) {
+	account := &Account{Platform: PlatformGrok, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "https://api.x.ai/v1"}}
+	for _, stream := range []bool{false, true} {
+		body := []byte(fmt.Sprintf(`{"model":"grok-4.7-build-fast","stream":%t}`, stream))
+		req, err := buildGrokResponsesRequest(context.Background(), nil, account, body, "test-token", "", nil)
+		require.NoError(t, err)
+		want := HTTPUpstreamProfileGrokNonstream
+		if stream {
+			want = HTTPUpstreamProfileGrok
+		}
+		require.Equal(t, want, HTTPUpstreamProfileFromContext(req.Context()))
+	}
+}
 
 func TestSendCCUpstreamRequestUsesProviderTimeoutProfile(t *testing.T) {
 	for _, tt := range []struct {
@@ -46,8 +62,11 @@ func TestSendCCUpstreamRequestUsesProviderTimeoutProfile(t *testing.T) {
 					stream, "test-token", "", "")
 				require.NoError(t, err)
 				t.Cleanup(func() { _ = resp.Body.Close() })
-				require.Equal(t, tt.profile, HTTPUpstreamProfileFromContext(upstream.lastReq.Context()),
-					"Grok Chat must receive the same configured header timeout as Grok Responses")
+				wantProfile := tt.profile
+				if tt.platform == PlatformGrok && !stream {
+					wantProfile = HTTPUpstreamProfileGrokNonstream
+				}
+				require.Equal(t, wantProfile, HTTPUpstreamProfileFromContext(upstream.lastReq.Context()))
 				wantAccept := "application/json"
 				if stream {
 					wantAccept = "text/event-stream"
