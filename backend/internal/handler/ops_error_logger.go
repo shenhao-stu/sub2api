@@ -1183,6 +1183,12 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 		normalizedType := normalizeOpsErrorType(parsed.ErrorType, parsed.Code)
 
 		phase, isBusinessLimited, errorOwner, errorSource := classifyOpsErrorLog(c, normalizedType, parsed.Message, parsed.Code, status)
+		localConcurrencyFailure := isOpsLocalConcurrencyFailure(c, parsed)
+		if localConcurrencyFailure {
+			phase, isBusinessLimited = "request", true
+			errorOwner = classifyOpsErrorOwner(phase, parsed.Message)
+			errorSource = classifyOpsErrorSource(phase, parsed.Message)
+		}
 
 		entry := &service.OpsInsertErrorLogInput{
 			RequestID:       requestID,
@@ -1240,7 +1246,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 		}
 		applyOpsLatencyFieldsFromContext(c, entry)
 		applyOpsUpstreamFieldsFromContext(c, entry)
-		if parsed.StreamFailure {
+		if parsed.StreamFailure && !localConcurrencyFailure {
 			if message := strings.TrimSpace(parsed.Message); message != "" {
 				entry.UpstreamErrorMessage = &message
 			}
@@ -1248,6 +1254,13 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 				finalStatus := status
 				entry.UpstreamStatusCode = &finalStatus
 			}
+		}
+		if localConcurrencyFailure {
+			// A local queue rejection is not a new provider response. Keep any
+			// earlier attempt history, without attributing the final 429 to it.
+			entry.UpstreamStatusCode = nil
+			entry.UpstreamErrorMessage = nil
+			entry.UpstreamErrorDetail = nil
 		}
 		suppressOpsUpstreamAttributionForLocalModelConfiguration(c, entry)
 
@@ -2028,7 +2041,7 @@ func sanitizeOpsSSEDataForPersistence(body []byte) string {
 
 func inferResponsesFailedOpsErrorType(code string) string {
 	switch strings.TrimSpace(code) {
-	case "rate_limit_exceeded":
+	case "rate_limit_exceeded", gatewayConcurrencyLimitCode, gatewayQueueFullCode:
 		return "rate_limit_error"
 	case "permission_denied", "permission_error", "insufficient_permissions", "cyber_policy", "content_policy":
 		return "permission_error"
@@ -2050,7 +2063,7 @@ func inferStreamFailureStatus(_ *gin.Context, parsed parsedOpsError) int {
 		return parsed.StatusCode
 	}
 	switch strings.TrimSpace(parsed.Code) {
-	case "rate_limit_exceeded":
+	case "rate_limit_exceeded", gatewayConcurrencyLimitCode, gatewayQueueFullCode:
 		return http.StatusTooManyRequests
 	case "permission_denied", "permission_error", "insufficient_permissions", "cyber_policy", "content_policy":
 		return http.StatusForbidden
@@ -2078,6 +2091,20 @@ func inferStreamFailureStatus(_ *gin.Context, parsed parsedOpsError) int {
 	}
 
 	return http.StatusBadGateway
+}
+
+func isOpsLocalConcurrencyFailure(c *gin.Context, parsed parsedOpsError) bool {
+	if parsed.Code != gatewayConcurrencyLimitCode && parsed.Code != gatewayQueueFullCode {
+		return false
+	}
+	// Require a local handler marker, so an upstream using the same code is
+	// still recorded as an upstream failure.
+	for _, marked := range service.GetOpsStreamErrors(c) {
+		if marked.IntendedStatus == http.StatusTooManyRequests && marked.ErrType == "rate_limit_error" && marked.Message == parsed.Message {
+			return true
+		}
+	}
+	return false
 }
 
 // getOpsAPIKey 返回用于 Ops 错误日志的 API Key：优先取已鉴权写入的正式 key；
