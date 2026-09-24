@@ -36,6 +36,13 @@ server:
   # Keep-alive idle timeout in seconds.
   # Keep-Alive 空闲连接超时（秒）。
   idle_timeout: 120
+  # Graceful request drain in seconds (0 uses 540; maximum 540).
+  # An additional 20s bounds forced handler shutdown, then 30s bounds cleanup.
+  # Allow at least 10m before the process/container is forcibly killed.
+  # 优雅等待请求完成的秒数（0 使用默认 540，最大 540）。
+  # 到期后最多再等 20 秒强制收尾、30 秒依赖清理；容器停止宽限期至少 10 分钟。
+  # Environment variable / 环境变量: SERVER_SHUTDOWN_TIMEOUT
+  shutdown_timeout: 540
   # Trusted proxies used when security.trust_forwarded_ip_for_api_key_acl is false.
   # List only the exact proxy addresses that connect directly to Sub2API.
   # Set [] explicitly to disable forwarded-IP trust in high-security mode.

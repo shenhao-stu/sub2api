@@ -19,6 +19,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/server"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/setup"
 	"github.com/Wei-Shaw/sub2api/internal/web"
@@ -152,7 +153,16 @@ func runMainServer() {
 	if err != nil {
 		log.Fatalf("Failed to initialize application: %v", err)
 	}
-	defer app.Cleanup()
+	cleanupSafe := true
+	defer func() {
+		if cleanupSafe {
+			if !cleanupWithin(app.Cleanup, 30*time.Second) {
+				log.Println("Application cleanup exceeded 30 seconds; pending work may remain")
+			}
+		} else {
+			log.Println("Skipping dependency cleanup because request handlers are still active; pending work may remain")
+		}
+	}()
 	if app.PluginManager != nil {
 		if err := app.PluginManager.Start(context.Background()); err != nil {
 			log.Printf("Plugin manager started in degraded state: %v", err)
@@ -180,16 +190,31 @@ func runMainServer() {
 	// 等待中断信号
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(quit)
 	<-quit
 
 	log.Println("Shutting down server...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownDrainTimeout())
 	defer cancel()
 
-	if err := app.Server.Shutdown(ctx); err != nil {
-		log.Printf("Server forced to shutdown: %v", err)
+	cleanupSafe, err = server.ShutdownHTTPServer(ctx, app.Server)
+	if err != nil {
+		log.Printf("Server shutdown deadline/error (handlers drained=%t): %v", cleanupSafe, err)
 	}
 
 	log.Println("Server exited")
+}
+
+func cleanupWithin(cleanup func(), timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() { cleanup(); close(done) }()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
