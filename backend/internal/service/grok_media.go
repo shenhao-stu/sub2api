@@ -1377,7 +1377,16 @@ func grokMediaErrorType(statusCode int) string {
 }
 
 func writeGrokMediaErrorResponse(c *gin.Context, statusCode int, errType, message string) {
-	if c == nil || c.Writer == nil || c.Writer.Written() {
+	if c == nil || c.Writer == nil {
+		return
+	}
+	// A JSON heartbeat commits headers, not a result. Stop its writer before
+	// checking bytes so a late upstream failure still delivers one JSON error.
+	keepalive := OpenAIImagesJSONKeepalivePresent(c)
+	if keepalive {
+		StopOpenAIImagesJSONKeepaliveCommitted(c)
+	}
+	if c.Writer.Written() && (!keepalive || OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) >= 0) {
 		return
 	}
 	c.JSON(statusCode, gin.H{

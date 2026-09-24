@@ -17,6 +17,8 @@ import (
 	"go.uber.org/zap"
 )
 
+var grokVideoJSONKeepaliveInterval = 30 * time.Second
+
 // GrokImages handles xAI image generation/editing through Grok groups.
 func (h *OpenAIGatewayHandler) GrokImages(c *gin.Context) {
 	endpoint := service.GrokMediaEndpointImagesGenerations
@@ -60,6 +62,9 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 	}
 	streamStarted := false
 	defer h.recoverResponsesPanic(c, &streamStarted)
+	stopJSONKeepalive := func() {}
+	jsonKeepaliveStarted := false
+	defer func() { stopJSONKeepalive() }()
 
 	requestStart := time.Now()
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
@@ -370,7 +375,15 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
-		writerSizeBeforeForward := c.Writer.Size()
+		// Video JSON can wait minutes for an upstream job handle or status. Reuse
+		// the synchronized JSON writer, excluding binary downloads and Seedance.
+		if !jsonKeepaliveStarted && !endpoint.IsSeedance() &&
+			endpoint != service.GrokMediaEndpointVideoContent &&
+			(endpoint == service.GrokMediaEndpointVideoStatus || isGrokVideoCreateEndpoint(endpoint)) {
+			stopJSONKeepalive = service.StartOpenAIImagesJSONKeepalive(c, grokVideoJSONKeepaliveInterval)
+			jsonKeepaliveStarted = true
+		}
+		writerSizeBeforeForward := service.OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer releaseAccount()
 			if endpoint.IsSeedance() {
@@ -400,7 +413,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 				if failoverErr.ShouldReportAccountScheduleFailure() {
 					h.gatewayService.ReportOpenAIAccountScheduleResult(account, grokMediaScheduleModel(account, routingModel, nil), false, nil)
 				}
-				if c.Writer.Size() != writerSizeBeforeForward {
+				if service.OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) != writerSizeBeforeForward {
 					h.handleFailoverExhausted(c, failoverErr, true)
 					return
 				}
@@ -453,8 +466,8 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 				continue
 			}
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account, grokMediaScheduleModel(account, routingModel, nil), false, nil)
-			if !service.IsResponseCommitted(c) && c.Writer.Size() == writerSizeBeforeForward {
-				h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
+			if !service.IsResponseCommitted(c) && service.OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) == writerSizeBeforeForward {
+				h.ensureForwardErrorResponse(c, false)
 			}
 			reqLog.Warn("grok_media.forward_failed",
 				zap.Int64("account_id", account.ID),
