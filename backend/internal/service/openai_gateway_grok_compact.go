@@ -9,9 +9,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// This is build_compaction_prompt(None, false) from grok-build. Grok does not
-// expose an OpenAI-compatible /responses/compact endpoint, so compacting is a
-// normal Responses turn whose final user item asks the model to summarize.
+// This is build_compaction_prompt(None, false) from grok-build. The subscription
+// CLI endpoint lacks /responses/compact (the public xAI API has it), so this
+// bridge uses a normal Responses turn whose final user item asks for a summary.
 const grokCompactSummaryPrompt = `Your task is to produce a faithful, concise summary of the conversation so far so that a successor assistant can continue the work seamlessly after the earlier turns are discarded. The successor will see the user's original query plus this summary. Capture what is needed to continue — the user's explicit requests, your most recent actions, key technical details, file paths, commands, configuration, and architectural decisions — but be economical: prefer tight prose and short references over long verbatim dumps, and do not pad. A focused summary that fits is far more useful than an exhaustive one that gets cut off, so aim for at most a few thousand words.
 
 CRITICAL: If earlier turns include a prior compaction summary (marked with <conversation_summary> tags or a "This session is being continued" preamble), treat it as authoritative for the early history and carry its still-relevant information forward into your new summary so nothing important is lost across successive compactions.
@@ -154,6 +154,10 @@ func convertOpenAICompactInputsForGrok(body []byte) ([]byte, error) {
 }
 
 func convertGrokResponseToOpenAICompact(body []byte) ([]byte, error) {
+	return convertGrokResponseToOpenAICompactWithSummary(body, nil)
+}
+
+func convertGrokResponseToOpenAICompactWithSummary(body []byte, sealSummary func(string) (string, error)) ([]byte, error) {
 	var response map[string]any
 	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
@@ -192,7 +196,14 @@ func convertGrokResponseToOpenAICompact(body []byte) ([]byte, error) {
 			}
 		}
 	}
-	if encrypted == "" {
+	summary := strings.TrimSpace(strings.Join(summaryParts, "\n"))
+	if sealSummary != nil {
+		var err error
+		encrypted, err = sealSummary(summary)
+		if err != nil {
+			return nil, err
+		}
+	} else if encrypted == "" {
 		return nil, fmt.Errorf("response has no reasoning.encrypted_content")
 	}
 
@@ -202,7 +213,7 @@ func convertGrokResponseToOpenAICompact(body []byte) ([]byte, error) {
 		"status":            "completed",
 		"encrypted_content": encrypted,
 	}
-	if summary := strings.TrimSpace(strings.Join(summaryParts, "\n")); summary != "" {
+	if summary != "" {
 		compactItem["summary"] = []any{map[string]any{
 			"type": "summary_text",
 			"text": summary,

@@ -71,7 +71,7 @@ func resolveGrokCacheIdentity(c *gin.Context, body []byte, explicitKey, upstream
 	// /responses/compact rejects tool_choice and does not represent a normal
 	// conversation turn. Keep both cache identity and Free-tier routing
 	// augmentation out of this path.
-	if isOpenAIResponsesCompactPath(c) {
+	if isGrokCompactRequest(c) {
 		return ""
 	}
 

@@ -56,16 +56,21 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 	if isGrokImageGenerationModel(upstreamModel) {
 		return nil, fmt.Errorf("model %s is an image model and is not available on the Responses endpoint; use /v1/images/generations instead", upstreamModel)
 	}
-	patchedBody, clientToolMapping, err := patchGrokResponsesBodyWithClientTools(body, upstreamModel)
+	restoredBody, err := s.restoreGrokCompactState(body)
+	if err != nil {
+		writeGrokResponsesRequestError(c, http.StatusBadRequest, "Invalid Grok compaction state", "input")
+		return nil, err
+	}
+	patchedBody, clientToolMapping, err := patchGrokResponsesBodyWithClientTools(restoredBody, upstreamModel)
 	if err != nil {
 		setOpsUpstreamError(c, http.StatusBadRequest, err.Error(), "")
 		writeGrokResponsesRequestError(c, http.StatusBadRequest, err.Error(), "")
 		return nil, err
 	}
 	setGrokResponsesClientToolMapping(c, clientToolMapping)
-	// OpenAI /responses/compact is not a native xAI endpoint. Convert it into a
-	// normal Grok Responses turn that asks for a structured summary, then map the
-	// reply back to an OpenAI compaction item on the way out.
+	// The subscription CLI route lacks the public xAI compaction endpoint.
+	// Summarize through Responses, then seal the generated summary in a
+	// gateway compaction item for the client to replay on a later turn.
 	grokCompact := isGrokCompactRequest(c)
 	if grokCompact {
 		patchedBody, err = buildGrokCompactRequestBody(patchedBody)

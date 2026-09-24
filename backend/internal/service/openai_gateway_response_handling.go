@@ -1659,7 +1659,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	usage := &usageValue
 	logOpenAISuccessMissingUsage(ctx, c, account, resp, usage, "json", false)
 	if account != nil && account.IsGrok() && isGrokCompactRequest(c) {
-		converted, convertErr := convertGrokResponseToOpenAICompact(body)
+		converted, convertErr := s.convertGrokCompactResponse(body)
 		if convertErr != nil {
 			return &openaiNonStreamingResult{OpenAIUsage: usage, usage: usage, responseID: extractOpenAIResponseIDFromJSONBytes(body)},
 				s.writeOpenAINonStreamingProtocolError(resp, c, "Invalid Grok compaction response", usage)
@@ -1794,7 +1794,7 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		restoredBody = restoreCodexToolNamesFromContext(c, restoredBody)
 		body = restoredBody
 		if account != nil && account.IsGrok() && isGrokCompactRequest(c) {
-			converted, convertErr := convertGrokResponseToOpenAICompact(body)
+			converted, convertErr := s.convertGrokCompactResponse(body)
 			if convertErr != nil {
 				return &openaiNonStreamingResult{OpenAIUsage: usage, usage: usage, responseID: extractOpenAIResponseIDFromJSONBytes(body)},
 					s.writeOpenAINonStreamingProtocolError(resp, c, "Invalid Grok compaction response", usage)

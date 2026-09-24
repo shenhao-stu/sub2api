@@ -12,13 +12,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
 
 func TestGrokNativeCompactionBridge(t *testing.T) {
-	for _, wire := range []string{"json", "sse", "missing_encrypted", "incomplete"} {
+	for _, wire := range []string{"json", "sse", "missing_encrypted", "empty_summary", "incomplete"} {
 		t.Run(wire, func(t *testing.T) {
 			gin.SetMode(gin.TestMode)
 			r := httptest.NewRecorder()
@@ -35,12 +36,15 @@ func TestGrokNativeCompactionBridge(t *testing.T) {
 			if wire == "incomplete" {
 				response = strings.ReplaceAll(response, `"status":"completed"`, `"status":"incomplete"`)
 			}
+			if wire == "empty_summary" {
+				response = strings.ReplaceAll(response, "<summary>keep tool result and existing task</summary>", "")
+			}
 			if wire == "sse" {
 				response = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":" + response + "}\n\n"
 				contentType = "text/event-stream"
 			}
 			up := &httpUpstreamRecorder{responses: []*http.Response{{StatusCode: 200, Header: http.Header{"Content-Type": []string{contentType}}, Body: io.NopCloser(strings.NewReader(response))}}}
-			svc := &OpenAIGatewayService{httpUpstream: up}
+			svc := &OpenAIGatewayService{httpUpstream: up, cfg: &config.Config{JWT: config.JWTConfig{Secret: strings.Repeat("test-key-", 4)}}}
 			result, err := svc.forwardGrokResponses(context.Background(), c, account, body, "grok-4.7", true, time.Now())
 			require.Len(t, up.bodies, 1)
 			require.False(t, HasCompactionTriggerInInput(up.bodies[0]), "native trigger must be translated into a summarization turn")
@@ -51,7 +55,7 @@ func TestGrokNativeCompactionBridge(t *testing.T) {
 			require.NotNil(t, result, "metered conversion failures still return usage")
 			require.Equal(t, 100, result.Usage.InputTokens)
 			require.Equal(t, 20, result.Usage.OutputTokens)
-			if wire == "missing_encrypted" || wire == "incomplete" {
+			if wire == "empty_summary" || wire == "incomplete" {
 				require.Error(t, err)
 				require.NotContains(t, r.Body.String(), "response.completed")
 				return
@@ -60,7 +64,7 @@ func TestGrokNativeCompactionBridge(t *testing.T) {
 			require.Contains(t, r.Header().Get("Content-Type"), "text/event-stream")
 			require.Contains(t, r.Body.String(), "response.output_item.done")
 			require.Contains(t, r.Body.String(), `"type":"compaction"`)
-			require.Contains(t, r.Body.String(), "opaque-state")
+			require.Contains(t, r.Body.String(), grokCompactStatePrefix)
 			require.Contains(t, r.Body.String(), "response.completed")
 		})
 	}
