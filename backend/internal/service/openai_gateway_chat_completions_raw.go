@@ -132,7 +132,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		bridgedBody, usage, bridged, bridgeErr := s.bridgeGrokComposerImageInputs(ctx, c, account, upstreamBody, token)
 		if bridgeErr != nil {
 			var failoverErr *UpstreamFailoverError
-			if !errors.As(bridgeErr, &failoverErr) && c != nil && c.Writer != nil && !c.Writer.Written() {
+			if !errors.As(bridgeErr, &failoverErr) && c != nil && c.Writer != nil && OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) < 0 {
 				writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", bridgeErr.Error())
 			}
 			return nil, bridgeErr

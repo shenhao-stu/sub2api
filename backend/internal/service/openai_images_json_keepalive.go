@@ -13,6 +13,15 @@ import (
 
 const openAIImagesJSONKeepaliveKey = "openai_images_json_keepalive"
 
+// StartOpenAIJSONKeepalive shares the Images/Video JSON writer with other unary
+// endpoints. A normalized compact request may still require SSE for its client.
+func StartOpenAIJSONKeepalive(c *gin.Context, interval time.Duration) func() {
+	if openAICompactClientWantsStream(c) {
+		return func() {}
+	}
+	return StartOpenAIImagesJSONKeepalive(c, interval)
+}
+
 // openAIImagesJSONKeepalive keeps non-streaming Images API requests alive while
 // an OAuth upstream is producing SSE internally. JSON permits leading
 // whitespace, so each heartbeat remains compatible with clients expecting one

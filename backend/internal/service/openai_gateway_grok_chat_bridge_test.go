@@ -317,6 +317,37 @@ func TestForwardGrokChatViaResponsesNonStreamingRejectsCompletedResponseWithoutU
 	require.Empty(t, recorder.Body.String())
 }
 
+func TestForwardGrokChatViaResponsesJSONKeepalivePreservesUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"grok","messages":[{"role":"user","content":"test"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, grokChatRawEndpoint, bytes.NewReader(body))
+	c.Set("api_key", &APIKey{ID: 7101})
+	account := grokChatBridgeTestAccount(71)
+	repo := &grokQuotaAccountRepo{mockAccountRepoForPlatform: &mockAccountRepoForPlatform{
+		accountsByID: map[int64]*Account{account.ID: account},
+	}}
+	svc := &OpenAIGatewayService{
+		httpUpstream:      &httpUpstreamRecorder{resp: grokChatBridgeCompletedResponse("resp_json_keepalive", 9856)},
+		grokTokenProvider: NewGrokTokenProvider(repo, nil),
+		accountRepo:       repo,
+	}
+	stop := StartOpenAIJSONKeepalive(c, time.Hour)
+	defer stop()
+	require.True(t, openAIImagesJSONKeepaliveFromContext(c).beat())
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, grokChatResponsesEndpoint, result.UpstreamEndpoint)
+	require.Equal(t, 9908, result.Usage.InputTokens)
+	require.Equal(t, 12, result.Usage.OutputTokens)
+	require.Equal(t, 9856, result.Usage.CacheReadInputTokens)
+	require.True(t, strings.HasPrefix(rec.Body.String(), " \n"))
+	require.True(t, gjson.ValidBytes(rec.Body.Bytes()), rec.Body.String())
+	require.Equal(t, "cached ok", gjson.GetBytes(rec.Body.Bytes(), "choices.0.message.content").String())
+}
+
 func TestForwardGrokChatViaResponsesCodeBuddyUsesStableConversationHeader(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const conversationID = "codebuddy-session-42"

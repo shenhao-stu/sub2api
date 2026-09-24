@@ -330,8 +330,9 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 
 func writeGrokResponsesRequestError(c *gin.Context, statusCode int, message, param string) {
 	StopOpenAICompactSSEKeepaliveCommitted(c)
+	StopOpenAIImagesJSONKeepaliveCommitted(c)
 	MarkResponseCommitted(c)
-	if c.Writer.Written() {
+	if c.Writer.Written() && !OpenAIImagesJSONKeepalivePresent(c) {
 		writeOpenAICompactSSEFailureMessage(c, statusCode, "invalid_request_error", message)
 		return
 	}

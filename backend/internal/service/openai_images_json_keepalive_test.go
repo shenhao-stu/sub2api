@@ -56,6 +56,25 @@ func TestOpenAIImagesJSONKeepalive_DisabledIsNoop(t *testing.T) {
 	require.Equal(t, "invalid request", gjson.Get(rec.Body.String(), "error.message").String())
 }
 
+func TestOpenAIJSONKeepalive_PreservesCompactSSEProtocol(t *testing.T) {
+	c, rec := newCompactBridgeTestContext(t, true)
+	stopSSE := StartOpenAICompactSSEKeepalive(c, time.Hour)
+	defer stopSSE()
+	stopJSON := StartOpenAIJSONKeepalive(c, time.Hour)
+	defer stopJSON()
+	require.False(t, OpenAIImagesJSONKeepalivePresent(c), "normalized stream=false still belongs to the compact SSE client")
+	keepalive, ok := c.Get(openAICompactSSEKeepaliveKey)
+	require.True(t, ok)
+	require.True(t, keepalive.(*openAICompactSSEKeepalive).beat())
+	finalResponse := []byte(`{"id":"resp_compact","output":[{"id":"cmp","type":"compaction","encrypted_content":"x"}]}`)
+	require.True(t, writeOpenAICompactSSEBridge(c, http.StatusOK, finalResponse))
+	require.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+	require.True(t, strings.HasPrefix(rec.Body.String(), ": keepalive\n\n"))
+	events := parseCompactBridgeSSE(t, stripKeepaliveComments(rec.Body.String()))
+	require.Len(t, events, 2)
+	require.Equal(t, "response.completed", events[1][0])
+}
+
 func TestOpenAIImagesJSONKeepalive_FastErrorPreservesStatus(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
