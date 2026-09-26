@@ -2801,10 +2801,6 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		// turn 级定价：首轮回退到 TurnStarted 的所属 turn 时刻；后续 turn 由
 		// BeforeTurn 重新冻结 pricingAt 并按最新门复核当前账号。
 		var turnPricing openAIWSTurnPricing
-		if err := h.gatewayService.RequireOpenAIRequestPricing(ctx, apiKey, account, reqModel, wsForwardModel, ""); err != nil {
-			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "model pricing is unavailable")
-			return
-		}
 		// Passthrough ingress does not invoke BeforeTurn for the first frame.
 		if err := checkSimpleModeTurnBilling(); err != nil {
 			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "billing check failed")
@@ -2873,10 +2869,14 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					return "", newOpenAIWSUnsupportedModelSwitchError(mapping.MappedModel)
 				}
 				turnChannelMapping.Store(&openAIWSTurnChannelMappingSnapshot{turn: turn, mapping: mapping})
-				if err := h.gatewayService.RequireOpenAIRequestPricing(ctx, apiKey, account, model, mapping.MappedModel, ""); err != nil {
-					return "", service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "model pricing is unavailable", err)
-				}
 				return mapping.MappedModel, nil
+			},
+			ValidateModelPricing: func(requested, forwarded, upstream string) error {
+				if err := h.gatewayService.RequireOpenAIResolvedRequestPricing(ctx, apiKey, account, requested, forwarded, upstream, upstream); err != nil {
+					service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalModelConfiguration)
+					return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "model pricing is unavailable", err)
+				}
+				return nil
 			},
 			BeforeTurn: func(turn int) error {
 				// turn==1 的会话屏蔽已由握手层检查覆盖；连接内 flag 只拦截后续 turn。

@@ -742,6 +742,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		}
 	}
 	capturedSessionModel := openAIWSPassthroughPolicyModelForFrame(account, firstClientMessage)
+	if hooks != nil && hooks.ValidateModelPricing != nil {
+		if err := hooks.ValidateModelPricing(initialRequestModel, strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String()), capturedSessionModel); err != nil {
+			return err
+		}
+	}
 	if capturedSessionModel != "" && capturedSessionModel != strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String()) {
 		firstClientMessage = s.ReplaceModelInBody(firstClientMessage, capturedSessionModel)
 	}
@@ -1091,6 +1096,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			model := openAIWSPassthroughPolicyModelForFrame(account, payload)
 			if model == "" {
 				model = capturedSessionModel
+			}
+			if isResponseCreate && hooks != nil && hooks.ValidateModelPricing != nil {
+				if err := hooks.ValidateModelPricing(requestModelForThisFrame, strings.TrimSpace(gjson.GetBytes(payload, "model").String()), model); err != nil {
+					return payload, nil, err
+				}
 			}
 			if isResponseCreate && model != "" && model != strings.TrimSpace(gjson.GetBytes(payload, "model").String()) {
 				payload = s.ReplaceModelInBody(payload, model)

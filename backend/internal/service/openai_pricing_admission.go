@@ -31,6 +31,15 @@ func (s *OpenAIGatewayService) requireOpenAIRequestPricing(ctx context.Context, 
 		// mapping affects the upstream model but preserves the billing model.
 		model, upstreamModel = resolveOpenAIForwardMappedModels(account, forwarded, compact)
 	}
+	return s.RequireOpenAIResolvedRequestPricing(ctx, apiKey, account, requested, forwarded, model, upstreamModel)
+}
+
+// RequireOpenAIResolvedRequestPricing checks the models selected by the actual
+// forwarding path. WS callers must not reapply HTTP or account mappings here.
+func (s *OpenAIGatewayService) RequireOpenAIResolvedRequestPricing(ctx context.Context, apiKey *APIKey, account *Account, requested, forwarded, model, upstreamModel string) error {
+	if s == nil || s.billingService == nil || apiKey == nil {
+		return fmt.Errorf("%w: billing context unavailable", ErrModelPricingUnavailable)
+	}
 	models := usageBillingModelCandidates(model, forwarded, requested, upstreamModel)
 	models = s.filterCNProviderBillingModelCandidates(ctx, account, apiKey, models)
 	result := &OpenAIForwardResult{Model: forwarded, UpstreamModel: model}

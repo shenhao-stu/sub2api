@@ -266,7 +266,10 @@ type OpenAIWSIngressHooks struct {
 	// MapRequestModel resolves the current turn's client model to the model
 	// that must be written into the upstream response.create frame.
 	MapRequestModel func(turn int, originalModel string) (string, error)
-	AfterTurn       func(turn int, result *OpenAIForwardResult, turnErr error)
+	// ValidateModelPricing runs after the actual ingress path has resolved the
+	// wire model, before generated work starts, on every response.create.
+	ValidateModelPricing func(requested, forwarded, upstream string) error
+	AfterTurn            func(turn int, result *OpenAIForwardResult, turnErr error)
 }
 
 func (s *OpenAIGatewayService) getOpenAIWSConnPool() *openAIWSConnPool {
