@@ -58,7 +58,7 @@ func runGrokJSONKeepaliveHTTP(t *testing.T, endpoint, scenario, platform string,
 	wantError := scenario != "headers" && scenario != "body" && scenario != "failover"
 	model := "grok-4.6"
 	if platform != service.PlatformGrok {
-		model = "gpt-4.1"
+		model = "gpt-5.1"
 	}
 	gates := []chan struct{}{make(chan struct{}), make(chan struct{})}
 	var releaseOnce [2]sync.Once

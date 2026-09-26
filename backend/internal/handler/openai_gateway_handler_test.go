@@ -1504,7 +1504,13 @@ func TestOpenAIResponsesWebSocket_PassthroughUsageLogLeavesUserAgentNilWhenMissi
 }
 
 func TestOpenAIResponsesWebSocket_PassthroughTracksModelPerTurn(t *testing.T) {
+	// Passthrough ignores account mapping; give the synthetic wire aliases explicit prices.
+	solPrice, terraPrice := 0.0000025, 0.000001
 	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
+		group: &service.Group{ID: 4201, Platform: service.PlatformOpenAI, ModelPricing: []service.ChannelModelPricing{
+			{Models: []string{"sol-channel"}, BillingMode: service.BillingModeToken, InputPrice: &solPrice, OutputPrice: &solPrice},
+			{Models: []string{"terra-channel"}, BillingMode: service.BillingModeToken, InputPrice: &terraPrice, OutputPrice: &terraPrice},
+		}},
 		firstPayload:  `{"type":"response.create","model":"sol","stream":false}`,
 		secondPayload: `{"type":"response.create","model":"terra","stream":false}`,
 		channelMapping: map[string]string{
@@ -2986,6 +2992,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	}
 	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, keyRepo, nil, nil, cfg, nil)
 	t.Cleanup(billingCacheSvc.Stop)
+	priceCatalog := service.NewBillingService(cfg, nil)
 	gatewaySvc := service.NewOpenAIGatewayService(
 		accountRepo,
 		usageRepo,
@@ -2997,14 +3004,14 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		cfg,
 		nil,
 		nil,
-		service.NewBillingService(cfg, nil),
+		priceCatalog,
 		nil,
 		billingCacheSvc,
 		nil,
 		&service.DeferredService{},
 		nil,
 		nil,
-		nil,
+		service.NewModelPricingResolver(channelSvc, priceCatalog),
 		channelSvc,
 		nil,
 		nil,

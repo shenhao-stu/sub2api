@@ -20,7 +20,7 @@ func wsAllowlistGroup(enabled bool, models ...string) *service.Group {
 // 首帧拒绝：模型不在白名单时连接被 1008 关闭（passthrough relay 模式）。
 func TestOpenAIResponsesWebSocket_FirstFrameModelNotAllowedCloses_Passthrough(t *testing.T) {
 	runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
-		firstPayload:            `{"type":"response.create","model":"gpt-4.1","stream":false}`,
+		firstPayload:            `{"type":"response.create","model":"gpt-5.1","stream":false}`,
 		group:                   wsAllowlistGroup(true, "gpt-5.4"),
 		ingressMode:             service.OpenAIWSIngressModePassthrough,
 		firstFrameCloseExpected: true,
@@ -30,7 +30,7 @@ func TestOpenAIResponsesWebSocket_FirstFrameModelNotAllowedCloses_Passthrough(t 
 // 首帧拒绝：原生 ingress 模式。
 func TestOpenAIResponsesWebSocket_FirstFrameModelNotAllowedCloses_NativeIngress(t *testing.T) {
 	runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
-		firstPayload:            `{"type":"response.create","model":"gpt-4.1","stream":false}`,
+		firstPayload:            `{"type":"response.create","model":"gpt-5.1","stream":false}`,
 		group:                   wsAllowlistGroup(true, "gpt-5.4"),
 		ingressMode:             service.OpenAIWSIngressModeDedicated,
 		firstFrameCloseExpected: true,
@@ -52,7 +52,7 @@ func TestOpenAIResponsesWebSocket_FirstFrameAllowlistedModelProceeds(t *testing.
 func TestOpenAIResponsesWebSocket_SubsequentTurnModelNotAllowedCloses_Passthrough(t *testing.T) {
 	runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
 		firstPayload:            `{"type":"response.create","model":"gpt-5.4","stream":false}`,
-		secondPayload:           `{"type":"response.create","model":"gpt-4.1","stream":false}`,
+		secondPayload:           `{"type":"response.create","model":"gpt-5.1","stream":false}`,
 		group:                   wsAllowlistGroup(true, "gpt-5.4"),
 		ingressMode:             service.OpenAIWSIngressModePassthrough,
 		secondTurnCloseExpected: true,
@@ -63,7 +63,7 @@ func TestOpenAIResponsesWebSocket_SubsequentTurnModelNotAllowedCloses_Passthroug
 func TestOpenAIResponsesWebSocket_SubsequentTurnModelNotAllowedCloses_NativeIngress(t *testing.T) {
 	runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
 		firstPayload:            `{"type":"response.create","model":"gpt-5.4","stream":false}`,
-		secondPayload:           `{"type":"response.create","model":"gpt-4.1","stream":false}`,
+		secondPayload:           `{"type":"response.create","model":"gpt-5.1","stream":false}`,
 		group:                   wsAllowlistGroup(true, "gpt-5.4"),
 		ingressMode:             service.OpenAIWSIngressModeDedicated,
 		secondTurnCloseExpected: true,
@@ -88,7 +88,7 @@ func TestOpenAIResponsesWebSocket_SubsequentTurnOmittedModelUsesSessionModel(t *
 // 白名单关闭：不受任何影响。
 func TestOpenAIResponsesWebSocket_DisabledAllowlistDoesNotInterfere(t *testing.T) {
 	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
-		firstPayload:  `{"type":"response.create","model":"gpt-4.1","stream":false}`,
+		firstPayload:  `{"type":"response.create","model":"gpt-5.1","stream":false}`,
 		secondPayload: `{"type":"response.create","model":"gpt-5.4","stream":false}`,
 		group:         wsAllowlistGroup(false, "gpt-5.4"),
 	})
@@ -103,7 +103,7 @@ func TestOpenAIResponsesWebSocket_FirstFrameDuplicateModelKeysRejected(t *testin
 	for _, mode := range []string{service.OpenAIWSIngressModePassthrough, service.OpenAIWSIngressModeDedicated} {
 		t.Run(mode, func(t *testing.T) {
 			runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
-				firstPayload:            `{"type":"response.create","model":"gpt-5.4","model":"gpt-4.1","stream":false}`,
+				firstPayload:            `{"type":"response.create","model":"gpt-5.4","model":"gpt-5.1","stream":false}`,
 				group:                   wsAllowlistGroup(true, "gpt-5.4"),
 				ingressMode:             mode,
 				firstFrameCloseExpected: true,
@@ -117,7 +117,7 @@ func TestOpenAIResponsesWebSocket_FirstFrameDuplicateModelKeysRejected(t *testin
 // 「model is required」处更早被关闭。
 func TestOpenAIResponsesWebSocket_FirstFrameCaseVariantModelKeyRejected(t *testing.T) {
 	runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
-		firstPayload:            `{"type":"response.create","model":"gpt-5.4","Model":"gpt-4.1","stream":false}`,
+		firstPayload:            `{"type":"response.create","model":"gpt-5.4","Model":"gpt-5.1","stream":false}`,
 		group:                   wsAllowlistGroup(true, "gpt-5.4"),
 		ingressMode:             service.OpenAIWSIngressModePassthrough,
 		firstFrameCloseExpected: true,
@@ -130,7 +130,7 @@ func TestOpenAIResponsesWebSocket_SubsequentTurnDuplicateModelKeysRejected(t *te
 		t.Run(mode, func(t *testing.T) {
 			runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
 				firstPayload:            `{"type":"response.create","model":"gpt-5.4","stream":false}`,
-				secondPayload:           `{"type":"response.create","model":"gpt-5.4","model":"gpt-4.1","stream":false}`,
+				secondPayload:           `{"type":"response.create","model":"gpt-5.4","model":"gpt-5.1","stream":false}`,
 				group:                   wsAllowlistGroup(true, "gpt-5.4"),
 				ingressMode:             mode,
 				secondTurnCloseExpected: true,
@@ -157,7 +157,7 @@ func TestOpenAIResponsesWebSocket_DuplicateIdenticalModelKeysAllowed(t *testing.
 func TestOpenAIResponsesWebSocket_SessionUpdateRotationBypassRejected(t *testing.T) {
 	runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
 		firstPayload:            `{"type":"response.create","model":"gpt-5.4","stream":false}`,
-		midPayload:              `{"type":"session.update","session":{"model":"gpt-4.1"}}`,
+		midPayload:              `{"type":"session.update","session":{"model":"gpt-5.1"}}`,
 		secondPayload:           `{"type":"response.create","session":{"model":"gpt-5.4"},"stream":false}`,
 		group:                   wsAllowlistGroup(true, "gpt-5.4"),
 		ingressMode:             service.OpenAIWSIngressModePassthrough,

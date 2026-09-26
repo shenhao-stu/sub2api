@@ -699,6 +699,7 @@ func newOpenAIImageGenerationControlTestService(upstream *httpUpstreamRecorder) 
 	cfg := &config.Config{}
 	return &OpenAIGatewayService{
 		cfg:              cfg,
+		billingService:   NewBillingService(cfg, nil),
 		httpUpstream:     upstream,
 		cache:            &stubGatewayCache{},
 		openaiWSResolver: NewOpenAIWSProtocolResolver(cfg),

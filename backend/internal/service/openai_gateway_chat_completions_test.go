@@ -176,8 +176,9 @@ func TestForwardAsChatCompletions_UnknownModelWithoutMessagesDispatchKeepsReques
 	}}
 
 	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
-		httpUpstream: upstream,
+		cfg:            &config.Config{},
+		billingService: NewBillingService(&config.Config{}, nil),
+		httpUpstream:   upstream,
 	}
 	account := &Account{
 		ID:          1,
@@ -216,8 +217,9 @@ func TestForwardAsChatCompletions_APIKeyPropagatesPromptCacheKeyInResponsesBody(
 	}}
 
 	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
-		httpUpstream: upstream,
+		cfg:            &config.Config{},
+		billingService: NewBillingService(&config.Config{}, nil),
+		httpUpstream:   upstream,
 	}
 	account := &Account{
 		ID:          2,
@@ -254,7 +256,7 @@ func TestForwardAsChatCompletions_APIKeyAutoDerivesStableIsolatedPromptCacheKey(
 		}
 	}
 	upstream := &httpUpstreamRecorder{responses: []*http.Response{response(), response(), response()}}
-	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, billingService: NewBillingService(&config.Config{}, nil), httpUpstream: upstream}
 	account := &Account{
 		ID: 2, Name: "openai-compatible", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1,
 		Credentials: map[string]any{"api_key": "sk-compatible"},
@@ -301,7 +303,7 @@ func TestForwardAsChatCompletions_ResponsesShapeDoesNotAutoDerivePromptCacheKey(
 		}
 	}
 	upstream := &httpUpstreamRecorder{responses: []*http.Response{response(), response(), response()}}
-	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, billingService: NewBillingService(&config.Config{}, nil), httpUpstream: upstream}
 	account := &Account{
 		ID: 2, Name: "openai-compatible", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1,
 		Credentials: map[string]any{"api_key": "sk-compatible"},
@@ -348,8 +350,9 @@ func TestForwardAsChatCompletions_OAuthDoesNotInjectDefaultInstructions(t *testi
 	}}
 
 	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
-		httpUpstream: upstream,
+		cfg:            &config.Config{},
+		billingService: NewBillingService(&config.Config{}, nil),
+		httpUpstream:   upstream,
 	}
 	account := &Account{
 		ID:          3,
@@ -387,7 +390,7 @@ func forwardOAuthChatCompletionsForUpstreamBody(t *testing.T, body []byte) []byt
 		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_chat_system_promotion"}},
 		Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","message":"stop before response parsing"}}`)),
 	}}
-	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, billingService: NewBillingService(&config.Config{}, nil), httpUpstream: upstream}
 	account := &Account{
 		ID:          4,
 		Name:        "openai-oauth",
@@ -1180,7 +1183,7 @@ func TestGPT6RawChatNoneToolsAreForwarded(t *testing.T) {
 		body := []byte(`{"model":"` + model + `","reasoning_effort":"none","messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]}`)
 		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 		upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"chat_1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":10,"prompt_tokens_details":{"cached_tokens":200,"cache_write_tokens":300}}}`))}}
-		svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+		svc := &OpenAIGatewayService{cfg: &config.Config{}, billingService: NewBillingService(&config.Config{}, nil), httpUpstream: upstream}
 		account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1, Credentials: map[string]any{"api_key": "fixture-key", "base_url": "https://api.openai.com"}}
 		result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
 		require.NoError(t, err)
@@ -1221,7 +1224,7 @@ func TestGPT6MappedCompatibilityBridgesKeepReasoningAndTools(t *testing.T) {
 			}
 			response := `data: {"type":"response.completed","response":{"id":"resp_1","model":"` + model + `","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1000,"output_tokens":10,"input_tokens_details":{"cached_tokens":200,"cache_write_tokens":300}}}}` + "\n\n"
 			upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(response))}}
-			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}, billingService: NewBillingService(&config.Config{}, nil), httpUpstream: upstream}
 			account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1, Credentials: map[string]any{"api_key": "fixture-key", "base_url": "https://api.openai.com", "model_mapping": map[string]any{"public": model}}}
 			rec := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(rec)

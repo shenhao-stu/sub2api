@@ -83,7 +83,7 @@ func forwardOpenAINativeBillingStream(t *testing.T, upstreamBody string) (*OpenA
 		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
 		Body:   io.NopCloser(strings.NewReader(upstreamBody))}}
 	cache := &responseBindContextProbeCache{}
-	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream, cache: cache}
+	svc := &OpenAIGatewayService{billingService: newLocalFixtureBilling(), cfg: &config.Config{}, httpUpstream: upstream, cache: cache}
 	account := &Account{ID: 923002, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1,
 		Credentials: map[string]any{"api_key": "test-only-token"}}
 	result, err := svc.Forward(c.Request.Context(), c, account, requestBody)

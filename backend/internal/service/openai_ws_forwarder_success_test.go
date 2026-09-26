@@ -119,6 +119,7 @@ func TestOpenAIGatewayService_Forward_WSv2_SuccessAndBindSticky(t *testing.T) {
 
 	cache := &stubGatewayCache{}
 	svc := &OpenAIGatewayService{
+		billingService:   newLocalFixtureBilling(),
 		cfg:              cfg,
 		httpUpstream:     upstream,
 		cache:            cache,
@@ -342,6 +343,7 @@ func TestOpenAIGatewayService_Forward_WSv2_ImageGenerationCountsOutputs(t *testi
 	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
 
 	svc := &OpenAIGatewayService{
+		billingService:   newLocalFixtureBilling(),
 		cfg:              cfg,
 		httpUpstream:     &httpUpstreamRecorder{},
 		cache:            &stubGatewayCache{},
@@ -515,6 +517,7 @@ func TestOpenAIGatewayService_Forward_WSv2_RewriteModelAndToolCallsOnCompletedEv
 	pool.setClientDialerForTest(captureDialer)
 
 	svc := &OpenAIGatewayService{
+		billingService:   newLocalFixtureBilling(),
 		cfg:              cfg,
 		httpUpstream:     &httpUpstreamRecorder{},
 		cache:            &stubGatewayCache{},
@@ -682,6 +685,7 @@ func TestOpenAIGatewayService_Forward_WSv2_PoolReuseNotOneToOne(t *testing.T) {
 	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 10
 
 	svc := &OpenAIGatewayService{
+		billingService:   newLocalFixtureBilling(),
 		cfg:              cfg,
 		httpUpstream:     &httpUpstreamRecorder{},
 		cache:            &stubGatewayCache{},
@@ -833,6 +837,7 @@ func TestOpenAIGatewayService_Forward_WSv2_OAuthSanitizesInvalidNativeToolItemID
 	pool.setClientDialerForTest(captureDialer)
 
 	svc := &OpenAIGatewayService{
+		billingService:   newLocalFixtureBilling(),
 		cfg:              cfg,
 		httpUpstream:     &httpUpstreamRecorder{},
 		cache:            &stubGatewayCache{},

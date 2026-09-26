@@ -52,6 +52,7 @@ func TestOpenAIWSv2StreamingRepairsConcatenatedJSONDocumentsInSingleMessage(t *t
 	pool := newOpenAIWSConnPool(cfg)
 	pool.setClientDialerForTest(&openAIWSCaptureDialer{conn: captureConn})
 	svc := &OpenAIGatewayService{
+		billingService:   newLocalFixtureBilling(),
 		cfg:              cfg,
 		cache:            &stubGatewayCache{},
 		httpUpstream:     &httpUpstreamRecorder{},
@@ -124,6 +125,7 @@ func TestOpenAIWSv2RejectsMalformedEventAfterWritingDownstream(t *testing.T) {
 	pool := newOpenAIWSConnPool(cfg)
 	pool.setClientDialerForTest(&openAIWSCaptureDialer{conn: captureConn})
 	svc := &OpenAIGatewayService{
+		billingService:   newLocalFixtureBilling(),
 		cfg:              cfg,
 		cache:            &stubGatewayCache{},
 		httpUpstream:     &httpUpstreamRecorder{},
@@ -187,6 +189,7 @@ func testOpenAIWSv2RejectsMalformedEventBeforeWritingDownstream(t *testing.T, ma
 	pool := newOpenAIWSConnPool(cfg)
 	pool.setClientDialerForTest(&openAIWSCaptureDialer{conn: captureConn})
 	svc := &OpenAIGatewayService{
+		billingService:   newLocalFixtureBilling(),
 		cfg:              cfg,
 		cache:            &stubGatewayCache{},
 		httpUpstream:     &httpUpstreamRecorder{},
@@ -262,6 +265,7 @@ func TestOpenAIWSv2StreamingBreaksConnectionWhenTerminalHasTrailingDocument(t *t
 	pool := newOpenAIWSConnPool(cfg)
 	pool.setClientDialerForTest(&openAIWSCaptureDialer{conn: captureConn})
 	svc := &OpenAIGatewayService{
+		billingService:   newLocalFixtureBilling(),
 		cfg:              cfg,
 		cache:            &stubGatewayCache{},
 		httpUpstream:     &httpUpstreamRecorder{},
@@ -318,6 +322,7 @@ func testOpenAIStreamingRepairsConcatenatedJSONDocuments(t *testing.T, passthrou
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	svc := &OpenAIGatewayService{
+		billingService: newLocalFixtureBilling(),
 		cfg: &config.Config{Gateway: config.GatewayConfig{
 			MaxLineSize:               defaultMaxLineSize,
 			StreamDataIntervalTimeout: streamDataIntervalTimeout,

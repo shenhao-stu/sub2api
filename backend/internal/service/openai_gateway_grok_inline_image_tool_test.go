@@ -31,6 +31,7 @@ func TestForwardGrokChatViaResponsesDropsRedundantViewImage(t *testing.T) {
 	}}
 	upstream := &httpUpstreamRecorder{resp: grokChatBridgeCompletedResponse("resp_chat_image", 0)}
 	svc := &OpenAIGatewayService{
+		billingService:    newLocalFixtureBilling(),
 		httpUpstream:      upstream,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		accountRepo:       repo,
@@ -97,6 +98,7 @@ func TestForwardGrokMessagesDropsRedundantViewImage(t *testing.T) {
 	}}
 	upstream := &httpUpstreamRecorder{resp: grokMessagesSSECompletedResponse("resp_messages_image", 0)}
 	svc := &OpenAIGatewayService{
+		billingService:    newLocalFixtureBilling(),
 		httpUpstream:      upstream,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		accountRepo:       repo,

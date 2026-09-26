@@ -241,6 +241,7 @@ func TestForwardGrokChatViaResponsesNonStreamingCachesAndReturnsChat(t *testing.
 	}}
 	upstream := &httpUpstreamRecorder{resp: grokChatBridgeCompletedResponse("resp_grok_chat_cache", 9856)}
 	svc := &OpenAIGatewayService{
+		billingService:    newLocalFixtureBilling(),
 		httpUpstream:      upstream,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		accountRepo:       repo,
@@ -301,6 +302,7 @@ func TestForwardGrokChatViaResponsesNonStreamingRejectsCompletedResponseWithoutU
 		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
 	}}
 	svc := &OpenAIGatewayService{
+		billingService:    newLocalFixtureBilling(),
 		httpUpstream:      upstream,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		accountRepo:       repo,
@@ -329,6 +331,7 @@ func TestForwardGrokChatViaResponsesJSONKeepalivePreservesUsage(t *testing.T) {
 		accountsByID: map[int64]*Account{account.ID: account},
 	}}
 	svc := &OpenAIGatewayService{
+		billingService:    newLocalFixtureBilling(),
 		httpUpstream:      &httpUpstreamRecorder{resp: grokChatBridgeCompletedResponse("resp_json_keepalive", 9856)},
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		accountRepo:       repo,
@@ -398,6 +401,7 @@ func TestForwardGrokChatViaResponsesCodeBuddyUsesStableConversationHeader(t *tes
 			}}
 			upstream := &httpUpstreamRecorder{resp: grokChatBridgeCompletedResponse("resp_codebuddy_"+strconv.Itoa(index), 4096)}
 			svc := &OpenAIGatewayService{
+				billingService:    newLocalFixtureBilling(),
 				httpUpstream:      upstream,
 				grokTokenProvider: NewGrokTokenProvider(repo, nil),
 				accountRepo:       repo,
@@ -432,6 +436,7 @@ func TestForwardGrokChatViaResponsesTraeToolHistoryKeepsCacheRoute(t *testing.T)
 	}}
 	upstream := &httpUpstreamRecorder{resp: grokChatBridgeCompletedResponse("resp_grok_chat_trae", 8192)}
 	svc := &OpenAIGatewayService{
+		billingService:    newLocalFixtureBilling(),
 		httpUpstream:      upstream,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		accountRepo:       repo,
@@ -489,6 +494,7 @@ func TestForwardGrokChatViaResponsesTraeCompatibilityFieldsKeepCacheRoute(t *tes
 	}}
 	upstream := &httpUpstreamRecorder{resp: grokChatBridgeCompletedResponse("resp_grok_chat_trae_compat", 12288)}
 	svc := &OpenAIGatewayService{
+		billingService:    newLocalFixtureBilling(),
 		httpUpstream:      upstream,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		accountRepo:       repo,
@@ -541,6 +547,7 @@ func TestForwardGrokChatViaResponsesStreamingPropagatesCachedUsage(t *testing.T)
 	}}
 	upstream := &httpUpstreamRecorder{resp: grokChatBridgeCompletedResponse("resp_grok_chat_stream", 4096)}
 	svc := &OpenAIGatewayService{
+		billingService:    newLocalFixtureBilling(),
 		httpUpstream:      upstream,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		accountRepo:       repo,
@@ -596,6 +603,7 @@ func TestForwardGrokChatRuntimeGateFallsBackToRaw(t *testing.T) {
 				)),
 			}}
 			svc := &OpenAIGatewayService{
+				billingService:    newLocalFixtureBilling(),
 				httpUpstream:      upstream,
 				grokTokenProvider: NewGrokTokenProvider(repo, nil),
 				accountRepo:       repo,
@@ -635,6 +643,7 @@ func TestForwardGrokChatViaResponses429UsesGrokRateLimitPolicy(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(`{"error":{"message":"rate limited"}}`)),
 	}}
 	svc := &OpenAIGatewayService{
+		billingService:    newLocalFixtureBilling(),
 		httpUpstream:      upstream,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		accountRepo:       repo,
@@ -679,6 +688,7 @@ func TestForwardGrokRawChat429PreservesRetryAfter(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(`{"error":{"message":"rate limited"}}`)),
 	}}
 	svc := &OpenAIGatewayService{
+		billingService:    newLocalFixtureBilling(),
 		httpUpstream:      upstream,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		accountRepo:       repo,
@@ -714,6 +724,7 @@ func TestForwardGrokRawChatErrorRecordsActualEndpoint(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"bad request"}}`)),
 	}}
 	svc := &OpenAIGatewayService{
+		billingService:    newLocalFixtureBilling(),
 		httpUpstream:      upstream,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		accountRepo:       repo,

@@ -247,7 +247,7 @@ func TestOpenAIGatewayService_Forward_MappedImageModelUsesImageGate(t *testing.T
 	}
 	cfg := &config.Config{}
 	cfg.Security.URLAllowlist.Enabled = false
-	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+	svc := &OpenAIGatewayService{billingService: newLocalFixtureBilling(), cfg: cfg, httpUpstream: upstream}
 	account := &Account{
 		ID:          3,
 		Name:        "openai-apikey",
@@ -264,7 +264,12 @@ func TestOpenAIGatewayService_Forward_MappedImageModelUsesImageGate(t *testing.T
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
-	c.Set("api_key", &APIKey{Group: &Group{AllowImageGeneration: false}})
+	price := 0.000001
+	gid := int64(8)
+	svc.resolver = NewModelPricingResolver(nil, svc.billingService)
+	c.Set("api_key", &APIKey{GroupID: &gid, Group: &Group{ID: gid, AllowImageGeneration: false,
+		ModelPricing: []ChannelModelPricing{{Models: []string{"draw-alias"}, BillingMode: BillingModeToken, InputPrice: &price, OutputPrice: &price}},
+	}})
 	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
 
 	body := []byte(`{"model":"draw-alias","stream":false,"input":"draw"}`)
@@ -689,7 +694,7 @@ func TestOpenAIGatewayService_Forward_CodexBridgeInjectionSetsImageBilling(t *te
 	cfg.Security.URLAllowlist.Enabled = false
 	cfg.Gateway.ForceCodexCLI = true
 	cfg.Gateway.CodexImageGenerationBridgeEnabled = true
-	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+	svc := &OpenAIGatewayService{billingService: newLocalFixtureBilling(), cfg: cfg, httpUpstream: upstream}
 	account := &Account{
 		ID:          7,
 		Name:        "openai-apikey",
@@ -769,7 +774,7 @@ func TestOpenAIGatewayService_Forward_StripsImageGenerationToolForSparkAPIKey(t 
 	}
 	cfg := &config.Config{}
 	cfg.Security.URLAllowlist.Enabled = false
-	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+	svc := &OpenAIGatewayService{billingService: newLocalFixtureBilling(), cfg: cfg, httpUpstream: upstream}
 	account := &Account{
 		ID:          11,
 		Name:        "openai-apikey",

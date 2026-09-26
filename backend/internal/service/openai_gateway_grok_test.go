@@ -1952,6 +1952,7 @@ func TestForwardAsChatCompletionsForGrokStopFallsBackToXAIChatCompletions(t *tes
 		Body: io.NopCloser(strings.NewReader(`{"id":"chatcmpl","object":"chat.completion","model":"grok-4.3","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":1}}}`)),
 	}}
 	svc := &OpenAIGatewayService{
+		billingService:    newLocalFixtureBilling(),
 		httpUpstream:      upstream,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		accountRepo:       repo,
@@ -2755,6 +2756,7 @@ func TestForwardAsChatCompletionsForGrokStreamingStopFallsBackToRawXAIChatComple
 		Body: io.NopCloser(strings.NewReader(upstreamBody)),
 	}}
 	svc := &OpenAIGatewayService{
+		billingService:    newLocalFixtureBilling(),
 		cfg:               rawChatCompletionsTestConfig(),
 		httpUpstream:      upstream,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
@@ -2816,6 +2818,7 @@ func TestForwardAsChatCompletionsForGrokComposerBridgesImageInput(t *testing.T) 
 		},
 	}}
 	svc := &OpenAIGatewayService{
+		billingService:    newLocalFixtureBilling(),
 		cfg:               rawChatCompletionsTestConfig(),
 		httpUpstream:      upstream,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
@@ -2862,6 +2865,7 @@ func TestForwardAsAnthropicForGrokUsesXAIResponses(t *testing.T) {
 	}
 	upstream := &httpUpstreamRecorder{resp: grokMessagesSSECompletedResponse("resp_grok_messages", 3)}
 	svc := &OpenAIGatewayService{
+		billingService:    newLocalFixtureBilling(),
 		httpUpstream:      upstream,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		accountRepo:       repo,
@@ -2932,6 +2936,7 @@ func TestForwardAsAnthropicForGrokFunctionToolUsesCacheCapableMixedRoute(t *test
 		Body:       io.NopCloser(strings.NewReader(responseBody)),
 	}}
 	svc := &OpenAIGatewayService{
+		billingService:    newLocalFixtureBilling(),
 		httpUpstream:      upstream,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		accountRepo:       repo,
@@ -2983,6 +2988,7 @@ func TestForwardAsAnthropicForGrokStreamingPreservesCacheUsage(t *testing.T) {
 	}
 	upstream := &httpUpstreamRecorder{resp: grokMessagesSSECompletedResponse("resp_grok_messages_stream", 2)}
 	svc := &OpenAIGatewayService{
+		billingService:    newLocalFixtureBilling(),
 		httpUpstream:      upstream,
 		grokTokenProvider: NewGrokTokenProvider(repo, nil),
 		accountRepo:       repo,

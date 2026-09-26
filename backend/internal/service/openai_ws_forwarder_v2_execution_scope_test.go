@@ -59,6 +59,7 @@ func TestOpenAIGatewayService_Forward_WSv2_TurnStateBoundToExecutionScope(t *tes
 	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 0
 
 	svc := &OpenAIGatewayService{
+		billingService:   newLocalFixtureBilling(),
 		cfg:              cfg,
 		httpUpstream:     &httpUpstreamRecorder{},
 		cache:            &stubGatewayCache{},
@@ -134,6 +135,7 @@ func TestOpenAIGatewayService_Forward_WSv2_ExecutionScopeUsesOriginalIdentity(t 
 
 	stateStore := NewOpenAIWSStateStore(nil)
 	svc := &OpenAIGatewayService{
+		billingService:     newLocalFixtureBilling(),
 		cfg:                cfg,
 		httpUpstream:       &httpUpstreamRecorder{},
 		cache:              &stubGatewayCache{},

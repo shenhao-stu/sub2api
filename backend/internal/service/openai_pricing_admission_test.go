@@ -21,6 +21,12 @@ func pricingAdmissionFixture() (*OpenAIGatewayService, *APIKey, *Account) {
 	return s, &APIKey{ID: 7, GroupID: &gid, Group: &Group{ID: gid, RateMultiplier: 1}}, &Account{ID: 9, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 }
 
+// Authenticated transport fixtures need the same static catalog as production
+// admission. This helper has no remote pricing source or upstream dependency.
+func newLocalFixtureBilling() *BillingService {
+	return NewBillingService(&config.Config{}, nil)
+}
+
 func TestOpenAIRequestPricingAdmission(t *testing.T) {
 	for _, tc := range []struct {
 		name, model, mapped    string
