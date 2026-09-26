@@ -260,12 +260,15 @@ func grokContentPolicyClientMessage(responseBody []byte) string {
 // Preserve the request-scoped verdict through every client protocol, including
 // a heartbeat that has already committed HTTP 200. No usage is invented here.
 func writeGrokContentPolicyError(c *gin.Context, message string) {
-	const code = "content_policy_violation"
+	writeRequestAdmissionError(c, http.StatusForbidden, "invalid_request_error", "content_policy_violation", message)
+}
+
+func writeRequestAdmissionError(c *gin.Context, status int, errorType, code, message string) {
 	compactCommitted := StopOpenAICompactSSEKeepaliveCommitted(c)
 	StopOpenAIImagesJSONKeepaliveCommitted(c)
 	path := strings.TrimRight(c.Request.URL.Path, "/")
 	messageBody := gin.H{"error": gin.H{
-		"type": "invalid_request_error", "code": code, "message": message,
+		"type": errorType, "code": code, "message": message,
 	}}
 	if strings.HasSuffix(path, "/messages") {
 		messageBody["type"] = "error"
@@ -273,10 +276,10 @@ func writeGrokContentPolicyError(c *gin.Context, message string) {
 	MarkResponseCommitted(c)
 	if compactCommitted || (c.Writer.Written() && strings.HasPrefix(c.Writer.Header().Get("Content-Type"), "text/event-stream")) {
 		if !strings.HasSuffix(path, "/messages") && !strings.HasSuffix(path, "/chat/completions") {
-			writeOpenAICompactSSEFailureMessage(c, http.StatusForbidden, code, message)
+			writeOpenAICompactSSEFailureMessage(c, status, code, message)
 			return
 		}
-		MarkOpsStreamError(c, code, message, http.StatusForbidden)
+		MarkOpsStreamError(c, code, message, status)
 		event := ""
 		if strings.HasSuffix(path, "/messages") {
 			event = "event: error\n"
@@ -286,7 +289,7 @@ func writeGrokContentPolicyError(c *gin.Context, message string) {
 		c.Writer.Flush()
 		return
 	}
-	c.JSON(http.StatusForbidden, messageBody)
+	c.JSON(status, messageBody)
 }
 
 // shouldFailoverGrokUpstreamError is the body-aware counterpart of the

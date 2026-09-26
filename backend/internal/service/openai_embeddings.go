@@ -24,6 +24,9 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 	body []byte,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	if err := s.requireOpenAIForwardPricing(ctx, c, account, body, defaultMappedModel); err != nil {
+		return nil, err
+	}
 	startTime := time.Now()
 
 	originalModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())

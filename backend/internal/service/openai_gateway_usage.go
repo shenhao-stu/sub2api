@@ -262,8 +262,8 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 			zap.String("upstream_model", result.UpstreamModel),
 			zap.Int64("api_key_id", apiKey.ID),
 			zap.Int64("account_id", account.ID),
-		).Warn("openai_usage.pricing_missing_record_zero_cost", zap.Error(err))
-		cost = &CostBreakdown{BillingMode: string(BillingModeToken)}
+		).Error("openai_usage.pricing_missing_billing_rejected", zap.Error(err))
+		return err
 	}
 	// response_model：按上游成功响应自报的模型计费（渠道显式开启才生效）。
 	// 采纳条件见 responseModelBillingDeclaration + hasIdentifiedOpenAIResponsePricing
@@ -658,9 +658,8 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 		if searchCost != nil {
 			return searchCost, nil
 		}
-		// 空候选按「无价可循」处理并携带 ErrModelPricingUnavailable：上层据此走
-		// 零成本+告警落账，而不是丢弃整条 usage 记录。CN 账号的 claude-* 候选被
-		// filterCNProviderBillingModelCandidates 全数过滤后即落到这里。
+		// 空候选不可当作免费请求。保留定价错误供准入拒绝和结算告警，
+		// 不写入成功去重键；CN 账号被过滤掉的 claude-* 候选也遵循同一规则。
 		if lastErr == nil {
 			lastErr = fmt.Errorf("%w: openai usage billing model is empty", ErrModelPricingUnavailable)
 		}
@@ -922,8 +921,7 @@ func groupMediaPricingLooksIncomplete(group *Group) bool {
 // 接受 claude-* 模型名但从不真正服务 Claude 模型；若放行，目录里的 Claude 价卡
 // 与 getFallbackPricing 的 "claude"→Sonnet 统一兜底会把 CN 流量按 Claude 原价
 // （数倍～数十倍）静默误计，且 usage 日志显示的正是 claude-* 名，无从察觉。
-// 候选全部落空时走既有的零成本+告警路径（openai_usage.pricing_missing_record_
-// zero_cost），与定价层「未知型号不回退以避免误计价」的既有设计意图一致；
+// 候选全部落空时准入拒绝请求；结算也保留错误，不能将未知价格记为免费。
 // 运营者的修复手段是配置账号级 model_mapping（映射到已定价的 CN 模型）或
 // 分组/渠道显式定价。
 func (s *OpenAIGatewayService) filterCNProviderBillingModelCandidates(ctx context.Context, account *Account, apiKey *APIKey, candidates []string) []string {

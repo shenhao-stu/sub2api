@@ -2279,6 +2279,7 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 // ResponsesWebSocket handles OpenAI Responses API WebSocket ingress endpoint
 // GET /openai/v1/responses (Upgrade: websocket)
 func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+	billingSessionID := uuid.NewString()
 	if !isOpenAIWSUpgradeRequest(c.Request) {
 		h.errorResponse(c, http.StatusUpgradeRequired, "invalid_request_error", "WebSocket upgrade required (Upgrade: websocket)")
 		return
@@ -2800,6 +2801,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		// turn 级定价：首轮回退到 TurnStarted 的所属 turn 时刻；后续 turn 由
 		// BeforeTurn 重新冻结 pricingAt 并按最新门复核当前账号。
 		var turnPricing openAIWSTurnPricing
+		if err := h.gatewayService.RequireOpenAIRequestPricing(ctx, apiKey, account, reqModel, wsForwardModel, ""); err != nil {
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "model pricing is unavailable")
+			return
+		}
 		// Passthrough ingress does not invoke BeforeTurn for the first frame.
 		if err := checkSimpleModeTurnBilling(); err != nil {
 			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "billing check failed")
@@ -2868,6 +2873,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					return "", newOpenAIWSUnsupportedModelSwitchError(mapping.MappedModel)
 				}
 				turnChannelMapping.Store(&openAIWSTurnChannelMappingSnapshot{turn: turn, mapping: mapping})
+				if err := h.gatewayService.RequireOpenAIRequestPricing(ctx, apiKey, account, model, mapping.MappedModel, ""); err != nil {
+					return "", service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "model pricing is unavailable", err)
+				}
 				return mapping.MappedModel, nil
 			},
 			BeforeTurn: func(turn int) error {
@@ -2918,6 +2926,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				return checkSimpleModeTurnBilling()
 			},
 			AfterTurn: func(turn int, result *service.OpenAIForwardResult, turnErr error) {
+				if result != nil {
+					result.RequestID = openAIWSTurnBillingRequestID(billingSessionID, turn, result.RequestID)
+				}
 				turnStart := getTurnStart(turn)
 				cyberBlockBody := takeCyberTurnBody(turn)
 				// 每次 attempt 都清 cyber mark；failover 链结束前保留 recorded guard，
