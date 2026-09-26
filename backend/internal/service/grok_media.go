@@ -852,17 +852,25 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 		return nil, err
 	}
 
+	// Completion is billable even if downloading the already generated artifact fails.
+	result := ExtractGrokVideoBillingFromStatusBody(statusBody, nil, requestID)
+	if result != nil {
+		result.RequestID = statusRequestID
+		result.UpstreamHeaders = statusResp.Header
+		result.ResponseHeaders = statusResp.Header.Clone()
+		defer func() { result.Duration = time.Since(startTime) }()
+	}
 	contentURL, err := grokMediaSignedVideoContentURL(statusBody, requestID)
 	if err != nil {
 		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
-		return nil, err
+		return result, err
 	}
 	signedContent := contentURL != ""
 	if !signedContent {
 		contentURL, err = buildGrokMediaURL(account, s.cfg, GrokMediaEndpointVideoContent, requestID)
 		if err != nil {
 			SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
-			return nil, err
+			return result, err
 		}
 	}
 
@@ -874,7 +882,7 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 	)
 	if err != nil {
 		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
-		return nil, err
+		return result, err
 	}
 	contentReq.Header.Set("Accept", "*/*")
 	if c != nil {
@@ -893,39 +901,29 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 	contentResp, err := s.httpUpstream.Do(contentReq, proxyURL, account.ID, account.Concurrency)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
-		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
+		return result, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 	}
 	defer func() { _ = contentResp.Body.Close() }()
 	contentRequestID := firstNonEmpty(contentResp.Header.Get("x-request-id"), contentResp.Header.Get("xai-request-id"), statusRequestID)
 	if contentResp.StatusCode >= 300 && contentResp.StatusCode < 400 {
-		return nil, fmt.Errorf("grok media signed content redirect is not allowed")
+		return result, fmt.Errorf("grok media signed content redirect is not allowed")
 	}
 	if contentResp.StatusCode >= 400 && contentResp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
-		return s.handleGrokMediaErrorResponse(ctx, contentResp, c, account, contentRequestID, "")
+		_, err := s.handleGrokMediaErrorResponse(ctx, contentResp, c, account, contentRequestID, "")
+		return result, err
 	}
 
 	s.updateGrokUsageFromResponse(withGrokTeamRateLimitModel(ctx, ""), account, contentResp.Header, contentResp.StatusCode)
 	if err := writeGrokMediaContentResponse(c, contentResp); err != nil {
-		return nil, err
+		return result, err
 	}
-	// Content download is an alternate completion observation: when status body is
-	// official done+video.url, attach billable units so the handler can claim once
-	// (same path as status polling). Pending snapshot is merged in the handler.
-	result := &OpenAIForwardResult{
-		RequestID:       contentRequestID,
-		UpstreamHeaders: contentResp.Header,
-		ResponseHeaders: contentResp.Header.Clone(),
-		Duration:        time.Since(startTime),
+	if result == nil {
+		result = &OpenAIForwardResult{}
 	}
-	if billed := ExtractGrokVideoBillingFromStatusBody(statusBody, nil, requestID); billed != nil {
-		result.ResponseID = firstNonEmpty(billed.ResponseID, strings.TrimSpace(requestID))
-		result.Model = billed.Model
-		result.BillingModel = billed.BillingModel
-		result.UpstreamModel = billed.UpstreamModel
-		result.VideoCount = billed.VideoCount
-		result.VideoResolution = billed.VideoResolution
-		result.VideoDurationSeconds = billed.VideoDurationSeconds
-	}
+	result.RequestID = contentRequestID
+	result.UpstreamHeaders = contentResp.Header
+	result.ResponseHeaders = contentResp.Header.Clone()
+	result.Duration = time.Since(startTime)
 	return result, nil
 }
 

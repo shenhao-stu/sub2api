@@ -120,21 +120,29 @@ func (s *grokMediaSlotsCache) assertReleased(t *testing.T) {
 
 type grokMediaSlotBindings struct {
 	testutil.StubGatewayCache
-	owner   int64
-	writes  int
-	key     string
-	billed  map[string]bool
-	pending map[string][]byte
+	owner        int64
+	writes       int
+	key          string
+	billed       map[string]bool
+	pending      map[string][]byte
+	checkContext bool
+	releases     int
 }
 
-func (s *grokMediaSlotBindings) SetGrokVideoPendingBilling(_ context.Context, key string, body []byte, _ time.Duration) error {
+func (s *grokMediaSlotBindings) SetGrokVideoPendingBilling(ctx context.Context, key string, body []byte, _ time.Duration) error {
+	if s.checkContext && ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if s.pending == nil {
 		s.pending = make(map[string][]byte)
 	}
 	s.pending[key] = append([]byte(nil), body...)
 	return nil
 }
-func (s *grokMediaSlotBindings) GetGrokVideoPendingBilling(_ context.Context, key string) ([]byte, error) {
+func (s *grokMediaSlotBindings) GetGrokVideoPendingBilling(ctx context.Context, key string) ([]byte, error) {
+	if s.checkContext && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	return s.pending[key], nil
 }
 
@@ -144,7 +152,10 @@ func (s *grokMediaSlotBindings) GetSessionAccountID(_ context.Context, groupID i
 	}
 	return s.owner, nil
 }
-func (s *grokMediaSlotBindings) SetSessionAccountID(_ context.Context, _ int64, key string, owner int64, _ time.Duration) error {
+func (s *grokMediaSlotBindings) SetSessionAccountID(ctx context.Context, _ int64, key string, owner int64, _ time.Duration) error {
+	if s.checkContext && ctx.Err() != nil {
+		return ctx.Err()
+	}
 	s.key, s.owner = key, owner
 	s.writes++
 	return nil
@@ -158,7 +169,10 @@ func (s *grokMediaSlotBindings) DeleteSessionAccountID(context.Context, int64, s
 	return nil
 }
 
-func (s *grokMediaSlotBindings) ClaimGrokVideoBilled(_ context.Context, key string, _ time.Duration) (bool, error) {
+func (s *grokMediaSlotBindings) ClaimGrokVideoBilled(ctx context.Context, key string, _ time.Duration) (bool, error) {
+	if s.checkContext && ctx.Err() != nil {
+		return false, ctx.Err()
+	}
 	if s.billed == nil {
 		s.billed = make(map[string]bool)
 	}
@@ -167,6 +181,15 @@ func (s *grokMediaSlotBindings) ClaimGrokVideoBilled(_ context.Context, key stri
 	}
 	s.billed[key] = true
 	return true, nil
+}
+
+func (s *grokMediaSlotBindings) ReleaseGrokVideoBilled(ctx context.Context, key string) error {
+	if s.checkContext && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	delete(s.billed, key)
+	s.releases++
+	return nil
 }
 
 type grokMediaSlotRepo struct {
