@@ -20,6 +20,7 @@ import (
 
 // OpenAIRecordUsageInput input for recording usage
 type OpenAIRecordUsageInput struct {
+	HistoricalVideo    bool // set only after validating a durable video receipt
 	Result             *OpenAIForwardResult
 	APIKey             *APIKey
 	User               *User
@@ -341,7 +342,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	// Async Grok video: always use the stable task id for dedup (status + content polls
 	// share one bill). Context-local client/local IDs would otherwise create a new row
 	// per poll if Redis claim is lost.
-	if result.VideoCount > 0 {
+	if result.VideoCount > 0 || strings.HasPrefix(result.ResponseID, "seedance:") {
 		if stable := StableGrokVideoBillingRequestID(firstNonEmpty(
 			strings.TrimPrefix(strings.TrimSpace(result.RequestID), "grok-video:"),
 			strings.TrimSpace(result.ResponseID),
@@ -500,7 +501,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		quotaPlatform = PlatformFromAPIKey(apiKey)
 	}
 
-	_, billingErr := applyUsageBilling(ctx, requestID, usageLog, &postUsageBillingParams{
+	applied, billingErr := applyUsageBilling(ctx, requestID, usageLog, &postUsageBillingParams{
 		Cost:                       cost,
 		User:                       user,
 		APIKey:                     apiKey,
@@ -512,12 +513,18 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		APIKeyService:              input.APIKeyService,
 		Platform:                   quotaPlatform,
 		SimpleModeKeyRateLimitOnly: simpleModeKeyRateLimitOnly,
+		HistoricalVideo:            input.HistoricalVideo,
 	}, s.billingDeps(), s.usageBillingRepo)
 
 	if billingErr != nil {
 		usageLog.ActualCost = 0
-		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")
+		if !input.HistoricalVideo {
+			writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")
+		}
 		return billingErr
+	}
+	if input.HistoricalVideo && !applied {
+		return nil
 	}
 	writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")
 

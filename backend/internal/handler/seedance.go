@@ -4,7 +4,6 @@ import (
 	"context"
 	"mime"
 	"net/http"
-	"time"
 
 	middleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -52,12 +51,5 @@ func prepareSeedanceCompletionBilling(ctx context.Context, h *OpenAIGatewayHandl
 	if err != nil || !claimed {
 		return nil
 	}
-	merged := *result
-	merged.Model = pending.Model
-	merged.BillingModel = firstNonEmptyString(pending.BillingModel, pending.Model)
-	merged.UpstreamModel = firstNonEmptyString(pending.UpstreamModel, result.UpstreamModel)
-	merged.RequestID = service.StableGrokVideoBillingRequestID(taskID)
-	merged.ResponseID = taskID
-	merged.Duration = service.GrokVideoE2EDuration(pending.CreatedAt, time.Now())
-	return &merged
+	return service.MergeVideoCompletion(result, pending, taskID)
 }

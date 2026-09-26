@@ -332,7 +332,20 @@ func (s *OpenAIGatewayService) ResolveGrokMediaVideoRequestAccount(
 	if cacheKey == "" {
 		return 0, fmt.Errorf("grok video request binding is invalid")
 	}
-	return s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), cacheKey)
+	accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), cacheKey)
+	if accountID > 0 && err == nil {
+		return accountID, nil
+	}
+	if repo := s.VideoBillingRepository(); repo != nil {
+		job, loadErr := repo.GetVideoBilling(ctx, requestID, userID, apiKeyID)
+		if loadErr != nil {
+			return 0, loadErr
+		}
+		if job != nil && job.Snapshot.Owner != nil && derefGroupID(job.Snapshot.Owner.GroupID) == derefGroupID(groupID) {
+			return job.Snapshot.Owner.AccountID, nil
+		}
+	}
+	return accountID, err
 }
 
 // SelectGrokMediaVideoRequestAccount only admits the already authenticated
@@ -375,12 +388,13 @@ func (s *OpenAIGatewayService) SelectMediaVideoRequestAccount(
 // first observes a completed video URL. Status may omit model/duration; we fall
 // back to this snapshot, then defaults.
 type GrokVideoPendingBilling struct {
-	Model                string `json:"model"`
-	BillingModel         string `json:"billing_model,omitempty"`
-	UpstreamModel        string `json:"upstream_model,omitempty"`
-	VideoResolution      string `json:"video_resolution,omitempty"`
-	VideoDurationSeconds int    `json:"video_duration_seconds,omitempty"`
-	OriginalModel        string `json:"original_model,omitempty"`
+	Owner                *VideoBillingOwner `json:"owner,omitempty"`
+	Model                string             `json:"model"`
+	BillingModel         string             `json:"billing_model,omitempty"`
+	UpstreamModel        string             `json:"upstream_model,omitempty"`
+	VideoResolution      string             `json:"video_resolution,omitempty"`
+	VideoDurationSeconds int                `json:"video_duration_seconds,omitempty"`
+	OriginalModel        string             `json:"original_model,omitempty"`
 	// CreatedAt is when the gateway accepted the async create (RFC3339Nano UTC).
 	// duration_ms for deferred billing is measured from this instant until the
 	// first official done+video.url observation (status poll or content download),
@@ -473,7 +487,20 @@ func (s *OpenAIGatewayService) StoreGrokVideoPendingBilling(
 	if err != nil {
 		return err
 	}
-	return s.cache.SetGrokVideoPendingBilling(ctx, key, payload, grokVideoPendingBillingTTL(s.cfg))
+	durable := s.VideoBillingRepository()
+	if durable != nil && pending.Owner != nil {
+		if pending.Owner.UserID != userID || pending.Owner.APIKeyID != apiKeyID {
+			return fmt.Errorf("video billing owner mismatch")
+		}
+		if err := durable.StoreVideoBilling(ctx, requestID, pending); err != nil {
+			return err
+		}
+	}
+	err = s.cache.SetGrokVideoPendingBilling(ctx, key, payload, grokVideoPendingBillingTTL(s.cfg))
+	if durable != nil && pending.Owner != nil {
+		return nil
+	}
+	return err
 }
 
 // LoadGrokVideoPendingBilling returns the create-time snapshot (may be nil on miss).
@@ -488,6 +515,15 @@ func (s *OpenAIGatewayService) LoadGrokVideoPendingBilling(
 	key := grokVideoPendingBillingKey(requestID, userID, apiKeyID)
 	if key == "" {
 		return nil, fmt.Errorf("grok video pending billing key is invalid")
+	}
+	if repo := s.VideoBillingRepository(); repo != nil {
+		job, err := repo.GetVideoBilling(ctx, requestID, userID, apiKeyID)
+		if err != nil {
+			return nil, err
+		}
+		if job != nil {
+			return &job.Snapshot, nil
+		}
 	}
 	payload, err := s.cache.GetGrokVideoPendingBilling(ctx, key)
 	if err != nil || len(payload) == 0 {
@@ -507,6 +543,15 @@ func (s *OpenAIGatewayService) ClaimGrokVideoBilling(
 	requestID string,
 	userID, apiKeyID int64,
 ) (bool, error) {
+	if repo := s.VideoBillingRepository(); repo != nil {
+		job, err := repo.GetVideoBilling(ctx, requestID, userID, apiKeyID)
+		if err != nil {
+			return false, err
+		}
+		if job != nil {
+			return job.State != "settled", nil
+		}
+	}
 	if s == nil || s.cache == nil {
 		return false, fmt.Errorf("grok video billing claim cache is unavailable")
 	}
@@ -524,6 +569,15 @@ func (s *OpenAIGatewayService) ReleaseGrokVideoBilling(
 	requestID string,
 	userID, apiKeyID int64,
 ) error {
+	if repo := s.VideoBillingRepository(); repo != nil {
+		job, err := repo.GetVideoBilling(ctx, requestID, userID, apiKeyID)
+		if err != nil {
+			return err
+		}
+		if job != nil {
+			return nil
+		}
+	}
 	if s == nil || s.cache == nil {
 		return fmt.Errorf("grok video billing claim cache is unavailable")
 	}
@@ -763,7 +817,6 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 			grokMediaContentProxyURL(c, requestID),
 		)
 	}
-	writeGrokMediaResponse(c, resp, respBody, s.responseHeaderFilter)
 	usage := grokMediaUsageFromResponse(endpoint, requestInfo, respBody)
 	resultModel := requestModel
 	resultBillingModel := requestModel
@@ -776,7 +829,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 			resultBillingModel = m
 		}
 	}
-	return &OpenAIForwardResult{
+	result := &OpenAIForwardResult{
 		RequestID:            requestIDHeader,
 		UpstreamHeaders:      resp.Header,
 		ResponseID:           usage.ResponseID,
@@ -793,7 +846,17 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		VideoCount:           usage.VideoCount,
 		VideoResolution:      usage.VideoResolution,
 		VideoDurationSeconds: usage.VideoDurationSeconds,
-	}, nil
+	}
+	if endpoint == GrokMediaEndpointVideosGenerations || endpoint == GrokMediaEndpointVideosEdits || endpoint == GrokMediaEndpointVideosExtensions {
+		if strings.TrimSpace(result.ResponseID) == "" {
+			return nil, fmt.Errorf("grok video create response missing task ID")
+		}
+		if err := persistVideoCreationReceipt(ctx, result); err != nil {
+			return nil, fmt.Errorf("persist video receipt: %w", err)
+		}
+	}
+	writeGrokMediaResponse(c, resp, respBody, s.responseHeaderFilter)
+	return result, nil
 }
 
 func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(

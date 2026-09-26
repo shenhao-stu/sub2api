@@ -42,17 +42,54 @@ func (r *usageBillingRepository) Apply(ctx context.Context, cmd *service.UsageBi
 		}
 	}()
 
+	var ownerMatches bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM api_keys WHERE id=$1 AND user_id=$2)`, cmd.APIKeyID, cmd.UserID).Scan(&ownerMatches); err != nil {
+		return nil, err
+	}
+	if !ownerMatches {
+		return nil, service.ErrAPIKeyNotFound
+	}
+	if cmd.HistoricalVideo {
+		if !strings.HasPrefix(cmd.RequestID, "grok-video:") {
+			return nil, errors.New("historical video request ID invalid")
+		}
+		var state string
+		err := tx.QueryRowContext(ctx, `SELECT state FROM pending_video_billing
+			WHERE task_id=$1 AND api_key_id=$2 AND user_id=$3 AND account_id=$4
+			AND (snapshot->'owner'->>'subscription_id')::bigint IS NOT DISTINCT FROM $5::bigint
+			FOR UPDATE`, strings.TrimPrefix(cmd.RequestID, "grok-video:"), cmd.APIKeyID, cmd.UserID, cmd.AccountID, cmd.SubscriptionID).Scan(&state)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errors.New("historical video receipt mismatch")
+		}
+		if err != nil {
+			return nil, err
+		}
+		// The receipt and charge commit together. A later price change cannot
+		// turn an already settled task into a conflicting second charge.
+		if state == "settled" {
+			return &service.UsageBillingApplyResult{Applied: false}, nil
+		}
+	}
+
 	applied, err := r.claimUsageBillingKey(ctx, tx, cmd)
 	if err != nil {
 		return nil, err
 	}
-	if !applied {
+	if !applied && !cmd.HistoricalVideo {
 		return &service.UsageBillingApplyResult{Applied: false}, nil
 	}
 
-	result := &service.UsageBillingApplyResult{Applied: true}
-	if err := r.applyUsageBillingEffects(ctx, tx, cmd, result); err != nil {
-		return nil, err
+	result := &service.UsageBillingApplyResult{Applied: applied}
+	if applied {
+		if err := r.applyUsageBillingEffects(ctx, tx, cmd, result); err != nil {
+			return nil, err
+		}
+	}
+	if cmd.HistoricalVideo {
+		if _, err := tx.ExecContext(ctx, `UPDATE pending_video_billing SET state='settled',lease_until=NULL,last_error='',updated_at=NOW()
+			WHERE task_id=$1 AND api_key_id=$2`, strings.TrimPrefix(cmd.RequestID, "grok-video:"), cmd.APIKeyID); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -173,13 +210,13 @@ func (r *usageBillingRepository) applyBatchImageBalanceHold(
 
 func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, tx *sql.Tx, cmd *service.UsageBillingCommand, result *service.UsageBillingApplyResult) error {
 	if cmd.SubscriptionCost > 0 && cmd.SubscriptionID != nil {
-		if err := incrementUsageBillingSubscription(ctx, tx, *cmd.SubscriptionID, cmd.SubscriptionCost); err != nil {
+		if err := incrementUsageBillingSubscription(ctx, tx, *cmd.SubscriptionID, cmd.SubscriptionCost, cmd.HistoricalVideo); err != nil {
 			return err
 		}
 	}
 
 	if cmd.BalanceCost > 0 {
-		newBalance, sufficient, err := deductUsageBillingBalance(ctx, tx, cmd.UserID, cmd.BalanceCost)
+		newBalance, sufficient, err := deductUsageBillingBalance(ctx, tx, cmd.UserID, cmd.BalanceCost, cmd.HistoricalVideo)
 		if err != nil {
 			return err
 		}
@@ -188,7 +225,7 @@ func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, t
 	}
 
 	if cmd.APIKeyQuotaCost > 0 {
-		exhausted, err := incrementUsageBillingAPIKeyQuota(ctx, tx, cmd.APIKeyID, cmd.APIKeyQuotaCost)
+		exhausted, err := incrementUsageBillingAPIKeyQuota(ctx, tx, cmd.APIKeyID, cmd.UserID, cmd.APIKeyQuotaCost)
 		if err != nil {
 			return err
 		}
@@ -196,13 +233,13 @@ func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, t
 	}
 
 	if cmd.APIKeyRateLimitCost > 0 {
-		if err := incrementUsageBillingAPIKeyRateLimit(ctx, tx, cmd.APIKeyID, cmd.APIKeyRateLimitCost); err != nil {
+		if err := incrementUsageBillingAPIKeyRateLimit(ctx, tx, cmd.APIKeyID, cmd.UserID, cmd.APIKeyRateLimitCost); err != nil {
 			return err
 		}
 	}
 
 	if cmd.AccountQuotaCost > 0 && (strings.EqualFold(cmd.AccountType, service.AccountTypeAPIKey) || strings.EqualFold(cmd.AccountType, service.AccountTypeBedrock)) {
-		quotaState, err := incrementUsageBillingAccountQuota(ctx, tx, cmd.AccountID, cmd.AccountQuotaCost)
+		quotaState, err := incrementUsageBillingAccountQuota(ctx, tx, cmd.AccountID, cmd.AccountQuotaCost, cmd.HistoricalVideo)
 		if err != nil {
 			return err
 		}
@@ -212,8 +249,8 @@ func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, t
 	return nil
 }
 
-func incrementUsageBillingSubscription(ctx context.Context, tx *sql.Tx, subscriptionID int64, costUSD float64) error {
-	const updateSQL = `
+func incrementUsageBillingSubscription(ctx context.Context, tx *sql.Tx, subscriptionID int64, costUSD float64, historical ...bool) error {
+	updateSQL := `
 		UPDATE user_subscriptions us
 		SET
 			daily_usage_usd = us.daily_usage_usd + $1,
@@ -222,9 +259,9 @@ func incrementUsageBillingSubscription(ctx context.Context, tx *sql.Tx, subscrip
 			updated_at = NOW()
 		FROM groups g
 		WHERE us.id = $2
-			AND us.deleted_at IS NULL
+			` + billingActiveRowFilter("us.", historical) + `
 			AND us.group_id = g.id
-			AND g.deleted_at IS NULL
+			` + billingActiveRowFilter("g.", historical) + `
 	`
 	res, err := tx.ExecContext(ctx, updateSQL, costUSD, subscriptionID)
 	if err != nil {
@@ -240,13 +277,20 @@ func incrementUsageBillingSubscription(ctx context.Context, tx *sql.Tx, subscrip
 	return service.ErrSubscriptionNotFound
 }
 
-func deductUsageBillingBalance(ctx context.Context, tx *sql.Tx, userID int64, amount float64) (float64, bool, error) {
+func billingActiveRowFilter(prefix string, historical []bool) string {
+	if len(historical) > 0 && historical[0] {
+		return ""
+	}
+	return " AND " + prefix + "deleted_at IS NULL "
+}
+
+func deductUsageBillingBalance(ctx context.Context, tx *sql.Tx, userID int64, amount float64, historical ...bool) (float64, bool, error) {
 	var newBalance float64
 	err := tx.QueryRowContext(ctx, `
 		UPDATE users
 		SET balance = balance - $1,
 			updated_at = NOW()
-		WHERE id = $2 AND deleted_at IS NULL AND balance >= $1
+		WHERE id = $2 `+billingActiveRowFilter("", historical)+` AND balance >= $1
 		RETURNING balance
 	`, amount, userID).Scan(&newBalance)
 	if err == nil {
@@ -260,7 +304,7 @@ func deductUsageBillingBalance(ctx context.Context, tx *sql.Tx, userID int64, am
 		UPDATE users
 		SET balance = balance - $1,
 			updated_at = NOW()
-		WHERE id = $2 AND deleted_at IS NULL
+		WHERE id = $2 `+billingActiveRowFilter("", historical)+`
 		RETURNING balance
 	`, amount, userID).Scan(&newBalance)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -413,7 +457,7 @@ func userExistsForBilling(ctx context.Context, tx *sql.Tx, userID int64) (bool, 
 	return true, nil
 }
 
-func incrementUsageBillingAPIKeyQuota(ctx context.Context, tx *sql.Tx, apiKeyID int64, amount float64) (bool, error) {
+func incrementUsageBillingAPIKeyQuota(ctx context.Context, tx *sql.Tx, apiKeyID, userID int64, amount float64) (bool, error) {
 	var exhausted bool
 	err := tx.QueryRowContext(ctx, `
 		UPDATE api_keys
@@ -427,9 +471,9 @@ func incrementUsageBillingAPIKeyQuota(ctx context.Context, tx *sql.Tx, apiKeyID 
 				ELSE status
 			END,
 			updated_at = NOW()
-		WHERE id = $2 AND deleted_at IS NULL
+		WHERE id = $2 AND user_id=$5
 		RETURNING quota > 0 AND quota_used >= quota AND quota_used - $1 < quota
-	`, amount, apiKeyID, service.StatusAPIKeyActive, service.StatusAPIKeyQuotaExhausted).Scan(&exhausted)
+	`, amount, apiKeyID, service.StatusAPIKeyActive, service.StatusAPIKeyQuotaExhausted, userID).Scan(&exhausted)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, service.ErrAPIKeyNotFound
 	}
@@ -439,7 +483,7 @@ func incrementUsageBillingAPIKeyQuota(ctx context.Context, tx *sql.Tx, apiKeyID 
 	return exhausted, nil
 }
 
-func incrementUsageBillingAPIKeyRateLimit(ctx context.Context, tx *sql.Tx, apiKeyID int64, cost float64) error {
+func incrementUsageBillingAPIKeyRateLimit(ctx context.Context, tx *sql.Tx, apiKeyID, userID int64, cost float64) error {
 	res, err := tx.ExecContext(ctx, `
 		UPDATE api_keys SET
 			usage_5h = CASE WHEN window_5h_start IS NOT NULL AND window_5h_start + INTERVAL '5 hours' <= NOW() THEN $1 ELSE usage_5h + $1 END,
@@ -449,8 +493,8 @@ func incrementUsageBillingAPIKeyRateLimit(ctx context.Context, tx *sql.Tx, apiKe
 			window_1d_start = CASE WHEN window_1d_start IS NULL OR window_1d_start + INTERVAL '24 hours' <= NOW() THEN date_trunc('day', NOW()) ELSE window_1d_start END,
 			window_7d_start = CASE WHEN window_7d_start IS NULL OR window_7d_start + INTERVAL '7 days' <= NOW() THEN date_trunc('day', NOW()) ELSE window_7d_start END,
 			updated_at = NOW()
-		WHERE id = $2 AND deleted_at IS NULL
-	`, cost, apiKeyID)
+		WHERE id = $2 AND user_id=$3
+	`, cost, apiKeyID, userID)
 	if err != nil {
 		return err
 	}
@@ -464,7 +508,7 @@ func incrementUsageBillingAPIKeyRateLimit(ctx context.Context, tx *sql.Tx, apiKe
 	return nil
 }
 
-func incrementUsageBillingAccountQuota(ctx context.Context, tx *sql.Tx, accountID int64, amount float64) (*service.AccountQuotaState, error) {
+func incrementUsageBillingAccountQuota(ctx context.Context, tx *sql.Tx, accountID int64, amount float64, historical ...bool) (*service.AccountQuotaState, error) {
 	rows, err := tx.QueryContext(ctx,
 		`UPDATE accounts SET extra = (
 			COALESCE(extra, '{}'::jsonb)
@@ -500,7 +544,7 @@ func incrementUsageBillingAccountQuota(ctx context.Context, tx *sql.Tx, accountI
 				   ELSE '{}'::jsonb END
 			ELSE '{}'::jsonb END
 		), updated_at = NOW()
-		WHERE id = $2 AND deleted_at IS NULL
+		WHERE id = $2 `+billingActiveRowFilter("", historical)+`
 		RETURNING
 			COALESCE((extra->>'quota_used')::numeric, 0),
 			COALESCE((extra->>'quota_limit')::numeric, 0),

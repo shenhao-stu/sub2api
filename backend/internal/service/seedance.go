@@ -142,6 +142,9 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 			return nil, fmt.Errorf("seedance create response missing task ID")
 		}
 		result.ResponseID = SeedanceTaskKey(id)
+		if err := persistVideoCreationReceipt(ctx, result); err != nil {
+			return nil, fmt.Errorf("persist video receipt: %w", err)
+		}
 	}
 	if endpoint == SeedanceEndpointStatus {
 		result.ResponseID = taskID

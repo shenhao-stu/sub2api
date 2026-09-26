@@ -105,6 +105,7 @@ func newCleanupTest(t *testing.T, billingCacheSvc *service.BillingCacheService, 
 		nil, // openAIAutoReset
 		nil, // promptAudit
 		nil, // pluginManager
+		nil, // videoBilling
 	)
 
 	return cleanup
