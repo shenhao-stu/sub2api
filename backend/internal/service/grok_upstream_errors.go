@@ -3,12 +3,14 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
+	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
 
@@ -74,6 +76,11 @@ func isGrokContentPolicyRejection(statusCode int, responseBody []byte) bool {
 		}
 		if grokStructuredContentPolicyMarker(payload) {
 			return true
+		}
+		for _, message := range grokStructuredErrorMessageCandidates(responseBody) {
+			if strings.EqualFold(strings.TrimSpace(message), "I can't help with that request.") {
+				return true
+			}
 		}
 	}
 
@@ -243,11 +250,43 @@ func grokContentPolicyMessage(value string) bool {
 }
 
 func grokContentPolicyClientMessage(responseBody []byte) string {
-	message := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(responseBody)))
+	message := extractGrokUpstreamErrorMessage(responseBody)
 	if message == "" {
 		return "Request blocked by upstream content policy"
 	}
 	return message
+}
+
+// Preserve the request-scoped verdict through every client protocol, including
+// a heartbeat that has already committed HTTP 200. No usage is invented here.
+func writeGrokContentPolicyError(c *gin.Context, message string) {
+	const code = "content_policy_violation"
+	compactCommitted := StopOpenAICompactSSEKeepaliveCommitted(c)
+	StopOpenAIImagesJSONKeepaliveCommitted(c)
+	path := strings.TrimRight(c.Request.URL.Path, "/")
+	messageBody := gin.H{"error": gin.H{
+		"type": "invalid_request_error", "code": code, "message": message,
+	}}
+	if strings.HasSuffix(path, "/messages") {
+		messageBody["type"] = "error"
+	}
+	MarkResponseCommitted(c)
+	if compactCommitted || (c.Writer.Written() && strings.HasPrefix(c.Writer.Header().Get("Content-Type"), "text/event-stream")) {
+		if !strings.HasSuffix(path, "/messages") && !strings.HasSuffix(path, "/chat/completions") {
+			writeOpenAICompactSSEFailureMessage(c, http.StatusForbidden, code, message)
+			return
+		}
+		MarkOpsStreamError(c, code, message, http.StatusForbidden)
+		event := ""
+		if strings.HasSuffix(path, "/messages") {
+			event = "event: error\n"
+		}
+		payload, _ := json.Marshal(messageBody)
+		_, _ = fmt.Fprintf(c.Writer, "%sdata: %s\n\n", event, payload)
+		c.Writer.Flush()
+		return
+	}
+	c.JSON(http.StatusForbidden, messageBody)
 }
 
 // shouldFailoverGrokUpstreamError is the body-aware counterpart of the

@@ -618,6 +618,12 @@ func (s *OpenAIGatewayService) forwardGrokChatCompletionsViaResponses(
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		respBody, upstreamMsg := s.readOpenAIUpstreamError(resp)
+		if result, meteredErr := s.handleMeteredOpenAIHTTPError(ctx, c, account, resp, respBody, responsesBody, originalModel, billingModel, upstreamModel, clientStream, startTime); result != nil {
+			return result, meteredErr
+		}
+		if message := extractGrokUpstreamErrorMessage(respBody); message != "" {
+			upstreamMsg = message
+		}
 		if upstreamMsg == "" {
 			upstreamMsg = fmt.Sprintf("xAI upstream returned status %d", resp.StatusCode)
 		}
