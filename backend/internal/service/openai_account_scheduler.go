@@ -2511,6 +2511,11 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(account *Accoun
 	if account == nil {
 		return false
 	}
+	// Pricing admission fails before any supplier work. It must not lower
+	// account health or scheduling scores when handlers report the rejection.
+	if !success && len(observedErr) > 0 && errors.Is(observedErr[0], ErrModelPricingUnavailable) {
+		return false
+	}
 	accountID := account.ID
 	healthTripped := false
 	if s != nil && s.rateLimitService != nil {

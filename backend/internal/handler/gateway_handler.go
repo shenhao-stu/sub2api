@@ -472,6 +472,12 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if fs.SwitchCount > 0 {
 				requestCtx = service.WithAccountSwitchCount(requestCtx, fs.SwitchCount, h.metadataBridgeEnabled())
 			}
+			if err := h.gatewayService.RequireForwardPricing(requestCtx, c, account, reqModel); err != nil {
+				if accountReleaseFunc != nil {
+					accountReleaseFunc()
+				}
+				return
+			}
 			// 记录 Forward 前已写入字节数，Forward 后若增加则说明 SSE 内容已发，禁止 failover
 			writerSizeBeforeForward := c.Writer.Size()
 			if account.Platform == service.PlatformAntigravity {
@@ -888,6 +894,15 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 			if fs.ForceCacheBilling {
 				requestCtx = service.WithForceCacheBilling(requestCtx)
+			}
+			if err := h.gatewayService.RequireForwardPricing(requestCtx, c, account, attemptParsedReq.Model); err != nil {
+				if accountReleaseFunc != nil {
+					accountReleaseFunc()
+				}
+				if queueRelease != nil {
+					queueRelease()
+				}
+				return
 			}
 			// 记录 Forward 前已写入字节数，Forward 后若增加则说明 SSE 内容已发，禁止 failover
 			writerSizeBeforeForward := c.Writer.Size()

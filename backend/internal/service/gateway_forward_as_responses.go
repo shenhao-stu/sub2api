@@ -57,6 +57,9 @@ func (s *GatewayService) ForwardAsResponses(
 		return nil, fmt.Errorf("parse responses request: %w", err)
 	}
 	originalModel := responsesReq.Model
+	if err := s.RequireForwardPricing(ctx, c, account, originalModel); err != nil {
+		return nil, err
+	}
 	clientStream := responsesReq.Stream
 
 	// 3. Convert Responses → Anthropic

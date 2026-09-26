@@ -41,6 +41,9 @@ func (s *GatewayService) ForwardAsChatCompletions(
 		return nil, fmt.Errorf("parse chat completions request: %w", err)
 	}
 	originalModel := ccReq.Model
+	if err := s.RequireForwardPricing(ctx, c, account, originalModel); err != nil {
+		return nil, err
+	}
 	clientStream := ccReq.Stream
 	includeUsage := ccReq.StreamOptions != nil && ccReq.StreamOptions.IncludeUsage
 

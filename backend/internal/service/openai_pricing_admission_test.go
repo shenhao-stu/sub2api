@@ -3,10 +3,12 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
@@ -118,5 +120,26 @@ func TestPricingAdmissionAfterCommittedSSE(t *testing.T) {
 				t.Fatal("committed SSE transport was overwritten")
 			}
 		})
+	}
+}
+
+func TestPricingAdmissionDoesNotPenalizeSupplier(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	t.Cleanup(resetOpenAIAdvancedSchedulerSettingCacheForTest)
+	openAIAdvancedSchedulerSettingCache.Store(&cachedOpenAIAdvancedSchedulerSetting{enabled: true, expiresAt: time.Now().Add(time.Minute).UnixNano()})
+	stats := newOpenAIAccountRuntimeStats()
+	s := &OpenAIGatewayService{openaiScheduler: &defaultOpenAIAccountScheduler{stats: stats}}
+	account := &Account{ID: 9, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	err := fmt.Errorf("pricing admission: %w", ErrModelPricingUnavailable)
+	s.ReportOpenAIAccountScheduleResult(account, "test", false, nil, err)
+	if stats.size() != 0 {
+		t.Fatal("local pricing failure changed supplier scheduling statistics")
+	}
+	if _, _, eligible := classifyOpenAIAPIKeyHealthFailure(err); eligible {
+		t.Fatal("local pricing failure qualified for supplier cooldown")
+	}
+	s.ReportOpenAIAccountScheduleResult(account, "test", false, nil, errors.New("upstream transport failed"))
+	if stats.size() != 1 {
+		t.Fatal("real supplier failure no longer affects scheduling")
 	}
 }

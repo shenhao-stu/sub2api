@@ -41,7 +41,10 @@ func (s *OpenAIGatewayService) requireOpenAIRequestPricing(ctx context.Context, 
 	}
 	_, err := s.calculateOpenAIRecordUsageCost(ctx, result, apiKey, models, 1, 1, 1, 1,
 		UsageTokens{InputTokens: 1, OutputTokens: 1}, "", openAILongContextBillingGate(account), time.Now())
-	return err
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrModelPricingUnavailable, err)
+	}
+	return nil
 }
 
 func (s *OpenAIGatewayService) requireOpenAIForwardPricing(ctx context.Context, c *gin.Context, account *Account, body []byte, dispatched string) error {
