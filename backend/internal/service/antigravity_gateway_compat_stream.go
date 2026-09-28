@@ -141,21 +141,32 @@ func (s *antigravityCompatStreamSession) consume(line string) {
 }
 
 func (s *antigravityCompatStreamSession) hasMeaningfulData() bool {
-	return s.meaningfulData
+	return s.meaningfulData || s.processor.HasContent()
 }
 
-func (s *antigravityCompatStreamSession) finish() *antigravityStreamResult {
+func (s *antigravityCompatStreamSession) finish() (*antigravityStreamResult, error) {
 	finalEvents, usage := s.processor.Finish()
 	mergeAntigravityCompatUsage(s.usage, usage)
 	s.consumeClaudeEvents(finalEvents)
+	if !s.hasMeaningfulData() && !s.writer.Disconnected() {
+		return s.emptyResult()
+	}
 	s.adapter.Finalize(s.writer)
-	return s.result(s.writer.Disconnected())
+	return s.result(s.writer.Disconnected()), nil
 }
 
 func (s *antigravityCompatStreamSession) collectResult(clientDisconnect bool) *antigravityStreamResult {
 	_, usage := s.processor.Finish()
 	mergeAntigravityCompatUsage(s.usage, usage)
 	return s.result(clientDisconnect)
+}
+
+func (s *antigravityCompatStreamSession) emptyResult() (*antigravityStreamResult, error) {
+	result := s.collectResult(s.writer.Disconnected())
+	if result.usage.hasObservedTokens() {
+		return result, errors.New("upstream stream ended without response content after reporting usage")
+	}
+	return nil, antigravityCompatEmptyStreamError()
 }
 
 func (s *antigravityCompatStreamSession) result(clientDisconnect bool) *antigravityStreamResult {
@@ -220,24 +231,18 @@ func isMeaningfulAntigravityCompatEvent(event *apicompat.AnthropicStreamEvent) b
 	if event == nil {
 		return false
 	}
-	if event.Type == "message_stop" {
-		return true
-	}
 	if event.ContentBlock != nil {
 		block := event.ContentBlock
 		return block.Type == "tool_use" ||
 			block.Text != "" ||
 			block.Thinking != "" ||
-			block.Signature != "" ||
 			block.Source != nil
 	}
 	if event.Delta != nil {
 		delta := event.Delta
 		return delta.Text != "" ||
 			delta.PartialJSON != "" ||
-			delta.Thinking != "" ||
-			delta.Signature != "" ||
-			delta.StopReason != ""
+			delta.Thinking != ""
 	}
 	return false
 }
@@ -292,10 +297,7 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStream(
 		select {
 		case event, open := <-events:
 			if !open {
-				if !session.hasMeaningfulData() && !writer.Disconnected() {
-					return nil, antigravityCompatEmptyStreamError()
-				}
-				return session.finish(), nil
+				return session.finish()
 			}
 			if event.err != nil {
 				return s.handleAntigravityCompatReadError(c, session, event.err, maxLineSize, prefix)
@@ -309,7 +311,7 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStream(
 				return session.collectResult(true), nil
 			}
 			if !session.hasMeaningfulData() {
-				return nil, antigravityCompatEmptyStreamError()
+				return session.emptyResult()
 			}
 			logger.LegacyPrintf("service.antigravity_gateway", "Stream data interval timeout (%s)", prefix)
 			writeAntigravityCompatStreamError(c, adapter, writer, "stream_timeout")
@@ -407,7 +409,7 @@ func (s *AntigravityGatewayService) handleAntigravityCompatReadError(
 	prefix string,
 ) (*antigravityStreamResult, error) {
 	if !session.hasMeaningfulData() && !session.writer.Disconnected() {
-		return nil, antigravityCompatEmptyStreamError()
+		return session.emptyResult()
 	}
 	if disconnect, handled := handleStreamReadError(err, session.writer.Disconnected(), prefix); handled {
 		return session.collectResult(disconnect), nil
@@ -415,10 +417,14 @@ func (s *AntigravityGatewayService) handleAntigravityCompatReadError(
 	if errors.Is(err, bufio.ErrTooLong) {
 		logger.LegacyPrintf("service.antigravity_gateway", "SSE line too long (%s): max_size=%d error=%v", prefix, maxLineSize, err)
 		writeAntigravityCompatStreamError(c, session.adapter, session.writer, "response_too_large")
-		return session.result(false), err
+		return session.collectResult(false), err
 	}
 	writeAntigravityCompatStreamError(c, session.adapter, session.writer, "stream_read_error")
-	return nil, fmt.Errorf("stream read error: %w", err)
+	result := session.collectResult(false)
+	if !result.usage.hasObservedTokens() {
+		result = nil
+	}
+	return result, fmt.Errorf("stream read error: %w", err)
 }
 
 func writeAntigravityCompatStreamError(

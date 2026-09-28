@@ -168,9 +168,27 @@ func (s *OpenAIGatewayService) forwardAlphaSearchViaResponsesWebSearch(
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
-	if err != nil {
-		return nil, fmt.Errorf("read alpha search responses fallback response: %w", err)
+	// Keep already observed search completion evidence on a truncated transport.
+	// The ordinary response reader discards partial bytes on error.
+	limit := resolveUpstreamResponseReadLimit(s.cfg)
+	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if int64(len(respBody)) > limit {
+		respBody = respBody[:limit]
+		readErr = fmt.Errorf("%w: limit=%d", ErrUpstreamResponseBodyTooLarge, limit)
+		setOpsUpstreamError(c, http.StatusBadGateway, "upstream response too large", "")
+		openAITooLargeError(c)
+	}
+	result := &OpenAIForwardResult{
+		RequestID: strings.TrimSpace(resp.Header.Get("x-request-id")), UpstreamHeaders: resp.Header,
+		Model: requestedModel, UpstreamModel: upstreamModel, UpstreamEndpoint: "/v1/responses",
+		ResponseHeaders: resp.Header.Clone(), Duration: time.Since(upstreamStart), WebSearchCalls: 1,
+	}
+	partialResult := (*OpenAIForwardResult)(nil)
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices && hasCompletedOpenAIAlphaSearchCall(respBody) {
+		partialResult = result
+	}
+	if readErr != nil {
+		return partialResult, fmt.Errorf("read alpha search responses fallback response: %w", readErr)
 	}
 
 	if resp.StatusCode >= http.StatusBadRequest {
@@ -208,19 +226,37 @@ func (s *OpenAIGatewayService) forwardAlphaSearchViaResponsesWebSearch(
 	}
 	alphaRespBody, err := openAIAlphaSearchResponseFromResponsesSSE(respBody)
 	if err != nil {
-		return nil, err
+		return partialResult, err
 	}
 	c.Data(http.StatusOK, "application/json", alphaRespBody)
-	return &OpenAIForwardResult{
-		RequestID:        strings.TrimSpace(resp.Header.Get("x-request-id")),
-		UpstreamHeaders:  resp.Header,
-		Model:            requestedModel,
-		UpstreamModel:    upstreamModel,
-		UpstreamEndpoint: "/v1/responses",
-		ResponseHeaders:  resp.Header.Clone(),
-		Duration:         time.Since(upstreamStart),
-		WebSearchCalls:   1,
-	}, nil
+	return result, nil
+}
+
+// Alpha search is billed once per search request, not once per SSE event or token.
+// Only an explicit completed search call preserves that charge on response failure.
+func hasCompletedOpenAIAlphaSearchCall(body []byte) bool {
+	for _, block := range strings.Split(strings.ReplaceAll(string(body), "\r\n", "\n"), "\n\n") {
+		data := openAIAlphaSearchSSEData(block)
+		if !gjson.Valid(data) {
+			continue
+		}
+		event := gjson.Parse(data)
+		if event.Get("type").String() == "response.web_search_call.completed" {
+			return true
+		}
+		completedCall := func(item gjson.Result) bool {
+			return item.Get("type").String() == "web_search_call" && item.Get("status").String() == "completed"
+		}
+		if event.Get("type").String() == "response.output_item.done" && completedCall(event.Get("item")) {
+			return true
+		}
+		for _, item := range event.Get("response.output").Array() {
+			if completedCall(item) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func openAIAlphaSearchSchedulingModel(account *Account, requestedModel string) string {
@@ -553,7 +589,10 @@ func shouldApplyOpenAIAlphaSearchAccountErrorSideEffects(statusCode int) bool {
 }
 
 func openAIAlphaSearchResponseFromResponsesSSE(body []byte) ([]byte, error) {
-	output, results := parseOpenAIResponsesSSEForAlphaSearch(body)
+	output, results, err := parseOpenAIResponsesSSEForAlphaSearch(body)
+	if err != nil {
+		return nil, err
+	}
 	resp := map[string]any{
 		"output": output,
 	}
@@ -563,7 +602,7 @@ func openAIAlphaSearchResponseFromResponsesSSE(body []byte) ([]byte, error) {
 	return json.Marshal(resp)
 }
 
-func parseOpenAIResponsesSSEForAlphaSearch(body []byte) (string, []any) {
+func parseOpenAIResponsesSSEForAlphaSearch(body []byte) (string, []any, error) {
 	text := strings.ReplaceAll(string(body), "\r\n", "\n")
 	var output strings.Builder
 	var completedResponse any
@@ -579,13 +618,28 @@ func parseOpenAIResponsesSSEForAlphaSearch(body []byte) (string, []any) {
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
 			continue
 		}
+		switch event["type"] {
+		case "error", "response.failed", "response.incomplete":
+			return "", nil, fmt.Errorf("alpha search responses stream ended with %s", event["type"])
+		case "response.completed":
+			response, ok := event["response"].(map[string]any)
+			if !ok || response == nil {
+				return "", nil, fmt.Errorf("alpha search responses completion is missing its response")
+			}
+			if status, present := response["status"]; present && status != "completed" {
+				return "", nil, fmt.Errorf("alpha search responses completion has a non-success status")
+			}
+			completedResponse = response
+		}
 		if delta, _ := event["delta"].(string); delta != "" && event["type"] == "response.output_text.delta" {
 			_, _ = output.WriteString(delta)
 		}
-		if event["type"] == "response.completed" {
-			completedResponse = event["response"]
-		}
 		collectOpenAIAlphaSearchURLCitations(event, &results, seenURLs)
+	}
+	// A transport-level 200, deltas or [DONE] alone are not a successful
+	// search. Do not return partial content or a billable result on EOF.
+	if completedResponse == nil {
+		return "", nil, fmt.Errorf("alpha search responses stream ended before completion")
 	}
 
 	out := output.String()
@@ -593,7 +647,7 @@ func parseOpenAIResponsesSSEForAlphaSearch(body []byte) (string, []any) {
 		out = extractOpenAIResponsesCompletedText(completedResponse)
 		collectOpenAIAlphaSearchURLCitations(completedResponse, &results, seenURLs)
 	}
-	return out, results
+	return out, results, nil
 }
 
 func openAIAlphaSearchSSEData(block string) string {

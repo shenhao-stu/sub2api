@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -544,7 +545,7 @@ func TestAntigravityCompatEmptyStreamTriggersFailover(t *testing.T) {
 	}
 }
 
-func TestAntigravityCompatUsageOnlyStreamTriggersFailover(t *testing.T) {
+func TestAntigravityCompatUsageOnlyStreamPreservesBilling(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
@@ -579,13 +580,48 @@ func TestAntigravityCompatUsageOnlyStreamTriggersFailover(t *testing.T) {
 
 			result, err := tt.run(svc, c, resp)
 
-			require.Nil(t, result)
+			require.NotNil(t, result)
+			require.Equal(t, 8, result.usage.InputTokens)
+			require.Error(t, err)
 			var failoverErr *UpstreamFailoverError
-			require.ErrorAs(t, err, &failoverErr)
-			require.True(t, failoverErr.RetryableOnSameAccount)
+			require.NotErrorAs(t, err, &failoverErr, "known consumed tokens must not trigger regeneration")
 			require.Empty(t, recorder.Body.String())
 			require.Empty(t, recorder.Header().Get("Content-Type"))
 		})
+	}
+}
+
+func TestAntigravityCompatEmptyContentPreservesRealUsage(t *testing.T) {
+	for _, responses := range []bool{false, true} {
+		for _, readFailure := range []bool{false, true} {
+			name := fmt.Sprintf("responses=%v/read_failure=%v", responses, readFailure)
+			t.Run(name, func(t *testing.T) {
+				wire := []byte(`data: {"response":{"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":3},"candidates":[{"finishReason":"STOP"}]}}` + "\n\n")
+				var reader io.ReadCloser = io.NopCloser(bytes.NewReader(wire))
+				if readFailure {
+					reader = &antigravityCompatErrorReader{data: wire, err: io.ErrUnexpectedEOF}
+				}
+				upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{{StatusCode: http.StatusOK, Header: http.Header{}, Body: reader}}}
+				svc := newAntigravityCompatService(config.GatewayConfig{}, upstream)
+				body := []byte(`{"model":"gemini-3.1-pro-high","stream":true,"messages":[{"role":"user","content":"fixture"}]}`)
+				path := "/v1/chat/completions"
+				call := svc.ForwardAsChatCompletions
+				if responses {
+					path, call = "/v1/responses", svc.ForwardAsResponses
+					body = []byte(`{"model":"gemini-3.1-pro-high","stream":true,"input":"fixture"}`)
+				}
+				c, rec := newAntigravityCompatContext(http.MethodPost, path, body)
+				result, err := call(context.Background(), c, newAntigravityCompatAccount(AccountTypeOAuth), body, nil)
+				require.Error(t, err)
+				var failover *UpstreamFailoverError
+				require.NotErrorAs(t, err, &failover)
+				require.NotNil(t, result)
+				require.Equal(t, 8, result.Usage.InputTokens)
+				require.Equal(t, 3, result.Usage.OutputTokens)
+				require.Len(t, upstream.requestBodies, 1)
+				require.Empty(t, rec.Body.String())
+			})
+		}
 	}
 }
 
@@ -754,7 +790,9 @@ func TestAntigravityCompatStreamErrorCommitsSingleTerminalFrame(t *testing.T) {
 	result, err := svc.handleResponsesStreamingFromAntigravity(c, resp, time.Now(), "gemini-3.1-pro-high")
 
 	require.Error(t, err)
-	require.Nil(t, result)
+	require.NotNil(t, result)
+	require.Equal(t, 8, result.usage.InputTokens)
+	require.Equal(t, 1, result.usage.OutputTokens)
 	require.True(t, IsResponseCommitted(c))
 	require.Equal(t, 1, strings.Count(recorder.Body.String(), "event: error"))
 }
