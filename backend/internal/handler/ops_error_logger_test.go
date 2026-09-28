@@ -116,6 +116,7 @@ func resetOpsErrorLoggerStateForTest(t *testing.T) {
 	opsErrorLogStopping = false
 
 	opsErrorLogQueueLen.Store(0)
+	opsErrorLogQueueBytes.Store(0)
 	opsErrorLogEnqueued.Store(0)
 	opsErrorLogDropped.Store(0)
 	opsErrorLogProcessed.Store(0)
@@ -251,6 +252,7 @@ func TestOpsErrorLoggerMiddleware_DoesNotBreakOuterMiddlewares(t *testing.T) {
 func setupOpsErrorLogTestQueue(t *testing.T, size int) {
 	t.Helper()
 	resetOpsErrorLoggerStateForTest(t)
+	t.Cleanup(func() { resetOpsErrorLoggerStateForTest(t) })
 	opsErrorLogOnce.Do(func() {})
 	opsErrorLogMu.Lock()
 	opsErrorLogQueue = make(chan opsErrorLogJob, size)

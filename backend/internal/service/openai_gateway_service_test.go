@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -2255,47 +2256,56 @@ func TestOpenAIStreamingPreambleOnlyMissingTerminalReturnsFailover(t *testing.T)
 
 func TestOpenAIStreamingPreambleKeepaliveUsesDownstreamIdle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	cfg := &config.Config{
-		Gateway: config.GatewayConfig{
-			StreamDataIntervalTimeout: 0,
-			// Keepalive is based on *downstream* idle time (last flush to client),
-			// not upstream event cadence. Interval is seconds (config unit).
-			StreamKeepaliveInterval: 1,
-			MaxLineSize:             defaultMaxLineSize,
-		},
-	}
-	svc := &OpenAIGatewayService{cfg: cfg}
+	synctest.Test(t, func(t *testing.T) {
+		svc := &OpenAIGatewayService{cfg: &config.Config{
+			Gateway: config.GatewayConfig{
+				StreamKeepaliveInterval: 1,
+				MaxLineSize:             defaultMaxLineSize,
+			},
+		}}
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
 
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+		pr, pw := io.Pipe()
+		defer pr.Close()
+		defer pw.Close()
+		resp := &http.Response{StatusCode: http.StatusOK, Body: pr, Header: http.Header{}}
+		var result *openaiStreamingResult
+		var err error
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			result, err = svc.handleStreamingResponse(c.Request.Context(), resp, c,
+				&Account{ID: 1, Platform: PlatformOpenAI, Name: "acc"}, time.Now(), "model", "model")
+		}()
 
-	pr, pw := io.Pipe()
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Body:       pr,
-		Header:     http.Header{},
-	}
+		_, writeErr := io.WriteString(pw, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n")
+		require.NoError(t, writeErr)
+		synctest.Wait()
+		// Frequent upstream metadata must not reset the downstream idle clock.
+		for range 9 {
+			time.Sleep(100 * time.Millisecond)
+			_, writeErr = io.WriteString(pw, "data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_1\"}}\n\n")
+			require.NoError(t, writeErr)
+			synctest.Wait()
+		}
+		require.Empty(t, rec.Body.String(), "preamble stays buffered before semantic output")
+		time.Sleep(200 * time.Millisecond)
+		synctest.Wait()
+		require.Equal(t, ":\n\n", rec.Body.String(), "heartbeat must reach the client before upstream completion")
+		require.True(t, rec.Flushed)
 
-	go func() {
-		defer func() { _ = pw.Close() }()
-		// Emit preamble/progress quickly so clientOutputStarted is true, then
-		// leave a real downstream idle gap longer than keepaliveInterval so the
-		// ticker can write ":\n\n". Frequent upstream ticks used to refresh
-		// lastDownstreamWriteAt and flake on loaded CI runners.
-		_, _ = pw.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n"))
-		time.Sleep(50 * time.Millisecond)
-		_, _ = pw.Write([]byte("data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_1\"}}\n\n"))
-		time.Sleep(1300 * time.Millisecond)
-		_, _ = pw.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n"))
-	}()
-
-	result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI, Name: "acc"}, time.Now(), "model", "model")
-	_ = pr.Close()
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Contains(t, rec.Body.String(), ":\n\n")
-	require.Contains(t, rec.Body.String(), "response.completed")
+		_, writeErr = io.WriteString(pw, "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n")
+		require.NoError(t, writeErr)
+		require.NoError(t, pw.Close())
+		<-done
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Equal(t, 1, result.usage.InputTokens)
+		require.Equal(t, 2, result.usage.OutputTokens)
+		require.Contains(t, rec.Body.String(), "response.completed")
+	})
 }
 
 func TestOpenAIStreamingNormalizesTerminalOutputFromDeltas(t *testing.T) {
