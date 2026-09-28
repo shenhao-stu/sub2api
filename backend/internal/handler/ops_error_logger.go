@@ -527,22 +527,23 @@ type opsCaptureWriter struct {
 }
 
 type opsCaptureWriterState struct {
-	mu             sync.RWMutex
-	inFlight       sync.WaitGroup
-	generation     uint64
-	responseWriter gin.ResponseWriter
-	limit          int
-	buf            bytes.Buffer
-	probe          []byte
-	lineProbe      []byte
-	frameLineLen   int
-	frameTruncated bool
-	lineTruncated  bool
-	skipLF         bool
-	sseCapturing   bool
-	terminalError  parsedOpsError
-	terminalFound  bool
-	ctx            *gin.Context
+	mu              sync.RWMutex
+	inFlight        sync.WaitGroup
+	generation      uint64
+	responseWriter  gin.ResponseWriter
+	limit           int
+	buf             bytes.Buffer
+	probe           []byte
+	lineProbe       []byte
+	frameLineLen    int
+	frameTruncated  bool
+	lineTruncated   bool
+	skipLF          bool
+	sseCapturing    bool
+	terminalError   parsedOpsError
+	terminalFound   bool
+	lateErrorStatus int
+	ctx             *gin.Context
 }
 
 const (
@@ -590,6 +591,7 @@ func acquireOpsCaptureWriterFromPool(pool opsCaptureWriterStatePool, rw gin.Resp
 	state.sseCapturing = false
 	state.terminalError = parsedOpsError{}
 	state.terminalFound = false
+	state.lateErrorStatus = 0
 	state.ctx = nil
 	generation := state.generation
 	state.mu.Unlock()
@@ -625,6 +627,7 @@ func releaseOpsCaptureWriter(w *opsCaptureWriter) {
 	state.sseCapturing = false
 	state.terminalError = parsedOpsError{}
 	state.terminalFound = false
+	state.lateErrorStatus = 0
 	poolable := shouldPoolOpsCaptureWriterState(state)
 	state.buf.Reset()
 	state.mu.Unlock()
@@ -712,6 +715,15 @@ func (w *opsCaptureWriter) capturedTerminalError() (parsedOpsError, bool) {
 	return state.terminalError, state.terminalFound
 }
 
+func (w *opsCaptureWriter) capturedErrorStatus() int {
+	state, _ := w.lockActive()
+	if state == nil {
+		return 0
+	}
+	defer state.mu.RUnlock()
+	return state.lateErrorStatus
+}
+
 func (w *opsCaptureWriter) finalizeCapture() {
 	state, _ := w.lockActiveWrite()
 	if state == nil {
@@ -733,6 +745,11 @@ func (w *opsCaptureWriter) WriteHeader(code int) {
 	state, rw := w.beginDelegatedCall()
 	if state == nil {
 		return
+	}
+	// A JSON keepalive may have committed 200 before the final error arrives.
+	// Retain only an explicit later failure; successful bodies stay unbuffered.
+	if code >= 400 && code <= 599 && state.lateErrorStatus == 0 && rw.Written() && rw.Status() >= 200 && rw.Status() < 300 {
+		state.lateErrorStatus = code
 	}
 	state.mu.Unlock()
 	defer finishDelegatedCall(state)
@@ -912,7 +929,7 @@ func (state *opsCaptureWriterState) captureResponseChunk(chunk []byte, status in
 	if state == nil || state.limit <= 0 || len(chunk) == 0 {
 		return
 	}
-	if status >= 400 {
+	if status >= 400 || state.lateErrorStatus >= 400 {
 		state.appendCapturedResponse(chunk)
 		return
 	}
@@ -1110,6 +1127,9 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 		}
 
 		status := c.Writer.Status()
+		if lateStatus := w.capturedErrorStatus(); status < 400 && lateStatus >= 400 {
+			status = lateStatus
+		}
 		body := w.capturedBytes()
 		parsed := parseOpsErrorResponse(body)
 		if !parsed.StreamFailure {
@@ -1187,8 +1207,12 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 
 		phase, isBusinessLimited, errorOwner, errorSource := classifyOpsErrorLog(c, normalizedType, parsed.Message, parsed.Code, status)
 		localConcurrencyFailure := isOpsLocalConcurrencyFailure(c, parsed)
-		if localConcurrencyFailure {
+		localPolicyFailure := service.HasOpsClientBusinessLimited(c) && service.OpsClientBusinessLimitedReason(c) == service.OpsClientBusinessLimitedReasonLocalPolicyDenied
+		if localConcurrencyFailure || localPolicyFailure {
 			phase, isBusinessLimited = "request", true
+			if localPolicyFailure {
+				phase = "auth"
+			}
 			errorOwner = classifyOpsErrorOwner(phase, parsed.Message)
 			errorSource = classifyOpsErrorSource(phase, parsed.Message)
 		}
@@ -1249,7 +1273,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 		}
 		applyOpsLatencyFieldsFromContext(c, entry)
 		applyOpsUpstreamFieldsFromContext(c, entry)
-		if parsed.StreamFailure && !localConcurrencyFailure {
+		if parsed.StreamFailure && !localConcurrencyFailure && !localPolicyFailure {
 			if message := strings.TrimSpace(parsed.Message); message != "" {
 				entry.UpstreamErrorMessage = &message
 			}
@@ -1258,9 +1282,9 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 				entry.UpstreamStatusCode = &finalStatus
 			}
 		}
-		if localConcurrencyFailure {
-			// A local queue rejection is not a new provider response. Keep any
-			// earlier attempt history, without attributing the final 429 to it.
+		if localConcurrencyFailure || localPolicyFailure {
+			// Local rejections are not provider responses. Keep earlier attempts
+			// without attributing this final failure to them.
 			entry.UpstreamStatusCode = nil
 			entry.UpstreamErrorMessage = nil
 			entry.UpstreamErrorDetail = nil
@@ -2044,9 +2068,9 @@ func sanitizeOpsSSEDataForPersistence(body []byte) string {
 
 func inferResponsesFailedOpsErrorType(code string) string {
 	switch strings.TrimSpace(code) {
-	case "rate_limit_exceeded", gatewayConcurrencyLimitCode, gatewayQueueFullCode:
+	case "rate_limit_exceeded", "insufficient_quota", gatewayConcurrencyLimitCode, gatewayQueueFullCode:
 		return "rate_limit_error"
-	case "permission_denied", "permission_error", "insufficient_permissions", "cyber_policy", "content_policy":
+	case "permission_denied", "permission_error", "insufficient_permissions", "cyber_policy", "content_policy", "content_policy_violation":
 		return "permission_error"
 	case "invalid_request", "context_length_exceeded":
 		return "invalid_request_error"
@@ -2066,9 +2090,9 @@ func inferStreamFailureStatus(_ *gin.Context, parsed parsedOpsError) int {
 		return parsed.StatusCode
 	}
 	switch strings.TrimSpace(parsed.Code) {
-	case "rate_limit_exceeded", gatewayConcurrencyLimitCode, gatewayQueueFullCode:
+	case "rate_limit_exceeded", "insufficient_quota", gatewayConcurrencyLimitCode, gatewayQueueFullCode:
 		return http.StatusTooManyRequests
-	case "permission_denied", "permission_error", "insufficient_permissions", "cyber_policy", "content_policy":
+	case "permission_denied", "permission_error", "insufficient_permissions", "cyber_policy", "content_policy", "content_policy_violation":
 		return http.StatusForbidden
 	case "invalid_request", "context_length_exceeded":
 		return http.StatusBadRequest

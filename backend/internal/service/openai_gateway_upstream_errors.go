@@ -744,12 +744,12 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		errMsg = upstreamMsg
 	}
 
-	c.JSON(statusCode, gin.H{
-		"error": gin.H{
-			"type":    errType,
-			"message": errMsg,
-		},
-	})
+	errorBody := gin.H{"type": errType, "message": errMsg}
+	if IsUpstreamQuotaExhausted(resp.StatusCode, body) {
+		errorBody["code"] = "insufficient_quota"
+		errorBody["message"] = UpstreamQuotaExhaustedMessage
+	}
+	c.JSON(statusCode, gin.H{"error": errorBody})
 
 	if upstreamMsg == "" {
 		return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)
@@ -907,6 +907,10 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 		errType = "api_error"
 	}
 
-	writeError(c, resp.StatusCode, errType, upstreamMsg)
+	clientMsg := upstreamMsg
+	if IsUpstreamQuotaExhausted(resp.StatusCode, body) {
+		clientMsg = UpstreamQuotaExhaustedMessage
+	}
+	writeError(c, resp.StatusCode, errType, clientMsg)
 	return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
 }

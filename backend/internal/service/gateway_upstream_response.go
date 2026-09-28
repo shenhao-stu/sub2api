@@ -513,12 +513,14 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 	}
 
 	// 返回自定义错误响应
+	errorBody := gin.H{"type": errType, "message": errMsg}
+	if IsUpstreamQuotaExhausted(resp.StatusCode, body) {
+		errorBody["code"] = "insufficient_quota"
+		errorBody["message"] = UpstreamQuotaExhaustedMessage
+	}
 	c.JSON(statusCode, gin.H{
-		"type": "error",
-		"error": gin.H{
-			"type":    errType,
-			"message": errMsg,
-		},
+		"type":  "error",
+		"error": errorBody,
 	})
 
 	if upstreamMsg == "" {

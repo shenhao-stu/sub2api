@@ -32,13 +32,10 @@ func readUpstreamResponseBodyLimited(reader io.Reader, maxBytes int64) ([]byte, 
 	}
 
 	body, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
-	if err != nil {
-		return nil, err
-	}
 	if int64(len(body)) > maxBytes {
-		return nil, fmt.Errorf("%w: limit=%d", ErrUpstreamResponseBodyTooLarge, maxBytes)
+		return body[:maxBytes], fmt.Errorf("%w: limit=%d", ErrUpstreamResponseBodyTooLarge, maxBytes)
 	}
-	return body, nil
+	return body, err
 }
 
 // TooLargeWriter 在响应超限时向客户端写格式化的错误响应。
@@ -46,6 +43,8 @@ type TooLargeWriter func(c *gin.Context)
 
 // ReadUpstreamResponseBody 读取上游非流式响应体。
 // 超限时自动记录 ops error 并调用 onTooLarge 向客户端写错误。
+// On failure, bounded bytes already read are retained for usage settlement;
+// callers must still treat the response as unsuccessful.
 func ReadUpstreamResponseBody(reader io.Reader, cfg *config.Config, c *gin.Context, onTooLarge TooLargeWriter) ([]byte, error) {
 	maxBytes := resolveUpstreamResponseReadLimit(cfg)
 	body, err := readUpstreamResponseBodyLimited(reader, maxBytes)
@@ -56,7 +55,7 @@ func ReadUpstreamResponseBody(reader io.Reader, cfg *config.Config, c *gin.Conte
 				onTooLarge(c)
 			}
 		}
-		return nil, err
+		return body, err
 	}
 	return body, nil
 }

@@ -32,7 +32,7 @@ func TestReadUpstreamResponseBodyLimited(t *testing.T) {
 
 	t.Run("exceeds limit", func(t *testing.T) {
 		body, err := readUpstreamResponseBodyLimited(bytes.NewReader([]byte("toolong")), 3)
-		require.Nil(t, body)
+		require.Equal(t, []byte("too"), body)
 		require.Error(t, err)
 		require.True(t, errors.Is(err, ErrUpstreamResponseBodyTooLarge))
 	})
@@ -53,7 +53,7 @@ func TestReadUpstreamResponseBody(t *testing.T) {
 		onTooLarge := func(_ *gin.Context) { called = true }
 
 		body, err := ReadUpstreamResponseBody(bytes.NewReader([]byte("toolong")), cfg, nil, onTooLarge)
-		require.Nil(t, body)
+		require.Equal(t, []byte("too"), body)
 		require.True(t, errors.Is(err, ErrUpstreamResponseBodyTooLarge))
 		require.True(t, called)
 	})
@@ -63,7 +63,7 @@ func TestReadUpstreamResponseBody(t *testing.T) {
 		cfg.Gateway.UpstreamResponseReadMaxBytes = 3
 
 		body, err := ReadUpstreamResponseBody(bytes.NewReader([]byte("toolong")), cfg, nil, nil)
-		require.Nil(t, body)
+		require.Equal(t, []byte("too"), body)
 		require.True(t, errors.Is(err, ErrUpstreamResponseBodyTooLarge))
 	})
 
@@ -72,7 +72,7 @@ func TestReadUpstreamResponseBody(t *testing.T) {
 		onTooLarge := func(_ *gin.Context) { called = true }
 
 		body, err := ReadUpstreamResponseBody(iotest.ErrReader(errors.New("disk failure")), nil, nil, onTooLarge)
-		require.Nil(t, body)
+		require.Empty(t, body)
 		require.Error(t, err)
 		require.False(t, errors.Is(err, ErrUpstreamResponseBodyTooLarge))
 		require.False(t, called)

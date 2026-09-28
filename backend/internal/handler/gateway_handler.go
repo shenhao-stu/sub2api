@@ -334,6 +334,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					reqLog.Info("gateway.account_select_aborted_client_disconnected", zap.Error(err))
 					return
 				}
+				if h.handleAccountSelectionPolicyError(c, err, streamStarted) {
+					return
+				}
 				if len(fs.FailedAccountIDs) == 0 {
 					cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, service.PlatformGemini)
 					if !cls.ModelNotFound {
@@ -672,6 +675,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if err != nil {
 				if failoverClientGone(c) {
 					reqLog.Info("gateway.account_select_aborted_client_disconnected", zap.Error(err))
+					return
+				}
+				if h.handleAccountSelectionPolicyError(c, err, streamStarted) {
 					return
 				}
 				if len(fs.FailedAccountIDs) == 0 {
@@ -1883,6 +1889,15 @@ func (h *GatewayHandler) handleConcurrencyError(c *gin.Context, err error, slotT
 	h.handleStreamingAwareErrorWithCode(c, status, errType, code, message, streamStarted)
 }
 
+func (h *GatewayHandler) handleAccountSelectionPolicyError(c *gin.Context, err error, streamStarted bool) bool {
+	if !errors.Is(err, service.ErrClaudeCodeOnly) {
+		return false
+	}
+	service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalPolicyDenied)
+	h.handleStreamingAwareErrorWithCode(c, http.StatusForbidden, "permission_error", "claude_code_only", "This group is restricted to Claude Code clients", streamStarted)
+	return true
+}
+
 func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, platform string, streamStarted bool) {
 	statusCode := failoverErr.StatusCode
 	responseBody := failoverErr.ResponseBody
@@ -1919,6 +1934,10 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 	// 记录原始上游状态码，以便 ops 错误日志捕获真实的上游错误
 	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
 	service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
+	if service.IsUpstreamQuotaExhausted(statusCode, responseBody) {
+		h.handleStreamingAwareErrorWithCode(c, http.StatusTooManyRequests, "rate_limit_error", "insufficient_quota", service.UpstreamQuotaExhaustedMessage, streamStarted)
+		return
+	}
 
 	// 使用默认的错误映射
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
@@ -2193,6 +2212,9 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	// 选择支持该模型的账号
 	account, err := h.gatewayService.SelectAccountForModel(c.Request.Context(), apiKey.GroupID, sessionHash, parsedReq.Model)
 	if err != nil {
+		if h.handleAccountSelectionPolicyError(c, err, false) {
+			return
+		}
 		reqLog.Warn("gateway.count_tokens_select_account_failed", zap.Error(err))
 		cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, parsedReq.Model, parsedReq.Model, service.PlatformAnthropic)
 		if !cls.ModelNotFound {

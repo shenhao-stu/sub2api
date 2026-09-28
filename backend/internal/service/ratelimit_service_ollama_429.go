@@ -28,12 +28,6 @@ type ollamaCloudUsageProbeScheduler interface {
 	ScheduleOllamaCloudUsageRateLimitProbe(accountID int64, onExhausted OllamaCloudUsageRateLimitProbeCallback) bool
 }
 
-// ollamaCloudUsageRateLimitExtender extends (never shrinks) an account-level
-// rate limit via the concrete repository (SetRateLimitedIfLater).
-type ollamaCloudUsageRateLimitExtender interface {
-	SetRateLimitedIfLater(ctx context.Context, id int64, resetAt time.Time) error
-}
-
 // ollamaCloudUsageRateLimitSetterIfGeneration atomically writes a new reset only
 // while the account still carries the exact generation the caller observed
 // (UpdatedAt == expectedUpdatedAt AND RateLimitedAt == expectedLimitedAt AND
@@ -92,7 +86,7 @@ func (s *RateLimitService) handleOllamaCloudUsage429(ctx context.Context, accoun
 // later from the authoritative row, never here, so an IfLater no-op never sends a
 // shorter runtime-block notification.
 func (s *RateLimitService) applyOllamaCloudUsageImmediateCooldown(ctx context.Context, account *Account, shortReset time.Time) {
-	if extender, ok := s.accountRepo.(ollamaCloudUsageRateLimitExtender); ok {
+	if extender, ok := s.accountRepo.(accountRateLimitExtender); ok {
 		if err := extender.SetRateLimitedIfLater(ctx, account.ID, shortReset); err != nil {
 			slog.Warn("rate_limit_ollama_429_iflater_failed", "account_id", account.ID, "error", err)
 		}

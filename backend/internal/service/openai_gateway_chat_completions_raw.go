@@ -520,8 +520,11 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
-	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
+	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, nil)
 	if err != nil {
+		if usage := s.handleOpenAIPartialReadFailure(resp, c, respBody, err); usage != nil {
+			return openAICompatMeteredResult(c, resp, *usage, originalModel, billingModel, upstreamModel, startTime), fmt.Errorf("read upstream body: %w", err)
+		}
 		if !errors.Is(err, ErrUpstreamResponseBodyTooLarge) {
 			writeChatCompletionsError(c, http.StatusBadGateway, "api_error", "Failed to read upstream response")
 		}

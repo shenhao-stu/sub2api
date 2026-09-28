@@ -1613,8 +1613,11 @@ func openAICacheCreationTokensFromUsage(value gjson.Result) int {
 }
 
 func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
-	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
+	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, nil)
 	if err != nil {
+		if usage := s.handleOpenAIPartialReadFailure(resp, c, body, err); usage != nil {
+			return &openaiNonStreamingResult{OpenAIUsage: usage, usage: usage}, err
+		}
 		return nil, err
 	}
 	observer := upstreamResponseModelObserverFromContext(c)

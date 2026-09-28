@@ -1267,6 +1267,10 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 			}
 		}
 
+		if s.handleUpstreamQuotaExhausted(ctx, account, headers, responseBody) {
+			return
+		}
+
 		// Anthropic 平台：没有限流重置时间的 429 可能是非真实限流（如 Extra usage required），
 		// 不适合按 5h/7d 窗口长时间封禁；但完全不标记会导致账号永不冷却，
 		// 调度器让每个请求反复撞同一批持续 429 的账号（failover 预算被白白烧掉，
@@ -1289,6 +1293,9 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 	ts, err := strconv.ParseInt(resetTimestamp, 10, 64)
 	if err != nil {
 		slog.Warn("rate_limit_reset_parse_failed", "reset_timestamp", resetTimestamp, "error", err)
+		if s.handleUpstreamQuotaExhausted(ctx, account, headers, responseBody) {
+			return
+		}
 		s.apply429FallbackRateLimit(ctx, account, "reset_parse_failed")
 		return
 	}

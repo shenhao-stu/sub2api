@@ -1309,6 +1309,9 @@ func openAIStreamFailedEventErrorCode(payload []byte) string {
 	if code == "" {
 		code = strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "error.code").String()))
 	}
+	if code == "" {
+		code = strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "code").String()))
+	}
 	return code
 }
 
@@ -1580,10 +1583,7 @@ func openAIStreamFailedEventShouldFailover(payload []byte, message string) bool 
 	if isOpenAITransientProcessingError(http.StatusBadRequest, message, payload) {
 		return true
 	}
-	code := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "response.error.code").String()))
-	if code == "" {
-		code = strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "error.code").String()))
-	}
+	code := openAIStreamFailedEventErrorCode(payload)
 	errType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "response.error.type").String()))
 	if errType == "" {
 		errType = strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "error.type").String()))
@@ -1628,12 +1628,28 @@ func openAIStreamErrorEventShouldFailover(payload []byte, message string) bool {
 	if isOpenAITransientProcessingError(http.StatusBadRequest, message, payload) {
 		return true
 	}
+	if openAIStreamFailedEventShouldFailover(payload, message) && isOpenAIStreamExplicitServerError(payload, message) {
+		return true
+	}
 	combined := strings.ToLower(strings.TrimSpace(message + " " +
 		gjson.GetBytes(payload, "error.message").String() + " " +
 		gjson.GetBytes(payload, "response.error.message").String()))
 	return strings.Contains(combined, "temporary") ||
 		strings.Contains(combined, "try again") ||
 		strings.Contains(combined, "please retry")
+}
+
+func isOpenAIStreamExplicitServerError(payload []byte, message string) bool {
+	for _, path := range openAIStreamErrorStatusPaths {
+		if status := gjson.GetBytes(payload, path).Int(); status >= 500 && status <= 599 {
+			return true
+		}
+	}
+	switch openAIStreamFailedEventErrorCode(payload) {
+	case "server_error", "internal_error", "internal_server_error":
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(message), "Internal error during token generation")
 }
 
 func (s *OpenAIGatewayService) handleOpenAIStreamTerminalAccountSideEffects(
@@ -2340,8 +2356,11 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	originalModel string,
 	mappedModel string,
 ) (*openaiNonStreamingResultPassthrough, error) {
-	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
+	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, nil)
 	if err != nil {
+		if usage := s.handleOpenAIPartialReadFailure(resp, c, body, err); usage != nil {
+			return &openaiNonStreamingResultPassthrough{OpenAIUsage: usage, usage: usage}, err
+		}
 		return nil, err
 	}
 	observer := upstreamResponseModelObserverFromContext(c)
