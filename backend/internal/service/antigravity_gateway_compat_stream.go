@@ -193,6 +193,19 @@ func (s *antigravityCompatStreamSession) emptyResult() (*antigravityStreamResult
 	return nil, antigravityCompatEmptyStreamError()
 }
 
+func (s *antigravityCompatStreamSession) preContentTimeout(c *gin.Context, pendingLine string) (*antigravityStreamResult, error) {
+	// Preserve usage in a complete line already read before enforcing the deadline.
+	// Do not emit its late content or let it reopen the first-content budget.
+	if pendingLine != "" {
+		s.processor.ProcessLine(strings.TrimRight(pendingLine, "\r\n"))
+	}
+	if s.preContentKeepaliveSent {
+		writeAntigravityCompatStreamError(c, s.adapter, s.writer, "stream_timeout")
+		return s.collectResult(false), errors.New("pre-content stream timeout")
+	}
+	return s.emptyResult()
+}
+
 func (s *antigravityCompatStreamSession) result(clientDisconnect bool) *antigravityStreamResult {
 	return &antigravityStreamResult{
 		usage:            s.usage,
@@ -337,19 +350,11 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStreamWithKeepaliveIn
 	}
 	deadlineTimer := time.NewTimer(deadlineDelay)
 	defer deadlineTimer.Stop()
-	preContentTimeout := func() (*antigravityStreamResult, error) {
-		if session.preContentKeepaliveSent {
-			writeAntigravityCompatStreamError(c, adapter, writer, "stream_timeout")
-			return session.collectResult(false), fmt.Errorf("pre-content stream timeout")
-		}
-		return session.emptyResult()
-	}
-
 	for {
 		select {
 		case event, open := <-events:
 			if !session.hasMeaningfulData() && !writer.Disconnected() && !time.Now().Before(preContentDeadline) {
-				return preContentTimeout()
+				return session.preContentTimeout(c, event.line)
 			}
 			if !open {
 				if !session.hasMeaningfulData() && !writer.Disconnected() {
@@ -369,7 +374,7 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStreamWithKeepaliveIn
 				return session.collectResult(true), nil
 			}
 			if !session.hasMeaningfulData() {
-				return preContentTimeout()
+				return session.preContentTimeout(c, "")
 			}
 			logger.LegacyPrintf("service.antigravity_gateway", "Stream data interval timeout (%s)", prefix)
 			writeAntigravityCompatStreamError(c, adapter, writer, "stream_timeout")
@@ -381,7 +386,7 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStreamWithKeepaliveIn
 			}
 		case now := <-preContentTimer.C:
 			if !session.hasMeaningfulData() && !writer.Disconnected() && !now.Before(preContentDeadline) {
-				return preContentTimeout()
+				return session.preContentTimeout(c, "")
 			}
 			session.writePreContentKeepalive(now)
 			if !session.hasMeaningfulData() && !writer.Disconnected() {
@@ -389,7 +394,7 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStreamWithKeepaliveIn
 			}
 		case <-deadlineTimer.C:
 			if !session.hasMeaningfulData() && !writer.Disconnected() {
-				return preContentTimeout()
+				return session.preContentTimeout(c, "")
 			}
 		}
 	}
