@@ -225,11 +225,6 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 		}
 		errCtx := withGrokTeamRateLimitModel(ctx, upstreamModel)
 		s.handleGrokAccountUpstreamError(errCtx, account, resp.StatusCode, resp.Header, respBody)
-		// Quota/rate-limit responses stamp the team+model overlay. Capacity is
-		// request pressure and must not hide sibling accounts.
-		if shouldMarkGrokTeamModelRateLimit(resp.StatusCode, respBody) {
-			markGrokTeamModelRateLimit(account, upstreamModel, resolveGrokTeamRateLimitUntil(time.Now().Add(grokTeamRateLimitDefaultTTL), time.Now()))
-		}
 		if s.shouldFailoverGrokUpstreamError(resp.StatusCode, respBody) {
 			retryable, retryDelay, retryDeadline, retryMax := grokSameAccountRetryMetadata(account, resp.StatusCode, respBody)
 			return nil, &UpstreamFailoverError{
@@ -2121,7 +2116,7 @@ func (s *OpenAIGatewayService) handleGrokAccountUpstreamError(ctx context.Contex
 			if decision.Class == GrokFailureFreeUsage {
 				if resetAt, limited := grokRateLimitResetAtForAccount(account, parseGrokQuotaSnapshot(headers, statusCode, now), now); limited && resetAt.After(now) {
 					if decision.Model != "" && isGrokModelSpecificFreeUsage(strings.ToLower(decision.Reason), decision.Model) {
-						markGrokModelQuotaBlock(account.ID, decision.Model, resetAt)
+						markGrokModelQuotaCooldown(account, decision.Model, resetAt)
 						return
 					}
 					s.rateLimitGrok(ctx, account, resetAt)

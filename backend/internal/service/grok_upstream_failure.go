@@ -424,19 +424,6 @@ func grokSameAccountRetryMetadata(account *Account, statusCode int, responseBody
 	return true, 500 * time.Millisecond, time.Now().Add(30 * time.Second), 1
 }
 
-// shouldMarkGrokTeamModelRateLimit controls the process-local sibling-account
-// overlay. Model-capacity responses are request pressure, not a team quota;
-// marking them would hide healthy sibling credentials while the bounded
-// same-account retry is still in progress. Ordinary 429s and free-usage
-// exhaustion retain the existing quota/team isolation behavior.
-func shouldMarkGrokTeamModelRateLimit(statusCode int, responseBody []byte) bool {
-	decision := classifyGrokUpstreamFailure(statusCode, responseBody, "")
-	if decision.Class == GrokFailureModelCapacity {
-		return false
-	}
-	return statusCode == http.StatusTooManyRequests || decision.Class == GrokFailureFreeUsage
-}
-
 func isGrokCompatibilityError(statusCode int, low, code string) bool {
 	if statusCode != http.StatusBadRequest && statusCode != http.StatusUnprocessableEntity {
 		return false
@@ -570,14 +557,15 @@ func (s *OpenAIGatewayService) applyGrokUpstreamFailureDecision(
 		// Model-scoped free usage: soft-block only the named model so other
 		// models on the same account remain pickable (grok2api ModelQuotaBlock).
 		low := strings.ToLower(decision.Reason)
+		until := time.Now().Add(decision.Cooldown)
 		if decision.Model != "" && isGrokModelSpecificFreeUsage(low, decision.Model) {
-			until := time.Now().Add(decision.Cooldown)
-			markGrokModelQuotaBlock(account.ID, decision.Model, until)
+			markGrokModelQuotaCooldown(account, decision.Model, until)
 			// The upstream explicitly scoped exhaustion to this model, so an
 			// account-wide cool would incorrectly take healthy sibling models out
 			// of rotation.
 			return true
 		}
+		markGrokTeamModelRateLimit(account, decision.Model, until)
 	case GrokFailureBilling:
 		low := strings.ToLower(decision.Reason)
 		if strings.Contains(low, "spending") || strings.Contains(low, "credits") {

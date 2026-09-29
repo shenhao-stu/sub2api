@@ -1,0 +1,9 @@
+# Grok cooldown boundaries
+
+The gateway classifies failures once at the provider boundary. HTTP, metered errors and terminal stream errors use the same state transition. The team overlay preserves the account's selected reset, including delays below 30 seconds, with its existing one-hour cap. An expired team observation cannot start another cooldown. A duplicate transport-layer default must not extend a shorter selected deadline. The existing bounded backoff for repeated OAuth 429s remains in effect; it is separate from this overlay bug.
+
+Model-specific free usage blocks the named account/model and the same team/model. Other models remain available. Transient model capacity remains local to that account/model. Account quota still uses persisted cooldowns and existing recovery checks; neither successful failover on another account nor a request-shape error clears a real exhausted quota.
+
+A spending-limit message does not identify the exhausted billing window. Long cooldowns require a successful billing observation within the current window and a finite utilization of at least 100 percent. When weekly and monthly quotas are both exhausted, recovery waits for both. Calendar dates, absent utilization, failed observations and observations from an earlier period cannot justify a long block; the gateway uses the existing ten-minute probe interval in those cases.
+
+Existing persisted cooldowns need evidence-based reconciliation. A successful quota probe clears only the exact rate-limit generation observed before that probe. A billing-only response is not proof that model inference recovered. Do not clear all cooled accounts or erase a newer concurrent limit. Keep account pause flags, proxy settings and credentials unchanged. Legacy deadlines can be corrected only against verified current billing evidence, with a compare-and-swap update and scheduler notification.

@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -27,8 +26,4 @@ func (s *OpenAIGatewayService) handleGrokStreamTerminalError(c *gin.Context, acc
 	body := grokStreamErrorBody(payload)
 	// HTTP 200 headers describe the stream opening, not its later failure.
 	s.handleGrokAccountUpstreamError(withGrokTeamRateLimitModel(ctx, model), account, status, nil, body)
-	if shouldMarkGrokTeamModelRateLimit(status, body) {
-		now := time.Now()
-		markGrokTeamModelRateLimit(account, model, resolveGrokTeamRateLimitUntil(now.Add(grokTeamRateLimitDefaultTTL), now))
-	}
 }

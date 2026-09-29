@@ -97,17 +97,6 @@ func TestGrokRetryableOnSameAccount_CapacityAndRateLimit(t *testing.T) {
 		[]byte(`{"error":{"message":"model at capacity"}}`)))
 }
 
-func TestShouldMarkGrokTeamModelRateLimit_ExcludesCapacity(t *testing.T) {
-	require.False(t, shouldMarkGrokTeamModelRateLimit(http.StatusTooManyRequests,
-		[]byte(`{"error":{"message":"The model is currently at capacity due to high demand"}}`)))
-	require.True(t, shouldMarkGrokTeamModelRateLimit(http.StatusTooManyRequests,
-		[]byte(`{"error":{"message":"rate limit exceeded"}}`)))
-	require.True(t, shouldMarkGrokTeamModelRateLimit(http.StatusBadRequest,
-		[]byte(`{"error":{"code":"subscription:free-usage-exhausted"}}`)))
-	require.False(t, shouldMarkGrokTeamModelRateLimit(http.StatusBadRequest,
-		[]byte(`{"error":{"message":"invalid request"}}`)))
-}
-
 func TestGrokSameAccountRetryMetadata_CapacityDeadline(t *testing.T) {
 	account := &Account{ID: 9107, Platform: PlatformGrok, Type: AccountTypeOAuth}
 	retryable, delay, deadline, retryMax := grokSameAccountRetryMetadata(account, http.StatusTooManyRequests,

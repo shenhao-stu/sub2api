@@ -53,9 +53,7 @@ func TestGrokTeamModelRateLimit_Expires(t *testing.T) {
 	}
 	past := time.Now().Add(-time.Minute)
 	markGrokTeamModelRateLimit(a, "grok-4.5", past)
-	// mark clamps expired until into default TTL from "now" — use direct store inject via past+recheck
-	// After mark with past, resolveGrokTeamRateLimitUntil path isn't used; mark uses now+default when until not after now.
-	require.True(t, isGrokTeamModelRateLimited(a, "grok-4.5", time.Now()))
+	require.False(t, isGrokTeamModelRateLimited(a, "grok-4.5", time.Now()), "expired observations cannot create a new cooldown")
 }
 
 func TestGrokTeamModelRateLimitFilterUsesMappedUpstreamModel(t *testing.T) {

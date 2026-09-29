@@ -30,6 +30,14 @@ func grokModelQuotaBlockKey(accountID int64, model string) string {
 	return strings.TrimSpace(strings.ToLower(model)) + "|" + strconv.FormatInt(accountID, 10)
 }
 
+func markGrokModelQuotaCooldown(account *Account, model string, until time.Time) {
+	if account == nil {
+		return
+	}
+	markGrokModelQuotaBlock(account.ID, model, until)
+	markGrokTeamModelRateLimit(account, model, until)
+}
+
 // markGrokModelQuotaBlock soft-blocks accountID for model until the given time.
 func markGrokModelQuotaBlock(accountID int64, model string, until time.Time) {
 	model = strings.TrimSpace(model)

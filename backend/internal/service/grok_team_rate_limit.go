@@ -30,7 +30,6 @@ var globalGrokTeamModelRateLimits = &grokTeamModelRateLimitStore{
 const (
 	grokTeamRateLimitDefaultTTL = 10 * time.Minute
 	grokTeamRateLimitMaxTTL     = time.Hour
-	grokTeamRateLimitMinTTL     = 30 * time.Second
 )
 
 func grokTeamFingerprint(teamID string) string {
@@ -66,7 +65,7 @@ func markGrokTeamModelRateLimit(account *Account, model string, until time.Time)
 	}
 	now := time.Now()
 	if !until.After(now) {
-		until = now.Add(grokTeamRateLimitDefaultTTL)
+		return
 	}
 	maxUntil := now.Add(grokTeamRateLimitMaxTTL)
 	if until.After(maxUntil) {
@@ -138,12 +137,14 @@ func filterGrokTeamModelRateLimitedAccounts(accounts []Account, model string, no
 // resolveGrokTeamRateLimitUntil derives a team cool window from an observed
 // account rate-limit reset, with sane clamps.
 func resolveGrokTeamRateLimitUntil(resetAt, now time.Time) time.Time {
-	if resetAt.After(now.Add(grokTeamRateLimitMinTTL)) {
-		maxUntil := now.Add(grokTeamRateLimitMaxTTL)
-		if resetAt.After(maxUntil) {
-			return maxUntil
-		}
-		return resetAt
+	if resetAt.IsZero() {
+		return now.Add(grokTeamRateLimitDefaultTTL)
 	}
-	return now.Add(grokTeamRateLimitDefaultTTL)
+	if !resetAt.After(now) {
+		return time.Time{}
+	}
+	if maxUntil := now.Add(grokTeamRateLimitMaxTTL); resetAt.After(maxUntil) {
+		return maxUntil
+	}
+	return resetAt
 }

@@ -97,10 +97,6 @@ func (s *OpenAIGatewayService) handleMeteredOpenAIHTTPError(ctx context.Context,
 	}
 	if account.IsGrok() {
 		s.handleGrokAccountUpstreamError(withGrokTeamRateLimitModel(ctx, upstreamModel), account, resp.StatusCode, resp.Header, responseBody)
-		if shouldMarkGrokTeamModelRateLimit(resp.StatusCode, responseBody) {
-			now := time.Now()
-			markGrokTeamModelRateLimit(account, upstreamModel, resolveGrokTeamRateLimitUntil(now.Add(grokTeamRateLimitDefaultTTL), now))
-		}
 	} else {
 		s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, responseBody, upstreamModel)
 	}
