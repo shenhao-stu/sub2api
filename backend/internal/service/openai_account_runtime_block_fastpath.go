@@ -557,6 +557,15 @@ func (s *OpenAIGatewayService) isOpenAIAccountRequestRuntimeBlocked(account *Acc
 	if s == nil {
 		return false
 	}
+	// Both scheduler modes must honor Grok's observed model quota without
+	// projecting it into an account-wide cooldown.
+	if account != nil && account.IsGrok() {
+		model := canonicalOpenAIAccountSchedulingModel(account, requestedModel)
+		now := time.Now()
+		if isGrokModelQuotaBlocked(account.ID, model, now) || isGrokTeamModelRateLimited(account, model, now) {
+			return true
+		}
+	}
 	snapshot := s.peekOpenAIAccountRuntimeBlock(account)
 	if snapshot.blocked {
 		if accountPersistedSchedulingCooldownActive(account) {
