@@ -974,6 +974,10 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		return nil
 	}
 	keys := []string{
+		// Provider identity must survive candidate projection so Command Code
+		// transport restrictions remain effective before loading full credentials.
+		"provider",
+		"commandcode_zdr",
 		// Anthropic shared-window and Fable-only threshold checks run on this
 		// projection. UpdateExtra refreshes both payloads without a bucket rebuild.
 		"session_window_utilization",

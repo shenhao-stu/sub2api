@@ -242,7 +242,7 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 	capabilityIDs := capabilitySyncModelIDs(enrichIDs)
 
 	source := "upstream"
-	if upstreamCatalogNeedsRegistry(capabilityIDs, catalog.Metadata) {
+	if !account.IsCommandCode() && upstreamCatalogNeedsRegistry(capabilityIDs, catalog.Metadata) {
 		if registryMetadata, registryErr := s.fetchModelsDevMetadata(ctx, account, enrichIDs); registryErr == nil {
 			for modelID, fallback := range registryMetadata {
 				current := catalog.Metadata[modelID]
@@ -262,10 +262,20 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 	}
 
 	completeMetadata := completeUpstreamModelMetadataSubset(capabilityIDs, catalog.Metadata)
+	if account.IsCommandCode() {
+		// Public catalog fields are useful even when capability details are absent.
+		// Preserve only observed fields and never infer the account's entitlement.
+		completeMetadata = catalog.Metadata
+		source = "commandcode_public_catalog"
+		catalog.Warnings = append(catalog.Warnings, UpstreamModelSyncWarning{
+			Code:    "commandcode_public_catalog",
+			Message: "The public model catalog does not confirm access under this account or Command Code Go subscription.",
+		})
+	}
 	persistedCapabilities := false
 	if len(completeMetadata) > 0 && account != nil && account.ID > 0 && s.accountRepo != nil {
 		// Retain known metadata only for models still listed or explicitly mapped.
-		if previous := account.GetUpstreamModelMetadataSnapshot(); previous != nil {
+		if previous := account.GetUpstreamModelMetadataSnapshot(); previous != nil && !account.IsCommandCode() {
 			retainedModels := capabilityIDs
 			if !liveListAvailable {
 				retainedModels = append([]string(nil), capabilityIDs...)
@@ -730,6 +740,14 @@ func (s *AccountTestService) fetchUpstreamModelList(ctx context.Context, account
 	}
 	if account == nil {
 		return nil, nil, newUpstreamModelSyncConfigError("Account is required", nil)
+	}
+	if account.IsCommandCode() {
+		body, err := s.fetchCommandCodeModelCatalog(ctx, account)
+		if err != nil {
+			return nil, nil, err
+		}
+		models, err := extractUpstreamModelIDs(body)
+		return models, body, err
 	}
 
 	if account.Platform == PlatformAntigravity && account.Type != AccountTypeAPIKey {

@@ -2802,6 +2802,15 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		response.NotFound(c, "Account not found")
 		return
 	}
+	if account.IsCommandCode() {
+		models, err := h.accountTestService.FetchCommandCodeAccountModels(c.Request.Context(), account)
+		if err != nil {
+			response.Error(c, http.StatusBadGateway, err.Error())
+			return
+		}
+		response.Success(c, models)
+		return
+	}
 
 	// Handle OpenAI accounts
 	if account.IsOpenAI() {
@@ -3042,8 +3051,9 @@ func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 		Platform     string            `json:"platform" binding:"required"`
 		Type         string            `json:"type" binding:"required"`
 		BaseURL      string            `json:"base_url"`
-		APIKey       string            `json:"api_key" binding:"required"`
+		APIKey       string            `json:"api_key"`
 		ModelMapping map[string]string `json:"model_mapping"`
+		Extra        map[string]any    `json:"extra"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
@@ -3057,11 +3067,16 @@ func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 	tempAccount := &service.Account{
 		Platform: req.Platform,
 		Type:     req.Type,
+		Extra:    req.Extra,
 		Credentials: map[string]any{
 			"api_key":       req.APIKey,
 			"base_url":      req.BaseURL,
 			"model_mapping": modelMapping,
 		},
+	}
+	if !tempAccount.IsCommandCode() && strings.TrimSpace(req.APIKey) == "" {
+		response.BadRequest(c, "API key is required")
+		return
 	}
 
 	if h.accountTestService == nil {

@@ -1,5 +1,20 @@
 export default {
     accounts: {
+      commandCode: {
+        preset: "接入预设（可选）",
+        custom: "自定义供应商",
+        provider_openai: "Command Code Provider · OpenAI",
+        provider_anthropic: "Command Code Provider · Anthropic",
+        go: "Command Code Go · 实验性",
+        providerHint: "官方 Provider API 使用 GOAT、Pro、Max、Team 的订阅额度；Go 套餐不包含此 API。请选择支持对应协议的模型。",
+        goHint: "通过原生 CLI 协议转发 Go 订阅，实验性功能，尚待真实订阅验证；上游变更可能中断服务。仅支持 Chat Completions，不支持透传、号池和 WebSocket。公开模型目录不代表此订阅已获授权，以实际套餐和上游响应为准。",
+        keyHint: "请手动填写 Command Code API Key。此预设固定上游地址。",
+        zdr: "要求上游零数据保留（ZDR）",
+        zdrHint: "发送官方 x-cmd-zdr 策略；没有可用的 ZDR 供应商时请求会失败，此设置不改变本地日志。",
+        newKeyRequired: "在 Command Code 与自定义供应商之间切换时，请填写新的 API Key，避免将原有密钥发给其他服务。",
+        providerBadge: "Command Code · Provider",
+        goBadge: "Command Code · Go（实验性）",
+      },
       title: '账号管理',
       description: '管理 AI 平台账号和 Cookie',
       createAccount: '添加账号',

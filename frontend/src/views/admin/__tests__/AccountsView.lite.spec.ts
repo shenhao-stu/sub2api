@@ -66,6 +66,7 @@ const DataTableStub = defineComponent({
   template: `
     <div>
       <div v-for="row in data" :key="row.id" :data-account-name="row.name">
+        <slot name="cell-platform_type" :row="row" />
         <slot name="cell-groups" :row="row" />
         <slot name="cell-actions" :row="row" />
       </div>
@@ -186,6 +187,25 @@ describe('admin AccountsView lite account list', () => {
       expect.objectContaining({ lite: '1' }),
       expect.objectContaining({ signal: expect.any(AbortSignal) })
     )
+    wrapper.unmount()
+  })
+
+  it('shows Command Code mode badges only for supported API-key platform combinations', async () => {
+    const rows = [
+      { ...listRow, id: 1, type: 'apikey', extra: { provider: 'commandcode' } },
+      { ...listRow, id: 2, type: 'apikey', extra: { provider: 'commandcode_go' } },
+      { ...listRow, id: 3, type: 'apikey', platform: 'anthropic', extra: { provider: 'commandcode' } },
+      { ...listRow, id: 4, type: 'oauth', extra: { provider: 'commandcode' } },
+      { ...listRow, id: 5, type: 'apikey', platform: 'anthropic', extra: { provider: 'commandcode_go' } },
+    ]
+    listAccounts.mockResolvedValue({ items: rows, total: rows.length, page: 1, page_size: 20, pages: 1 })
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="commandcode-account-badge"]').map(badge => badge.text())).toEqual([
+      'admin.accounts.commandCode.providerBadge',
+      'admin.accounts.commandCode.goBadge',
+      'admin.accounts.commandCode.providerBadge',
+    ])
     wrapper.unmount()
   })
 

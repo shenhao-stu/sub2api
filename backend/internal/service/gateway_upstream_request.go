@@ -222,6 +222,12 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		logClaudeMimicDebug(req, body, account, tokenType, mimicClaudeCode)
 	}
 
+	if err := applyCommandCodeClientPolicy(req, c, account); err != nil {
+		return nil, nil, err
+	}
+	if err := prepareCommandCodeRequest(req, account); err != nil {
+		return nil, nil, err
+	}
 	return req, body, nil
 }
 

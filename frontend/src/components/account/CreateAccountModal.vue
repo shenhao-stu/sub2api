@@ -67,6 +67,12 @@
         <p class="input-hint">{{ t('admin.accounts.notesHint') }}</p>
       </div>
 
+      <CommandCodePreset
+        :model-value="commandCodePreset"
+        v-model:zdr="commandCodeZdr"
+        @update:model-value="selectCommandCodePreset"
+      />
+
       <!-- Platform Selection - Segmented Control Style -->
       <div>
         <label class="input-label">{{ t('admin.accounts.platform') }}</label>
@@ -1363,6 +1369,7 @@
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
             v-model="apiKeyBaseUrl"
+            :readonly="Boolean(commandCodePreset)"
             type="text"
             class="input"
             :placeholder="apiKeyBaseUrlPlaceholder"
@@ -1639,7 +1646,7 @@
         </div>
 
         <!-- Pool Mode Section -->
-        <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div v-if="!commandCodePreset" class="border-t border-gray-200 pt-4 dark:border-dark-600">
           <div class="mb-3 flex items-center justify-between">
             <div>
               <label class="input-label mb-0">{{ t('admin.accounts.poolMode') }}</label>
@@ -3064,7 +3071,7 @@
 
       <!-- OpenAI 自动透传开关（OAuth/API Key） -->
       <div
-        v-if="form.platform === 'openai'"
+        v-if="!isCommandCodeGo && form.platform === 'openai'"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -3125,7 +3132,7 @@
 
       <!-- OpenAI WS Mode 三态（off/ctx_pool/passthrough） -->
       <div
-        v-if="form.platform === 'openai' && (accountCategory === 'oauth-based' || accountCategory === 'apikey')"
+        v-if="!commandCodePreset && form.platform === 'openai' && (accountCategory === 'oauth-based' || accountCategory === 'apikey')"
         data-testid="create-openai-ws-mode"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
@@ -3321,7 +3328,7 @@
 
       <!-- OpenAI Compact 能力配置 -->
       <div
-        v-if="form.platform === 'openai' && (accountCategory === 'oauth-based' || accountCategory === 'apikey')"
+        v-if="!isCommandCodeGo && form.platform === 'openai' && (accountCategory === 'oauth-based' || accountCategory === 'apikey')"
         class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4"
       >
         <div class="flex items-center justify-between">
@@ -3360,7 +3367,7 @@
 
       <!-- OpenAI APIKey Responses API support mode -->
       <div
-        v-if="form.platform === 'openai' && accountCategory === 'apikey'"
+        v-if="!isCommandCodeGo && form.platform === 'openai' && accountCategory === 'apikey'"
         class="space-y-4 border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between gap-4">
@@ -3889,7 +3896,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, watch } from 'vue'
+import { ref, reactive, computed, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 
@@ -3940,6 +3947,8 @@ import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import CnBaseUrlPresets from '@/components/account/CnBaseUrlPresets.vue'
+import CommandCodePreset from './CommandCodePreset.vue'
+import { applyCommandCodePreset, buildCommandCodePreview, commandCodePresets, type CommandCodePreset as CommandCodePresetValue } from './commandCodePreset'
 import OpenCodeGoProtocolRulesEditor from '@/components/account/OpenCodeGoProtocolRulesEditor.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import { allSelectedGroupsEnableLongContextPricing } from '@/components/account/longContextBilling'
@@ -4154,6 +4163,9 @@ const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_acco
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
+const commandCodePreset = ref<CommandCodePresetValue>('')
+const commandCodeZdr = ref(false)
+const isCommandCodeGo = computed(() => commandCodePreset.value === 'go')
 const upstreamBillingAutoProbeEnabled = ref(true)
 
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）账号类型、API 协议与端点 ──
@@ -4329,6 +4341,7 @@ function onCnPresetSelect(preset: { mode: CnAccountMode; protocol: CnApiProtocol
 }
 
 const syncPreviewCredentials = computed(() => {
+  if (commandCodePreset.value) return buildCommandCodePreview(commandCodePreset.value)
   if (!apiKeyValue.value) return undefined
   const baseUrl = isMultiProtocolPlatform.value && apiProtocol.value === 'adaptive'
     ? adaptiveBaseUrls.value.chat_completions.trim() || apiKeyBaseUrl.value.trim()
@@ -4835,6 +4848,9 @@ watch(
 watch(
   () => form.platform,
   (newPlatform) => {
+    if (commandCodePreset.value) apiKeyValue.value = ''
+    commandCodePreset.value = ''
+    commandCodeZdr.value = false
     // Reset base URL based on platform
     if (isCNProviderPlatform(newPlatform) || newPlatform === 'opencode_go') {
       const mode = newPlatform === 'opencode_go' ? openCodeAccountMode.value : accountMode.value
@@ -4928,6 +4944,40 @@ watch(
     grokOAuth.resetState()
   }
 )
+
+const selectCommandCodePreset = async (value: CommandCodePresetValue) => {
+  const selected = commandCodePresets.find(item => item.value === value)
+  commandCodePreset.value = ''
+  commandCodeZdr.value = false
+  apiKeyValue.value = ''
+  if (!selected) {
+    apiKeyBaseUrl.value = form.platform === 'openai' ? 'https://api.openai.com' : 'https://api.anthropic.com'
+    openAIResponsesMode.value = 'auto'
+    openAICompactMode.value = 'auto'
+    return
+  }
+  form.platform = selected.platform
+  await nextTick()
+  accountCategory.value = 'apikey'
+  await nextTick()
+  commandCodePreset.value = value
+  apiKeyBaseUrl.value = selected.baseUrl
+  openAIResponsesMode.value = value === 'go' ? 'force_chat_completions' : 'auto'
+  openAICompactMode.value = value === 'go' ? 'force_off' : 'auto'
+  openAIEndpointCapabilities.value = ['chat_completions']
+  openaiPassthroughEnabled.value = false
+  anthropicPassthroughEnabled.value = false
+  anthropicAPIKeyAuthScheme.value = 'authorization_bearer'
+  openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
+  poolModeEnabled.value = false
+}
+
+watch(() => form.type, (type) => {
+  if (type !== 'apikey') {
+    commandCodePreset.value = ''
+    commandCodeZdr.value = false
+  }
+})
 
 // Gemini AI Studio OAuth availability (requires operator-configured OAuth client)
 watch(
@@ -5316,6 +5366,8 @@ const resetForm = () => {
   apiProtocol.value = 'adaptive'
   openCodeGoProtocolRules.value = cloneOpenCodeGoProtocolRules(defaultOpenCodeProtocolRules('zen'))
   adaptiveBaseUrls.value = { chat_completions: '', anthropic: '', responses: '' }
+  commandCodePreset.value = ''
+  commandCodeZdr.value = false
   apiKeyBaseUrl.value = 'https://api.anthropic.com'
   apiKeyValue.value = ''
   upstreamRequestIdHeader.value = ''
@@ -5868,13 +5920,16 @@ const handleSubmit = async () => {
     return
   }
 
-  form.credentials = credentials
   const extra = buildAnthropicExtra(buildOpenAIExtra())
+  const presetPayload = commandCodePreset.value
+    ? applyCommandCodePreset(commandCodePreset.value, credentials, extra, commandCodeZdr.value)
+    : { credentials, extra }
+  form.credentials = presetPayload.credentials
 
   await doCreateAccount({
     ...form,
     group_ids: form.group_ids,
-    extra: withUpstreamRequestIdHeader(extra),
+    extra: withUpstreamRequestIdHeader(presetPayload.extra),
     upstream_billing_probe_enabled: upstreamBillingAutoProbeEnabled.value,
     auto_pause_on_expired: autoPauseOnExpired.value
   })

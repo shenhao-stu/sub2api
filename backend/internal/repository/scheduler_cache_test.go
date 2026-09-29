@@ -1,12 +1,45 @@
 package repository
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSchedulerMetadataPreservesCommandCodePolicy(t *testing.T) {
+	for _, tc := range []struct {
+		provider string
+		zdr      bool
+	}{
+		{service.CommandCodeProvider, true},
+		{service.CommandCodeGoProvider, false},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			account := service.Account{
+				ID: 27, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+				Credentials: map[string]any{"api_key": "private-key", "refresh_token": "refresh-secret"},
+				Extra: map[string]any{
+					"provider": tc.provider, "commandcode_zdr": tc.zdr,
+					"unused_large_field": "not-for-scheduling",
+				},
+			}
+			full, metadata, err := marshalSchedulerCacheAccount(account)
+			require.NoError(t, err)
+			for _, payload := range [][]byte{full, metadata} {
+				var restored service.Account
+				require.NoError(t, json.Unmarshal(payload, &restored))
+				require.True(t, restored.IsCommandCode())
+				require.Equal(t, tc.provider == service.CommandCodeGoProvider, restored.IsCommandCodeGo())
+				require.Equal(t, tc.zdr, restored.Extra["commandcode_zdr"])
+			}
+			require.NotContains(t, string(metadata), "refresh-secret")
+			require.NotContains(t, string(metadata), "unused_large_field")
+		})
+	}
+}
 
 func TestFilterSchedulerCredentialsKeepsSubscriptionPlanType(t *testing.T) {
 	filtered := filterSchedulerCredentials(map[string]any{

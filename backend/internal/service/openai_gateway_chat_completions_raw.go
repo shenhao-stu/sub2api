@@ -414,7 +414,12 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	// 上游在任何终止信号之前结束：连接被 reset（scanErr != nil）或干净 EOF。
 	// 两者都不能再记成功——此前统一返回 nil error，把上游截断伪装成
 	// `HTTP 200 + usage 0/0`，客户端收到半截回答且 Ops 侧完全无感。
-	if !clientAborted && terminal.IsTruncated(clientOutputStarted) {
+	incomplete := terminal.IsTruncated(clientOutputStarted)
+	if account.IsCommandCodeGo() {
+		// The native adapter reports usage before validating the terminal frame.
+		incomplete = scanErr != nil || !terminal.sawDone
+	}
+	if !clientAborted && incomplete {
 		cause := scanErr
 		if cause == nil {
 			cause = ErrOpenAIUpstreamStreamTruncated

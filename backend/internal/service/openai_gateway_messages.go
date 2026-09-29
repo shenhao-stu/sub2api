@@ -33,6 +33,12 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	promptCacheKey string,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	if account.IsCommandCodeGo() {
+		if err := validateCommandCodeGoIngress(body, "messages", c.Request.URL.Path); err != nil {
+			writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return nil, err
+		}
+	}
 	if err := s.requireOpenAIForwardPricing(ctx, c, account, body, defaultMappedModel); err != nil {
 		return nil, err
 	}

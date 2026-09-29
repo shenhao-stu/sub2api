@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 
 const { updateAccountMock, checkMixedChannelRiskMock, authIsSimpleMode } = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
@@ -71,6 +71,8 @@ const ModelWhitelistSelectorStub = defineComponent({
   name: 'ModelWhitelistSelector',
   props: {
     modelMappings: { type: Array, default: () => [] },
+    accountId: Number,
+    syncCredentials: Object,
     modelValue: {
       type: Array,
       default: () => []
@@ -1728,6 +1730,55 @@ describe('EditAccountModal OpenAI 自动使用重置卡', () => {
     await wrapper.get('[data-testid="auto-reset-credit-5h-threshold"]').setValue('0')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     expect(updateAccountMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
+
+
+describe('EditAccountModal Command Code', () => {
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+    updateAccountMock.mockReset().mockResolvedValue({})
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+  })
+
+  it('preserves redacted credentials and corrects conflicting Go transport flags on save', async () => {
+    const account = buildAccount()
+    delete account.credentials.api_key
+    account.credentials.base_url = 'https://api.commandcode.ai'
+    account.credentials.pool_mode = true
+    account.credentials_status = { has_api_key: true }
+    account.extra = { provider: 'commandcode_go', commandcode_zdr: true, openai_passthrough: true, openai_responses_mode: 'force_responses' }
+    const wrapper = mountModal(account)
+    expect((wrapper.get('[data-testid="commandcode-preset-select"]').element as HTMLSelectElement).value).toBe('go')
+    expect(wrapper.find('[data-testid="commandcode-zdr"]').exists()).toBe(false)
+    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('accountId')).toBeUndefined()
+    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('syncCredentials')).toMatchObject({ api_key: '', extra: { provider: 'commandcode_go' } })
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    const payload = updateAccountMock.mock.calls[0]?.[1]
+    expect(payload.credentials).not.toHaveProperty('api_key')
+    expect(payload.credentials).toMatchObject({ base_url: 'https://api.commandcode.ai', pool_mode: false, openai_capabilities: ['chat_completions'] })
+    expect(payload.extra).toMatchObject({ provider: 'commandcode_go', commandcode_zdr: false, openai_passthrough: false, openai_responses_supported: false, openai_responses_mode: 'force_chat_completions' })
+    wrapper.unmount()
+  })
+
+  it('requires a new key when switching provider families and saves the official ZDR option', async () => {
+    const account = buildAccount()
+    delete account.credentials.api_key
+    account.credentials_status = { has_api_key: true }
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="commandcode-preset-select"]').setValue('provider_openai')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock).not.toHaveBeenCalled()
+    await wrapper.get('input[type="password"]').setValue('new-command-code-key')
+    await wrapper.get('[data-testid="commandcode-zdr"]').setValue(true)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]).toMatchObject({ credentials: { api_key: 'new-command-code-key', base_url: 'https://api.commandcode.ai/provider' }, extra: { provider: 'commandcode', commandcode_zdr: true, openai_responses_supported: true } })
     wrapper.unmount()
   })
 })

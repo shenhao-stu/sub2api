@@ -181,6 +181,9 @@ func (s *AccountTestService) SetOpenAIGatewayService(gateway *OpenAIGatewayServi
 // It only fills picker-only gaps (local display-name fallbacks, OAuth image choices)
 // on its own copy; the shared catalog and its cache stay untouched.
 func (s *AccountTestService) FetchOpenAIAccountModels(ctx context.Context, account *Account) ([]openai.Model, error) {
+	if account.IsCommandCode() {
+		return s.FetchCommandCodeAccountModels(ctx, account)
+	}
 	if s == nil || s.openaiGatewayService == nil {
 		return nil, errors.New("OpenAI model discovery service is unavailable")
 	}
@@ -366,6 +369,9 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	account, err := s.accountRepo.GetByID(ctx, accountID)
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Account not found")
+	}
+	if account.IsCommandCode() {
+		return s.testCommandCodeAccountConnection(c, account, modelID, prompt, mode, testOpts)
 	}
 
 	// Synthetic UI load-test accounts exercise the real SSE parsing and modal

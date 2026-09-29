@@ -19,6 +19,12 @@ import (
 
 // Forward forwards request to OpenAI API
 func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
+	if account.IsCommandCodeGo() {
+		if err := validateCommandCodeGoIngress(body, "responses", c.Request.URL.Path); err != nil {
+			writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return nil, err
+		}
+	}
 	if err := s.requireOpenAIForwardPricing(ctx, c, account, body, ""); err != nil {
 		return nil, err
 	}
@@ -1364,6 +1370,9 @@ func shouldForwardOpenAIResponsesViaRawChatCompletions(account *Account) bool {
 	if account == nil || account.Type != AccountTypeAPIKey {
 		return false
 	}
+	if account.IsCommandCodeGo() {
+		return true
+	}
 	if account.IsOpenCodeGo() {
 		// Model protocol_rules are the authority. Probe Extra must not collapse
 		// Grok/GPT/Muse into Chat Completions.
@@ -1542,6 +1551,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	logOpenAIRoutingDiagnosticsFromBody(ctx, account, "http", req.Header, body, "not_applicable")
 
 	if err := applyMappedGPT55LiteCompatibility(req, account, body); err != nil {
+		return nil, err
+	}
+	if err := applyCommandCodeClientPolicy(req, c, account); err != nil {
 		return nil, err
 	}
 	return req, nil

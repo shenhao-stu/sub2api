@@ -472,6 +472,9 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 		}
 		account.LoadFactor = input.LoadFactor
 	}
+	if err := ValidateCommandCodeAccount(account); err != nil {
+		return nil, err
+	}
 	return account, nil
 }
 
@@ -855,6 +858,10 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		}
 	}
 
+	if err := ValidateCommandCodeAccount(account); err != nil {
+		return nil, err
+	}
+
 	billingSettingsAppliedAtomically := false
 	updater := s.accountBillingRepo
 	if updater == nil {
@@ -942,6 +949,21 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 	if len(updates) == 0 {
 		return nil
 	}
+	if touchesCommandCodePolicy(updates) {
+		account, err := s.accountRepo.GetByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		candidate := *account
+		candidate.Extra = maps.Clone(account.Extra)
+		if candidate.Extra == nil {
+			candidate.Extra = make(map[string]any)
+		}
+		maps.Copy(candidate.Extra, updates)
+		if err := ValidateCommandCodeAccount(&candidate); err != nil {
+			return err
+		}
+	}
 	return s.accountRepo.UpdateExtra(ctx, id, updates)
 }
 
@@ -994,7 +1016,7 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 
 	// 预取所有目标账号，供凭据守卫/代理守卫/混合渠道检查共用，避免多次 DB 查询。
 	var cachedTargets []*Account
-	if len(input.Credentials) > 0 || input.ProxyID != nil || needMixedChannelCheck || openAISettings.any() || input.ProbeEnabled != nil || input.RateMultiplier != nil {
+	if len(input.Credentials) > 0 || len(input.Extra) > 0 || input.ProxyID != nil || needMixedChannelCheck || openAISettings.any() || input.ProbeEnabled != nil || input.RateMultiplier != nil {
 		loaded, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
 			return nil, err
@@ -1103,6 +1125,26 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	// only when platform is known Grok — empty platform still strips password/*).
 	if input.Credentials != nil {
 		input.Credentials = SanitizeStoredCredentials("", input.Credentials)
+	}
+
+	for _, account := range cachedTargets {
+		if account == nil {
+			continue
+		}
+		candidate := *account
+		candidate.Credentials = maps.Clone(account.Credentials)
+		candidate.Extra = maps.Clone(account.Extra)
+		if candidate.Credentials == nil {
+			candidate.Credentials = make(map[string]any)
+		}
+		if candidate.Extra == nil {
+			candidate.Extra = make(map[string]any)
+		}
+		maps.Copy(candidate.Credentials, input.Credentials)
+		maps.Copy(candidate.Extra, input.Extra)
+		if err := ValidateCommandCodeAccount(&candidate); err != nil {
+			return nil, err
+		}
 	}
 
 	// Prepare bulk updates for columns and JSONB fields.

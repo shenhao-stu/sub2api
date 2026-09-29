@@ -214,6 +214,45 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
   afterEach(() => vi.useRealTimers())
 
+  it.each([
+    ['provider_openai', 'openai', 'commandcode', 'https://api.commandcode.ai/provider'],
+    ['provider_anthropic', 'anthropic', 'commandcode', 'https://api.commandcode.ai/provider'],
+    ['go', 'openai', 'commandcode_go', 'https://api.commandcode.ai'],
+  ])('creates the %s preset with a fixed host and the selected protocol', async (preset, platform, provider, baseUrl) => {
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="commandcode-preset-select"]').setValue(preset)
+    await flushPromises()
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Command Code account')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('command-code-key')
+    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('syncCredentials')).toMatchObject({ api_key: '', extra: { provider } })
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    const payload = createAccountMock.mock.calls[0]?.[0]
+    expect(payload.credentials.pool_mode).toBe(false)
+    expect(payload.extra.openai_apikey_responses_websockets_v2_mode).toBe('off')
+    expect(wrapper.find('[data-testid="create-openai-ws-mode"]').exists()).toBe(false)
+    expect(payload).toMatchObject({ platform, type: 'apikey', credentials: { base_url: baseUrl, api_key: 'command-code-key' }, extra: { provider, commandcode_zdr: false } })
+    if (preset === 'go') {
+      expect(payload.extra).toMatchObject({ openai_responses_mode: 'force_chat_completions', openai_responses_supported: false, openai_passthrough: false, openai_apikey_responses_websockets_v2_mode: 'off' })
+      expect(payload.credentials).toMatchObject({ pool_mode: false, openai_capabilities: ['chat_completions'] })
+    } else if (platform === 'openai') {
+      expect(payload.extra.openai_responses_supported).toBe(true)
+      expect(payload.extra.openai_responses_mode ?? 'auto').toBe('auto')
+    } else {
+      expect(payload.extra.anthropic_apikey_auth_scheme).toBe('authorization_bearer')
+    }
+    wrapper.unmount()
+  })
+
+  it('clears an entered key when selecting another upstream preset', async () => {
+    const wrapper = await submitApiKeyAccount('openai')
+    await wrapper.get('[data-testid="commandcode-preset-select"]').setValue('go')
+    await flushPromises()
+    expect((wrapper.get('input[type="password"]').element as HTMLInputElement).value).toBe('')
+    wrapper.unmount()
+  })
+
   it('sets month and year expiry presets without submitting the account form', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-01-31T12:34:00'))

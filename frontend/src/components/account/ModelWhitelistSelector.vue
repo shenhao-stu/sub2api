@@ -163,12 +163,7 @@ const props = defineProps<{
   platform?: string
   platforms?: string[]
   accountId?: number
-  syncCredentials?: {
-    platform: string
-    type: string
-    base_url?: string
-    api_key: string
-  }
+  syncCredentials?: SyncUpstreamPreviewParams
 }>()
 
 const emit = defineEmits<{

@@ -264,6 +264,13 @@
                   :privacy-mode="row.extra?.privacy_mode || row.parent_privacy_mode"
                   :subscription-expires-at="row.credentials?.subscription_expires_at || row.parent_subscription_expires_at" />
                 <span
+                  v-if="row.type === 'apikey' && resolveCommandCodePreset(row.platform, row.extra)"
+                  class="rounded bg-teal-100 px-1.5 py-0.5 text-[10px] font-medium text-teal-800 dark:bg-teal-900/30 dark:text-teal-200"
+                  data-testid="commandcode-account-badge"
+                >
+                  {{ t(row.extra?.provider === 'commandcode_go' ? 'admin.accounts.commandCode.goBadge' : 'admin.accounts.commandCode.providerBadge') }}
+                </span>
+                <span
                   v-if="getAntigravityTierLabel(row)"
                   :class="['inline-block rounded px-1.5 py-0.5 text-[10px] font-medium', getAntigravityTierClass(row)]"
                 >
@@ -486,6 +493,7 @@
 </template>
 
 <script setup lang="ts">
+import { resolveCommandCodePreset } from '@/components/account/commandCodePreset'
 import { ref, reactive, computed, onMounted, onUnmounted, toRaw, watch } from 'vue'
 import { useIntervalFn } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'

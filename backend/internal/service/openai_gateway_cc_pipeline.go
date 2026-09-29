@@ -182,6 +182,9 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	userAgent string,
 	grokCacheIdentity string,
 ) (*http.Response, error) {
+	if account.IsCommandCodeGo() {
+		return s.sendCommandCodeRequest(ctx, c, account, body, stream)
+	}
 	// DeepSeek thinking mode 要求历史 assistant 回传 reasoning_content。
 	// Responses→CC 回退在加密-only / 缺 reasoning item 且缓存未命中时会漏掉该
 	// 字段，上游 400 "The `reasoning_content` in the thinking mode must be
@@ -241,6 +244,9 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
+	}
+	if err := applyCommandCodeClientPolicy(upstreamReq, c, account); err != nil {
+		return nil, err
 	}
 	resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account)
 	if err != nil {

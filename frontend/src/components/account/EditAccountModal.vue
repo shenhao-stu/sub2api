@@ -28,10 +28,19 @@
 
       <!-- API Key fields (only for apikey type) -->
       <div v-if="account.type === 'apikey'" class="space-y-4">
+        <CommandCodePreset
+          v-if="account.platform === 'openai' || account.platform === 'anthropic'"
+          :model-value="commandCodePreset"
+          :platform="account.platform"
+          v-model:zdr="commandCodeZdr"
+          :requires-new-key="commandCodeRequiresNewKey"
+          @update:model-value="selectCommandCodePreset"
+        />
         <div v-if="!isCNApiKeyAccount || editApiProtocol !== 'adaptive'">
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
             v-model="editBaseUrl"
+            :readonly="Boolean(commandCodePreset)"
             type="text"
             class="input"
             :placeholder="
@@ -299,7 +308,7 @@
 
             <!-- Whitelist Mode -->
             <div v-if="modelRestrictionMode === 'whitelist'">
-              <ModelWhitelistSelector v-model="allowedModels" :model-mappings="modelMappings" :platform="account?.platform || 'anthropic'" :account-id="account?.id" />
+              <ModelWhitelistSelector v-model="allowedModels" :model-mappings="modelMappings" :platform="account?.platform || 'anthropic'" :account-id="commandCodePreset ? undefined : account?.id" :sync-credentials="commandCodePreviewCredentials" />
               <p class="text-xs text-gray-500 dark:text-gray-400">
                 {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
                 <span v-if="allowedModels.length === 0 && modelMappings.length === 0">{{
@@ -416,7 +425,7 @@
         </div>
 
         <!-- Pool Mode Section -->
-        <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div v-if="!commandCodePreset" class="border-t border-gray-200 pt-4 dark:border-dark-600">
           <div class="mb-3 flex items-center justify-between">
             <div>
               <label class="input-label mb-0">{{ t('admin.accounts.poolMode') }}</label>
@@ -1741,7 +1750,7 @@
 
       <!-- OpenAI 自动透传开关（OAuth/API Key） -->
       <div
-        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token' || account?.type === 'apikey')"
+        v-if="!isCommandCodeGo && account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token' || account?.type === 'apikey')"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -1802,7 +1811,7 @@
 
       <!-- OpenAI Codex hosted image_generation bridge policy -->
       <div
-        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token' || account?.type === 'apikey')"
+        v-if="!isCommandCodeGo && account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token' || account?.type === 'apikey')"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="overflow-hidden rounded-lg border border-sky-100 bg-sky-50/60 shadow-sm dark:border-sky-900/50 dark:bg-sky-950/20">
@@ -1862,7 +1871,7 @@
 
       <!-- OpenAI WS Mode 三态（off/ctx_pool/passthrough） -->
       <div
-        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token' || account?.type === 'apikey')"
+        v-if="!commandCodePreset && account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token' || account?.type === 'apikey')"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -1883,7 +1892,7 @@
 
       <!-- OpenAI APIKey Responses API support mode -->
       <div
-        v-if="account?.platform === 'openai' && account?.type === 'apikey'"
+        v-if="!isCommandCodeGo && account?.platform === 'openai' && account?.type === 'apikey'"
         class="space-y-4 border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between gap-4">
@@ -2373,7 +2382,7 @@
       </div>
 
       <div
-        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token' || account?.type === 'apikey')"
+        v-if="!isCommandCodeGo && account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token' || account?.type === 'apikey')"
         class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4"
       >
         <div class="flex items-center justify-between">
@@ -3139,6 +3148,8 @@ import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import CnBaseUrlPresets from '@/components/account/CnBaseUrlPresets.vue'
+import CommandCodePreset from './CommandCodePreset.vue'
+import { applyCommandCodePreset, buildCommandCodePreview, commandCodePresets, resolveCommandCodePreset, type CommandCodePreset as CommandCodePresetValue } from './commandCodePreset'
 import OpenCodeGoProtocolRulesEditor from '@/components/account/OpenCodeGoProtocolRulesEditor.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import OllamaCloudUsageSettings from '@/components/account/OllamaCloudUsageSettings.vue'
@@ -3351,6 +3362,13 @@ interface TempUnschedRuleForm {
 // State
 const submitting = ref(false)
 const editBaseUrl = ref('https://api.anthropic.com')
+const commandCodePreset = ref<CommandCodePresetValue>('')
+const commandCodeZdr = ref(false)
+const commandCodePreviewCredentials = computed(() => buildCommandCodePreview(commandCodePreset.value))
+const isCommandCodeGo = computed(() => commandCodePreset.value === 'go')
+const commandCodeRequiresNewKey = computed(() =>
+  Boolean(resolveCommandCodePreset(props.account?.platform ?? '', props.account?.extra)) !== Boolean(commandCodePreset.value)
+)
 const editApiKey = ref('')
 
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）account_mode / api_protocol 编辑 ──
@@ -4151,6 +4169,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   mixedScheduling.value = false
   allowOverages.value = false
 	const extra = newAccount.extra as Record<string, unknown> | undefined
+  commandCodePreset.value = newAccount.type === 'apikey' ? resolveCommandCodePreset(newAccount.platform, extra) : ''
+  commandCodeZdr.value = commandCodePreset.value !== 'go' && extra?.commandcode_zdr === true
 	mixedScheduling.value = extra?.mixed_scheduling === true
 	allowOverages.value = extra?.allow_overages === true
 	upstreamRequestIdHeader.value = readUpstreamRequestIdHeader(extra)
@@ -4187,7 +4207,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   anthropicAPIKeyAuthScheme.value = 'x_api_key'
   webSearchEmulationMode.value = 'default'
   if (newAccount.platform === 'openai' && (newAccount.type === 'oauth' || newAccount.type === 'setup-token' || newAccount.type === 'apikey')) {
-    openaiPassthroughEnabled.value = extra?.openai_passthrough === true || extra?.openai_oauth_passthrough === true
+    openaiPassthroughEnabled.value = !isCommandCodeGo.value && (extra?.openai_passthrough === true || extra?.openai_oauth_passthrough === true)
     openaiFlattenNamespacesEnabled.value =
       newAccount.type === 'oauth' && extra?.openai_responses_flatten_namespaces === true
     const longContextBillingValue = extra?.openai_long_context_billing_enabled
@@ -5124,6 +5144,23 @@ const submitUpdateAccount = async (accountID: number, updatePayload: Record<stri
   }
 }
 
+const selectCommandCodePreset = (value: CommandCodePresetValue) => {
+  const selected = commandCodePresets.find(item => item.value === value)
+  commandCodePreset.value = value
+  commandCodeZdr.value = false
+  editBaseUrl.value = selected?.baseUrl ?? defaultBaseUrl.value
+  openAIResponsesMode.value = value === 'go' ? 'force_chat_completions' : 'auto'
+  openAICompactMode.value = value === 'go' ? 'force_off' : 'auto'
+  if (selected) {
+    openAIEndpointCapabilities.value = ['chat_completions']
+    openaiPassthroughEnabled.value = false
+    anthropicPassthroughEnabled.value = false
+    anthropicAPIKeyAuthScheme.value = 'authorization_bearer'
+    openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
+    poolModeEnabled.value = false
+  }
+}
+
 const handleSubmit = async () => {
   if (!props.account) return
   const accountID = props.account.id
@@ -5140,6 +5177,10 @@ const handleSubmit = async () => {
 		}
 	}
 
+  if (props.account.type === 'apikey' && commandCodeRequiresNewKey.value && !editApiKey.value.trim()) {
+    appStore.showError(t('admin.accounts.commandCode.newKeyRequired'))
+    return
+  }
   const updatePayload: Record<string, unknown> = { ...form }
   try {
     // 后端期望 proxy_id: 0 表示清除代理，而不是 null
@@ -5851,6 +5892,19 @@ const handleSubmit = async () => {
         delete newExtra.upstream_request_id_header
       }
       updatePayload.extra = newExtra
+    }
+
+    if (props.account.type === 'apikey' && (
+      commandCodePreset.value || resolveCommandCodePreset(props.account.platform, props.account.extra)
+    )) {
+      const normalized = applyCommandCodePreset(
+        commandCodePreset.value,
+        updatePayload.credentials as Record<string, unknown>,
+        (updatePayload.extra ?? props.account.extra) as Record<string, unknown>,
+        commandCodeZdr.value
+      )
+      updatePayload.credentials = normalized.credentials
+      updatePayload.extra = normalized.extra
     }
 
     const canContinue = await ensureAntigravityMixedChannelConfirmed(async () => {

@@ -1,5 +1,20 @@
 export default {
     accounts: {
+      commandCode: {
+        preset: "Connection preset (optional)",
+        custom: "Custom provider",
+        provider_openai: "Command Code Provider · OpenAI",
+        provider_anthropic: "Command Code Provider · Anthropic",
+        go: "Command Code Go · Experimental",
+        providerHint: "The official Provider API uses subscription credits on GOAT, Pro, Max and Team. The Go plan does not include this API. Choose a model that supports the selected protocol.",
+        goHint: "Experimental relay for the Go subscription via the native CLI protocol. Pending validation with a real subscription; upstream changes may interrupt service. Chat Completions only, with no passthrough, pool mode or WebSocket support. The public model catalog does not confirm subscription access; availability depends on your plan and upstream responses.",
+        keyHint: "Enter a Command Code API key. The upstream address is fixed by this preset.",
+        zdr: "Require upstream Zero Data Retention (ZDR)",
+        zdrHint: "Sends the official x-cmd-zdr policy. Requests fail if no ZDR provider is available; this does not change local logs.",
+        newKeyRequired: "Enter a new API key when changing between Command Code and a custom provider, to avoid sending the existing key to a different service.",
+        providerBadge: "Command Code · Provider",
+        goBadge: "Command Code · Go (experimental)",
+      },
       title: 'Account Management',
       description: 'Manage AI platform accounts and credentials',
       createAccount: 'Create Account',

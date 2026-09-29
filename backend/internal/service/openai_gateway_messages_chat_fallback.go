@@ -56,6 +56,11 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, fmt.Errorf("convert anthropic to chat completions: %w", err)
 	}
+	if account.IsCommandCodeGo() {
+		// Native GO accepts sampling options independently of OpenAI model names.
+		// The incoming name may also be an alias for a different upstream model.
+		chatReq.Temperature = anthropicReq.Temperature
+	}
 
 	billingModel := resolveOpenAIForwardModel(account, anthropicReq.Model, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
