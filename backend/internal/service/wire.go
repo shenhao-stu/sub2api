@@ -881,6 +881,7 @@ var ProviderSet = wire.NewSet(
 	ProvideVideoBillingWorker,
 	wire.Bind(new(AccountRuntimeBlocker), new(*OpenAIGatewayService)),
 	NewOAuthService,
+	NewClaudeResetCreditService,
 	ProvideOpenAIOAuthService,
 	ProvideGrokOAuthService,
 	wire.Bind(new(GrokOAuthTokenService), new(*GrokOAuthService)),

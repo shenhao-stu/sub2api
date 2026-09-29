@@ -153,6 +153,7 @@ func TestOpenAIImagesJSONKeepalive_KeepsOAuthNonStreamResponseValid(t *testing.T
 	}()
 
 	stop := StartOpenAIImagesJSONKeepalive(c, 5*time.Millisecond)
+	waitForOpenAIImagesJSONKeepalive(t, c)
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
