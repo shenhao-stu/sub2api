@@ -312,11 +312,11 @@
 
             <!-- Whitelist Mode -->
             <div v-if="modelRestrictionMode === 'whitelist'">
-              <ModelWhitelistSelector v-model="allowedModels" :model-mappings="modelMappings" :platform="account?.platform || 'anthropic'" :account-id="commandCodePreset ? undefined : account?.id" :sync-credentials="commandCodePreviewCredentials" />
+              <ModelWhitelistSelector v-model="allowedModels" :model-mappings="modelMappings" :platform="account?.platform || 'anthropic'" :account-id="commandCodePreset ? undefined : account?.id" :suggested-models="commandCodePreset ? [] : undefined" :sync-credentials="commandCodePreviewCredentials" />
               <p class="text-xs text-gray-500 dark:text-gray-400">
                 {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
                 <span v-if="allowedModels.length === 0 && modelMappings.length === 0">{{
-                  t('admin.accounts.supportsAllModels')
+                  t(commandCodePreset ? 'admin.accounts.commandCode.modelsHint' : 'admin.accounts.supportsAllModels')
                 }}</span>
               </p>
             </div>
@@ -1952,7 +1952,7 @@
 
       <!-- OpenAI APIKey images: backfill b64_json from url -->
       <div
-        v-if="account?.platform === 'openai' && account?.type === 'apikey'"
+        v-if="!isCommandCodeGo && account?.platform === 'openai' && account?.type === 'apikey'"
         class="flex items-center justify-between gap-4 border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div>
@@ -3341,6 +3341,7 @@ onMounted(() => {
 
 // Platform-specific hint for Base URL
 const baseUrlHint = computed(() => {
+  if (commandCodePreset.value) return ''
   if (!props.account) return t('admin.accounts.baseUrlHint')
   if (props.account.platform === 'openai') return t('admin.accounts.openai.baseUrlHint')
   if (props.account.platform === 'gemini') return t('admin.accounts.gemini.baseUrlHint')
@@ -3582,7 +3583,7 @@ const headerOverrideEnabled = ref(false)
 const headerOverrideRows = ref<HeaderOverrideRow[]>([])
 
 const headerOverrideCapable = computed(
-  () => !!props.account && isHeaderOverrideCapable(props.account.platform, props.account.type)
+  () => !isCommandCodeGo.value && !!props.account && isHeaderOverrideCapable(props.account.platform, props.account.type)
 )
 
 // Grok OAuth 自定义上游地址（仅转发端点；OAuth 授权/令牌刷新不受影响）
@@ -3978,7 +3979,7 @@ const openAICompactStatusKey = computed(() => {
 })
 
 // Computed: current preset mappings based on platform
-const presetMappings = computed(() => getPresetMappingsByPlatform(props.account?.platform || 'anthropic'))
+const presetMappings = computed(() => commandCodePreset.value ? [] : getPresetMappingsByPlatform(props.account?.platform || 'anthropic'))
 const tempUnschedPresets = computed(() => [
   {
     label: t('admin.accounts.tempUnschedulable.presets.overloadLabel'),
@@ -5150,6 +5151,10 @@ const submitUpdateAccount = async (accountID: number, updatePayload: Record<stri
 }
 
 const selectCommandCodePreset = (value: CommandCodePresetValue) => {
+  if (value === commandCodePreset.value) return
+  allowedModels.value = []
+  modelMappings.value = []
+  modelRestrictionMode.value = 'whitelist'
   const selected = commandCodePresets.find(item => item.value === value)
   commandCodePreset.value = value
   commandCodeZdr.value = false

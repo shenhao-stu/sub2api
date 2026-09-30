@@ -1527,13 +1527,14 @@
                 v-model="allowedModels"
                 :model-mappings="modelMappings"
                 :platform="form.platform"
+                :suggested-models="commandCodePreset ? [] : undefined"
                 :sync-credentials="syncPreviewCredentials"
                 @upstream-synced="upstreamModelsPreviewed = true"
               />
               <p class="text-xs text-gray-500 dark:text-gray-400">
                 {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
                 <span v-if="allowedModels.length === 0">{{
-                  t('admin.accounts.supportsAllModels')
+                  t(commandCodePreset ? 'admin.accounts.commandCode.modelsHint' : 'admin.accounts.supportsAllModels')
                 }}</span>
               </p>
             </div>
@@ -1809,7 +1810,7 @@
 
         <!-- Header Override Section (eligible API-key platforms) -->
         <div
-          v-if="isHeaderOverrideCapable(form.platform, 'apikey')"
+          v-if="!isCommandCodeGo && isHeaderOverrideCapable(form.platform, 'apikey')"
           class="border-t border-gray-200 pt-4 dark:border-dark-600"
         >
           <div class="mb-3 flex items-center justify-between">
@@ -3417,7 +3418,7 @@
 
       <!-- OpenAI APIKey images: backfill b64_json from url -->
       <div
-        v-if="form.platform === 'openai' && accountCategory === 'apikey'"
+        v-if="!isCommandCodeGo && form.platform === 'openai' && accountCategory === 'apikey'"
         class="flex items-center justify-between gap-4 border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div>
@@ -4029,6 +4030,7 @@ const withUpstreamRequestIdHeader = <T extends Record<string, unknown> | undefin
 }
 
 const baseUrlHint = computed(() => {
+  if (commandCodePreset.value) return ''
   if (form.platform === 'openai') return t('admin.accounts.openai.baseUrlHint')
   if (form.platform === 'gemini') return t('admin.accounts.gemini.baseUrlHint')
   if (form.platform === 'grok') return ''
@@ -4036,6 +4038,7 @@ const baseUrlHint = computed(() => {
 })
 
 const apiKeyHint = computed(() => {
+  if (commandCodePreset.value) return ''
   if (form.platform === 'openai') return t('admin.accounts.openai.apiKeyHint')
   if (form.platform === 'gemini') return t('admin.accounts.gemini.apiKeyHint')
   if (form.platform === 'grok') return ''
@@ -4061,6 +4064,7 @@ const apiKeyBaseUrlPlaceholder = computed(() => {
 })
 
 const apiKeyValuePlaceholder = computed(() => {
+  if (commandCodePreset.value) return 'Command Code API Key'
   switch (form.platform) {
     case 'openai':
       return 'sk-proj-...'
@@ -4701,7 +4705,7 @@ const geminiHelpLinks = {
 }
 
 // Computed: current preset mappings based on platform
-const presetMappings = computed(() => getPresetMappingsByPlatform(form.platform))
+const presetMappings = computed(() => commandCodePreset.value ? [] : getPresetMappingsByPlatform(form.platform))
 const tempUnschedPresets = computed(() => [
   {
     label: t('admin.accounts.tempUnschedulable.presets.overloadLabel'),
@@ -4946,10 +4950,14 @@ watch(
 )
 
 const selectCommandCodePreset = async (value: CommandCodePresetValue) => {
+  if (value === commandCodePreset.value) return
   const selected = commandCodePresets.find(item => item.value === value)
   commandCodePreset.value = ''
   commandCodeZdr.value = false
   apiKeyValue.value = ''
+  allowedModels.value = []
+  modelMappings.value = []
+  upstreamModelsPreviewed.value = false
   if (!selected) {
     apiKeyBaseUrl.value = form.platform === 'openai' ? 'https://api.openai.com' : 'https://api.anthropic.com'
     openAIResponsesMode.value = 'auto'
@@ -4961,6 +4969,12 @@ const selectCommandCodePreset = async (value: CommandCodePresetValue) => {
   accountCategory.value = 'apikey'
   await nextTick()
   commandCodePreset.value = value
+  modelRestrictionMode.value = 'whitelist'
+  allowedModels.value = []
+  modelMappings.value = []
+  headerOverrideEnabled.value = false
+  headerOverrideRows.value = []
+  openAIImagesUrlToB64JsonEnabled.value = false
   apiKeyBaseUrl.value = selected.baseUrl
   openAIResponsesMode.value = value === 'go' ? 'force_chat_completions' : 'auto'
   openAICompactMode.value = value === 'go' ? 'force_off' : 'auto'
@@ -5023,7 +5037,7 @@ const handleSelectGeminiOAuthType = (oauthType: 'code_assist' | 'google_one' | '
 watch(
   [modelRestrictionMode, () => form.platform],
   ([newMode]) => {
-    if (newMode === 'whitelist') {
+    if (newMode === 'whitelist' && !commandCodePreset.value) {
       allowedModels.value = [...getModelsByPlatform(form.platform)]
     }
   }

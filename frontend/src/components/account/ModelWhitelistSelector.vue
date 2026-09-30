@@ -95,6 +95,7 @@
     <!-- Quick Actions -->
     <div class="mb-4 flex flex-wrap gap-2">
       <button
+        v-if="availableOptions.length > 0"
         type="button"
         @click="fillRelated"
         class="rounded-lg border border-blue-200 px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-400 dark:hover:bg-blue-900/30"
@@ -162,6 +163,7 @@ const props = defineProps<{
   modelMappings?: { from: string; to: string }[]
   platform?: string
   platforms?: string[]
+  suggestedModels?: string[]
   accountId?: number
   syncCredentials?: SyncUpstreamPreviewParams
 }>()
@@ -220,6 +222,9 @@ const canSyncUpstream = computed(() => {
 })
 
 const availableOptions = computed(() => {
+  if (props.suggestedModels !== undefined) {
+    return props.suggestedModels.map(value => ({ value, label: value }))
+  }
   if (normalizedPlatforms.value.length === 0) {
     return allModels
   }
@@ -284,15 +289,8 @@ const handleEnter = () => {
 }
 
 const fillRelated = () => {
-  const newModels = [...props.modelValue]
-  for (const platform of normalizedPlatforms.value) {
-    for (const model of getModelsByPlatform(platform)) {
-      if (!newModels.includes(model)) {
-        newModels.push(model)
-      }
-    }
-  }
-  emit('update:modelValue', newModels)
+  const models = props.suggestedModels ?? normalizedPlatforms.value.flatMap(getModelsByPlatform)
+  emit('update:modelValue', [...new Set([...props.modelValue, ...models])])
 }
 
 const syncUpstreamModels = async () => {

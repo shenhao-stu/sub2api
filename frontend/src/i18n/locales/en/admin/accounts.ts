@@ -1,6 +1,7 @@
 export default {
     accounts: {
       commandCode: {
+        modelsHint: 'Empty allows requested model IDs. Sync the public Command Code catalog or add models manually; catalog entries do not confirm Go plan access.',
         quotaUnknown: "Unavailable",
         quotaIdle: "Check monthly credit and usage windows. Missing measurements are never treated as zero.",
         quotaFetched: "Checked {time}; values are an upstream snapshot.",

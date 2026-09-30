@@ -123,6 +123,7 @@ const ModelWhitelistSelectorStub = defineComponent({
       default: () => [],
     },
     platform: String,
+    suggestedModels: Array,
     syncCredentials: Object,
   },
   emits: ['update:modelValue', 'upstream-synced'],
@@ -250,6 +251,29 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await wrapper.get('[data-testid="commandcode-preset-select"]').setValue('go')
     await flushPromises()
     expect((wrapper.get('input[type="password"]').element as HTMLInputElement).value).toBe('')
+    wrapper.unmount()
+  })
+
+  it('uses the Command Code catalog instead of OpenAI defaults and retains explicit model choices', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('modelValue').length).toBeGreaterThan(0)
+    await wrapper.get('[data-testid="commandcode-go-action"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props()).toMatchObject({ modelValue: [], suggestedModels: [] })
+    expect(wrapper.text()).not.toContain('admin.accounts.openai.baseUrlHint')
+    expect(wrapper.text()).not.toContain('admin.accounts.openai.apiKeyHint')
+    expect(wrapper.text()).not.toContain('admin.accounts.headerOverride.title')
+    expect(wrapper.text()).not.toContain('admin.accounts.openai.imagesUrlToB64Json')
+    await wrapper.get('[data-testid="model-whitelist-selector"]').trigger('click')
+    await selectButtonByText(wrapper, 'admin.accounts.modelMapping')
+    await selectButtonByText(wrapper, 'admin.accounts.modelWhitelist')
+    await wrapper.get('input[type="password"]').setValue('test-commandcode-key')
+    await wrapper.get('[data-testid="commandcode-go-action"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('modelValue')).toEqual(['public-glm'])
+    expect((wrapper.get('input[type="password"]').element as HTMLInputElement).value).toBe('test-commandcode-key')
     wrapper.unmount()
   })
 

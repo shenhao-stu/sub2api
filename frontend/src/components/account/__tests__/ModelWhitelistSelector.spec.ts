@@ -100,6 +100,18 @@ describe('ModelWhitelistSelector', () => {
     expect(showInfo).toHaveBeenCalledWith(expect.stringContaining('gpt-latest → deepseek-chat'))
   })
 
+  it('allows an upstream catalog to suppress platform suggestions without disabling sync', async () => {
+    syncUpstreamModelsPreview.mockResolvedValue({ models: ['provider/model-id'] })
+    const wrapper = mountSelector({ suggestedModels: [], syncCredentials: { platform: 'openai', type: 'apikey', api_key: '', extra: { provider: 'commandcode_go' } } })
+    await wrapper.get('div.cursor-pointer').trigger('click')
+    expect(wrapper.findAll('[data-testid="model-option"]')).toHaveLength(0)
+    expect(wrapper.findAll('button').some(button => button.text() === 'admin.accounts.fillRelatedModels')).toBe(false)
+    await wrapper.findAll('button').find(button => button.text() === 'admin.accounts.syncUpstreamModels')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.emitted('update:modelValue')).toEqual([[['provider/model-id']]])
+    expect(syncUpstreamModelsPreview).toHaveBeenCalledOnce()
+  })
+
   it('keeps the existing duplicate identity warning before checking mappings', async () => {
     const wrapper = mountSelector({ modelValue: ['gpt-latest'], modelMappings: [{ from: 'gpt-latest', to: 'deepseek-chat' }] })
     await wrapper.get('input[placeholder="admin.accounts.enterCustomModelName"]').setValue('gpt-latest')

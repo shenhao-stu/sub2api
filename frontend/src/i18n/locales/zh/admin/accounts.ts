@@ -1,6 +1,7 @@
 export default {
     accounts: {
       commandCode: {
+        modelsHint: '留空不限制请求模型。可同步 Command Code 公共目录或手动添加；公共目录不代表 Go 套餐已开通全部模型。',
         quotaUnknown: "未返回",
         quotaIdle: "点击查询获取月度余额和用量窗口；未返回的数据不会视为零。",
         quotaFetched: "查询时间：{time}；额度为上游快照。",
