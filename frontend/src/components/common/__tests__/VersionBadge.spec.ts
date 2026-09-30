@@ -30,10 +30,22 @@ vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 describe('VersionBadge custom build workflow', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    app.currentVersion = '0.2.8+getoken.r248'
     app.buildType = 'custom'
     app.onlineUpdateSupported = false
     app.hasUpdate = true
     api.performUpdate.mockResolvedValue({ need_restart: true })
+  })
+
+  it('keeps the complete custom version available in the badge tooltip and details', async () => {
+    app.currentVersion = '0.2.11+g1'
+    const wrapper = mount(VersionBadge)
+    expect(wrapper.find('button').attributes('title')).toContain('v0.2.11+g1')
+    await wrapper.find('button').trigger('click')
+    expect(wrapper.text()).toContain('v0.2.11+g1')
+    expect(wrapper.text()).toContain('version.customModeHint')
+    expect(wrapper.text()).not.toContain('version.updateNow')
+    wrapper.unmount()
   })
 
   it.each([true, false])('shows custom deployment guidance with hasUpdate=%s', async (hasUpdate) => {
