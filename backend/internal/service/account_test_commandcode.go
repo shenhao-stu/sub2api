@@ -3,6 +3,7 @@ package service
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,17 @@ import (
 type commandCodeAccountTestClient struct {
 	service *AccountTestService
 	account *Account
+}
+
+func (s *AccountTestService) GetCommandCodeQuota(ctx context.Context, account *Account) (*commandcode.BillingCredits, error) {
+	if !account.IsCommandCodeGo() {
+		return nil, errors.New("Command Code quota is available for Go accounts only")
+	}
+	if err := ValidateCommandCodeAccount(account); err != nil {
+		return nil, err
+	}
+	client := commandcode.Client{HTTPClient: commandCodeAccountTestClient{s, account}, UserAgent: commandCodeCLIUserAgent, Version: commandCodeCLIVersion}
+	return client.BillingCredits(ctx, account.GetCredential("api_key"))
 }
 
 func (client commandCodeAccountTestClient) Do(req *http.Request) (*http.Response, error) {
@@ -64,6 +76,9 @@ func (s *AccountTestService) testCommandCodeAccountConnection(c *gin.Context, ac
 	payload := map[string]any{
 		"model": modelID, "messages": []map[string]any{{"role": "user", "content": prompt}},
 		"max_tokens": 64, "stream": true,
+	}
+	if account.IsCommandCodeGo() {
+		payload["max_tokens"] = 512
 	}
 	if endpoint == "/responses" {
 		payload = map[string]any{

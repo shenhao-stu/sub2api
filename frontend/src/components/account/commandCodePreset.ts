@@ -1,9 +1,9 @@
 export type CommandCodePreset = '' | 'provider_openai' | 'provider_anthropic' | 'go'
 
 export const commandCodePresets = [
+	{ value: 'go', platform: 'openai', provider: 'commandcode_go', baseUrl: 'https://api.commandcode.ai' },
   { value: 'provider_openai', platform: 'openai', provider: 'commandcode', baseUrl: 'https://api.commandcode.ai/provider' },
-  { value: 'provider_anthropic', platform: 'anthropic', provider: 'commandcode', baseUrl: 'https://api.commandcode.ai/provider' },
-  { value: 'go', platform: 'openai', provider: 'commandcode_go', baseUrl: 'https://api.commandcode.ai' }
+  { value: 'provider_anthropic', platform: 'anthropic', provider: 'commandcode', baseUrl: 'https://api.commandcode.ai/provider' }
 ] as const
 
 export function resolveCommandCodePreset(platform: string, extra?: Record<string, unknown> | null): CommandCodePreset {

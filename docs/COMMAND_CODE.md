@@ -4,7 +4,7 @@ This fork preserves its existing providers and adds opt-in Command Code accounts
 
 ## Configure an account
 
-In **Accounts → Add account**, select an API key account and a Command Code preset:
+In **Accounts → Add account**, select the **Command Code Go** card for a Go subscription, or choose a Provider preset for another supported plan. The preset selects the appropriate platform and API-key type:
 
 | Preset | Platform | Base URL | Upstream protocol |
 | --- | --- | --- | --- |
@@ -19,6 +19,14 @@ For an OpenAI Provider account, the Responses mode and supported capabilities co
 [Official Provider documentation](https://commandcode.ai/docs/provider) states that GOAT, Pro, Max and Team API calls consume their plan credits. The Go plan does not support this official API. The experimental Go adapter uses an internal CLI protocol, which may change independently. There is no automatic fallback between these two modes and no fabricated token-refresh flow. A real subscription test is required before relying on the Go adapter in production.
 
 Provider accounts can require zero data retention with the account setting or request header `x-cmd-zdr: 1`. Invalid or ambiguous headers are rejected. Go does not support this guarantee and rejects requests requiring it.
+
+## Go quota and exhausted credit
+
+Saved Go accounts offer **Check quota** in the edit dialog. It reads `/alpha/billing/credits` with that account's saved key, proxy and transport, displaying monthly credit and five-hour/weekly windows. The request has a 20-second deadline and a bounded response; it never imports browser cookies, accepts an alternate origin or falls back to another account's key. Missing values remain unavailable, distinct from a measured zero. Save credential changes before checking. Quota snapshots do not automatically change scheduling based on rounded balances.
+
+The official structured `BAD_REQUEST` insufficient-credit rejection stops the affected Command Code account and allows bounded failover before client output. Verify or replenish the subscription before manually re-enabling the account. Generic validation errors do not disable accounts. A rejected response carrying observed usage is accounted for without replay. Go's connection test uses a 512-token output budget to avoid the false truncation seen with a 64-token test on reasoning models.
+
+This update follows Fwind43/sub2api commits `c27038d9f5bd4f9b98fc7911f11948617efbdd91` and `74417b974a7f78d0dc5ea6c9407759a6cb20d799`, and CPA-CommandCode-Provider `36c60d52189c57d73ae3379218fa9c1c769b9eaf`. Transport and billing remain native to this fork; no sidecar or upstream script is installed.
 
 ## Protocol and accounting boundaries
 

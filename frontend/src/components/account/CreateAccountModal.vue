@@ -74,7 +74,7 @@
       />
 
       <!-- Platform Selection - Segmented Control Style -->
-      <div>
+      <div v-if="!commandCodePreset">
         <label class="input-label">{{ t('admin.accounts.platform') }}</label>
         <div class="mt-2 flex flex-wrap rounded-lg bg-gray-100 p-1 dark:bg-dark-700" data-tour="account-form-platform">
           <button
@@ -238,7 +238,7 @@
       </div>
 
       <!-- Account Type Selection (Anthropic) -->
-      <div v-if="form.platform === 'anthropic'">
+      <div v-if="form.platform === 'anthropic' && !commandCodePreset">
         <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
         <div class="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4" data-tour="account-form-type">
           <button
@@ -368,7 +368,7 @@
       </div>
 
       <!-- Account Type Selection (OpenAI) -->
-      <div v-if="form.platform === 'openai'">
+      <div v-if="form.platform === 'openai' && !commandCodePreset">
         <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
         <div class="mt-2 grid grid-cols-2 gap-3" data-tour="account-form-type">
           <button

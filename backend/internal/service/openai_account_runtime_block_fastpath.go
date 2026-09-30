@@ -591,7 +591,7 @@ func (s *OpenAIGatewayService) recordOpenAIOAuth429() {
 	s.openaiOAuth429WindowCount.Add(1)
 }
 
-func (s *OpenAIGatewayService) ShouldStopOpenAIOAuth429Failover(account *Account, statusCode int, failedSwitches int, state *OpenAIOAuth429FailoverState) bool {
+func (s *OpenAIGatewayService) ShouldStopOpenAIOAuth429Failover(account *Account, statusCode int, failedSwitches int, state *OpenAIOAuth429FailoverState, responseBody []byte) bool {
 	if failedSwitches < openAIOAuth429StormMaxAccountSwitches {
 		return false
 	}
@@ -602,6 +602,14 @@ func (s *OpenAIGatewayService) ShouldStopOpenAIOAuth429Failover(account *Account
 		return true
 	}
 	if isGrokOAuthAccount(account) {
+		if statusCode == http.StatusTooManyRequests && len(responseBody) > 0 {
+			decision := classifyGrokUpstreamFailure(statusCode, responseBody, "")
+			if decision.Class == GrokFailureFreeUsage || decision.Class == GrokFailureBilling {
+				// Account quota exhaustion is not upstream congestion. The normal
+				// request switch budget still bounds retries through the pool.
+				return false
+			}
+		}
 		if state == nil {
 			// Preserve the old threshold for callers that have not adopted the
 			// request-local state contract yet.

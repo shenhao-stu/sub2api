@@ -36,6 +36,10 @@
           :requires-new-key="commandCodeRequiresNewKey"
           @update:model-value="selectCommandCodePreset"
         />
+        <CommandCodeQuota
+          v-if="commandCodePreset === 'go' && account.extra?.provider === 'commandcode_go'"
+          :account-id="account.id"
+        />
         <div v-if="!isCNApiKeyAccount || editApiProtocol !== 'adaptive'">
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
@@ -3149,6 +3153,7 @@ import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import CnBaseUrlPresets from '@/components/account/CnBaseUrlPresets.vue'
 import CommandCodePreset from './CommandCodePreset.vue'
+import CommandCodeQuota from './CommandCodeQuota.vue'
 import { applyCommandCodePreset, buildCommandCodePreview, commandCodePresets, resolveCommandCodePreset, type CommandCodePreset as CommandCodePresetValue } from './commandCodePreset'
 import OpenCodeGoProtocolRulesEditor from '@/components/account/OpenCodeGoProtocolRulesEditor.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'

@@ -14,6 +14,10 @@ import (
 
 type commandCodeHTTPDoer func(*http.Request) (*http.Response, error)
 
+func isCommandCodeCreditExhausted(account *Account, status int, body []byte) bool {
+	return account.IsCommandCode() && commandcode.IsCreditExhausted(status, body)
+}
+
 func (f commandCodeHTTPDoer) Do(req *http.Request) (*http.Response, error) { return f(req) }
 
 func (s *OpenAIGatewayService) sendCommandCodeRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, stream bool) (*http.Response, error) {

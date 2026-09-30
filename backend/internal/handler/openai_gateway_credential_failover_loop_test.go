@@ -319,6 +319,7 @@ type grokCredentialHandlerUpstream struct {
 	authorization []string
 	failAccountID int64
 	rateLimitIDs  map[int64]bool
+	failureBodies map[int64]string
 	failureStatus map[int64]int
 	cancelRequest context.CancelFunc
 }
@@ -334,17 +335,21 @@ func (u *grokCredentialHandlerUpstream) Do(req *http.Request, _ string, accountI
 	u.authorization = append(u.authorization, req.Header.Get("Authorization"))
 	failAccountID := u.failAccountID
 	rateLimited := u.rateLimitIDs[accountID]
+	failureBody := u.failureBodies[accountID]
 	failureStatus := u.failureStatus[accountID]
 	cancelRequest := u.cancelRequest
 	u.mu.Unlock()
 	if rateLimited {
+		if failureBody == "" {
+			failureBody = `{"error":{"message":"rate limited"}}`
+		}
 		return &http.Response{
 			StatusCode: http.StatusTooManyRequests,
 			Header: http.Header{
 				"Content-Type": []string{"application/json"},
 				"Retry-After":  []string{"60"},
 			},
-			Body: io.NopCloser(bytes.NewBufferString(`{"error":{"message":"rate limited"}}`)),
+			Body: io.NopCloser(strings.NewReader(failureBody)),
 		}, nil
 	}
 	if failureStatus > 0 {
@@ -596,6 +601,35 @@ func TestResponsesGrok429FailoverIsBounded(t *testing.T) {
 		require.NotContains(t, recorder.Body.String(), "healthy-access")
 		require.NotContains(t, recorder.Body.String(), "rate limited")
 	})
+}
+
+func TestGrokExhaustedQuotaReachesHealthyThirdAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for index, endpoint := range []string{"responses", "chat/completions"} {
+		t.Run(endpoint, func(t *testing.T) {
+			_, repo, upstream, router, cleanup := newGrokCredentialFailoverHandler(t, "all_429")
+			defer cleanup()
+			base := int64(10801 + index*10)
+			for i := range repo.accounts {
+				repo.accounts[i].ID = base + int64(i)
+			}
+			quota := `{"error":{"message":"You've used all the included free usage for model grok-4.6 for now. Usage resets over a rolling 24-hour window — tokens (actual/limit): 530061/500000."}}`
+			upstream.rateLimitIDs = map[int64]bool{base: true, base + 1: true}
+			upstream.failureBodies = map[int64]string{base: quota, base + 1: quota}
+			body := `{"model":"grok-4.6","input":"hello","stream":false}`
+			if endpoint == "chat/completions" {
+				body = `{"model":"grok-4.6","messages":[{"role":"user","content":"hello"}],"stream":false}`
+			}
+			recorder := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/openai/v1/"+endpoint, strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(recorder, req)
+
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			require.Equal(t, []int64{base, base + 1, base + 2}, upstream.accountHits())
+			require.Empty(t, repo.rateLimitedAccountIDs(), "a model quota must not block healthy sibling models")
+		})
+	}
 }
 
 func TestResponsesGrok402FailoverCooldown(t *testing.T) {

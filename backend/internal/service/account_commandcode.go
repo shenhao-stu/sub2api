@@ -86,7 +86,8 @@ func prepareCommandCodeRequest(req *http.Request, account *Account) error {
 	}
 	allowed := false
 	if account.IsCommandCodeGo() {
-		allowed = req.Method == http.MethodPost && req.URL.Path == "/alpha/generate"
+		allowed = (req.Method == http.MethodPost && req.URL.Path == "/alpha/generate") ||
+			(req.Method == http.MethodGet && req.URL.Path == "/alpha/billing/credits")
 	} else {
 		switch req.URL.Path {
 		case "/provider/v1/messages":

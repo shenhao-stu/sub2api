@@ -52,13 +52,7 @@ func (c *Client) ChatCompletion(ctx context.Context, key string, body []byte, st
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream, application/x-ndjson")
-	req.Header.Set("x-cli-environment", "production")
-	if c.UserAgent != "" {
-		req.Header.Set("User-Agent", c.UserAgent)
-	}
-	if c.Version != "" {
-		req.Header.Set("x-command-code-version", c.Version)
-	}
+	c.applyCLIHeaders(req)
 	upstream, err := c.HTTPClient.Do(req)
 	if err != nil {
 		cause := ctx.Err()
@@ -79,13 +73,37 @@ func (c *Client) ChatCompletion(ctx context.Context, key string, body []byte, st
 		return nil, ErrUpstream
 	}
 	if upstream.StatusCode != http.StatusOK {
+		body, readErr := io.ReadAll(io.LimitReader(upstream.Body, maxBillingBody+1))
 		upstream.Body.Close()
 		cancel()
+		if readErr == nil && len(body) <= maxBillingBody {
+			var envelope struct {
+				Usage      json.RawMessage `json:"usage"`
+				TotalUsage json.RawMessage `json:"totalUsage"`
+			}
+			if json.Unmarshal(body, &envelope) == nil {
+				raw := envelope.TotalUsage
+				if len(raw) == 0 {
+					raw = envelope.Usage
+				}
+				if len(raw) > 0 && string(raw) != "null" {
+					usage, err := convertUsage(raw)
+					if err != nil {
+						return nil, err
+					}
+					return nil, withUsage(ErrUpstream, usage)
+				}
+			}
+		}
 		status := upstream.StatusCode
 		if status < 400 || status > 599 {
 			status = http.StatusBadGateway
 		}
-		data, _ := json.Marshal(map[string]any{"error": map[string]any{"type": "upstream_error", "code": "commandcode_upstream_error", "message": fmt.Sprintf("CommandCode upstream returned HTTP %d", upstream.StatusCode)}})
+		code, message := "commandcode_upstream_error", fmt.Sprintf("CommandCode upstream returned HTTP %d", upstream.StatusCode)
+		if readErr == nil && IsCreditExhausted(status, body) {
+			code, message = CreditExhaustedCode, "Command Code credits are exhausted; check the subscription before re-enabling this account"
+		}
+		data, _ := json.Marshal(map[string]any{"error": map[string]any{"type": "upstream_error", "code": code, "message": message}})
 		header := safeHeaders(upstream.Header)
 		header.Set("Content-Type", "application/json")
 		return response(status, header, io.NopCloser(bytes.NewReader(data))), nil

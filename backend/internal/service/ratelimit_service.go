@@ -330,6 +330,15 @@ func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Accoun
 // HandleUpstreamError 处理上游错误响应，标记账号状态
 // 返回是否应该停止该账号的调度
 func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, requestedModel ...string) (shouldDisable bool) {
+	if isCommandCodeCreditExhausted(account, statusCode, responseBody) {
+		s.notifyAccountSchedulingBlocked(account, time.Time{}, "commandcode_credit_exhausted")
+		if err := s.accountRepo.SetError(ctx, account.ID, "Command Code credits exhausted; verify the subscription before re-enabling this account"); err != nil {
+			slog.Warn("account_set_error_failed", "account_id", account.ID, "error", err)
+		} else {
+			slog.Warn("commandcode_credit_exhausted", "account_id", account.ID)
+		}
+		return true
+	}
 	ctx = withTempUnschedulableModel(ctx, requestedModel)
 	// Team 联动熔断必须先于池模式/自定义错误码/临时不可调度的各类早退；
 	// 同请求内与 fastpath 调用点的重复触发由方法内去重吸收。

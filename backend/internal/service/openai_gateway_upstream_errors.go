@@ -251,6 +251,9 @@ func (s *OpenAIGatewayService) shouldFailoverUpstreamError(statusCode int) bool 
 }
 
 func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(account *Account, statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	if isCommandCodeCreditExhausted(account, statusCode, upstreamBody) {
+		return true
+	}
 	if account != nil && account.Platform == PlatformGrok && isGrokOpaqueForbidden(statusCode, upstreamBody) {
 		return false
 	}
