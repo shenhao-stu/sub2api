@@ -5351,6 +5351,30 @@
                   </p>
                 </div>
 
+              <div class="space-y-4 rounded-xl border border-gray-200 p-4 dark:border-dark-600 md:col-span-2" data-testid="grok-cli-fingerprint">
+                <div class="flex items-center justify-between gap-4">
+                  <div>
+                    <h3 class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ t("admin.settings.gatewayForwarding.grokCLIFingerprint") }}</h3>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayForwarding.grokCLIAutoSyncHint") }}</p>
+                  </div>
+                  <Toggle v-model="form.grok_cli_version_auto_sync_enabled" data-testid="grok-cli-auto-sync" :aria-label="t('admin.settings.gatewayForwarding.grokCLIFingerprint')" />
+                </div>
+                <div class="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label for="grok-cli-version" class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayForwarding.grokCLIManualVersion") }}</label>
+                    <input id="grok-cli-version" v-model.trim="form.grok_cli_client_version" class="input mt-2 w-full" maxlength="32" :placeholder="t('admin.settings.gatewayForwarding.grokCLIAutomatic')" data-testid="grok-cli-version" />
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayForwarding.grokCLIManualHint") }}</p>
+                  </div>
+                  <dl class="space-y-1 break-words text-xs text-gray-600 dark:text-gray-300" aria-live="polite">
+                    <div class="flex flex-wrap gap-x-1"><dt>{{ t("admin.settings.gatewayForwarding.grokCLIEffective") }}:</dt><dd><strong data-testid="grok-cli-effective">{{ form.grok_cli_client_version_effective || "—" }}</strong></dd></div>
+                    <div class="flex flex-wrap gap-x-1"><dt>{{ t("admin.settings.gatewayForwarding.grokCLISource") }}:</dt><dd>{{ form.grok_cli_version_source ? t(`admin.settings.gatewayForwarding.grokCLISources.${form.grok_cli_version_source}`) : "—" }}</dd></div>
+                    <div class="flex flex-wrap gap-x-1"><dt>{{ t("admin.settings.gatewayForwarding.grokCLILastChecked") }}:</dt><dd>{{ form.grok_cli_version_last_checked_at || "—" }}</dd></div>
+                    <div><dt class="sr-only">User-Agent</dt><dd class="font-mono">{{ form.grok_cli_user_agent }}</dd></div>
+                  </dl>
+                </div>
+                <p v-if="form.grok_cli_version_last_error" class="text-xs text-amber-700 dark:text-amber-400" role="status">{{ t("admin.settings.gatewayForwarding.grokCLISyncFailed") }}</p>
+              </div>
+
               <!-- OpenAI Responses 首 token 统计 -->
               <div class="border-b border-gray-100 pb-5 dark:border-dark-700 md:col-span-2">
                 <label
@@ -9954,6 +9978,15 @@ const form = reactive<SettingsForm>({
   grok_default_text_model: "grok-4.5",
   grok_cross_client_model_map_enabled: false,
   grok_default_base_url_mode: "cli",
+  grok_cli_client_version: "",
+  grok_cli_version_auto_sync_enabled: true,
+  grok_cli_client_version_synced: "",
+  grok_cli_client_version_effective: "",
+  grok_cli_user_agent: "",
+  grok_cli_version_source: "",
+  grok_cli_version_last_checked_at: "",
+  grok_cli_version_last_error: "",
+
   // Identity patch (Claude -> Gemini)
   enable_identity_patch: true,
   identity_patch_prompt: "",
@@ -11616,6 +11649,9 @@ async function saveSettings() {
       grok_cross_client_model_map_enabled:
         form.grok_cross_client_model_map_enabled,
       grok_default_base_url_mode: form.grok_default_base_url_mode,
+      grok_cli_client_version: form.grok_cli_client_version,
+      grok_cli_version_auto_sync_enabled: form.grok_cli_version_auto_sync_enabled,
+
       enable_identity_patch: form.enable_identity_patch,
       identity_patch_prompt: form.identity_patch_prompt,
       min_claude_code_version: form.min_claude_code_version,

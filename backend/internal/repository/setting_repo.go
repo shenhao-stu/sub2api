@@ -103,3 +103,16 @@ func (r *settingRepository) Delete(ctx context.Context, key string) error {
 	_, err := r.client.Setting.Delete().Where(setting.KeyEQ(key)).Exec(ctx)
 	return err
 }
+
+// CompareAndSet prevents concurrent metadata workers from overwriting a newer
+// verified value. Only the caller holding the observed value may advance it.
+func (r *settingRepository) CompareAndSet(ctx context.Context, key, expected, value string) (bool, error) {
+	if expected == "" {
+		err := r.client.Setting.Create().SetKey(key).SetValue("").OnConflictColumns(setting.FieldKey).Ignore().Exec(ctx)
+		if err != nil {
+			return false, err
+		}
+	}
+	count, err := r.client.Setting.Update().Where(setting.KeyEQ(key), setting.ValueEQ(expected)).SetValue(value).SetUpdatedAt(time.Now()).Save(ctx)
+	return count > 0, err
+}

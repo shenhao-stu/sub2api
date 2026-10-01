@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -195,6 +196,8 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 
 		// Grok compatibility defaults: cross-client mapping stays enabled unless
 		// operators explicitly disable it.
+		SettingKeyGrokCLIClientVersion:           "",
+		SettingKeyGrokCLIVersionAutoSyncEnabled:  "true",
 		SettingKeyGrokDefaultTextModel:           "grok-4.6",
 		SettingKeyGrokCrossClientModelMapEnabled: "true",
 		SettingKeyGrokDefaultBaseURLMode:         GrokDefaultBaseURLModeCLI,
@@ -823,6 +826,13 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	// Operators can set false to disable silent cross-client rewrite.
 	result.GrokCrossClientModelMapEnabled = !isFalseSettingValue(settings[SettingKeyGrokCrossClientModelMapEnabled])
 	result.GrokDefaultBaseURLMode = normalizeGrokDefaultBaseURLMode(settings[SettingKeyGrokDefaultBaseURLMode])
+	result.GrokCLIClientVersion = strings.TrimSpace(settings[SettingKeyGrokCLIClientVersion])
+	result.GrokCLIVersionAutoSyncEnabled = settings[SettingKeyGrokCLIVersionAutoSyncEnabled] != "false"
+	result.GrokCLIClientVersionSynced = settings[SettingKeyGrokCLIClientVersionSynced]
+	result.GrokCLIClientVersionEffective, result.GrokCLIVersionSource = grokCLIPolicy(settings).Resolve(os.Getenv(xai.CLIVersionEnv))
+	result.GrokCLIUserAgent = xai.CLIUserAgent(result.GrokCLIClientVersionEffective)
+	result.GrokCLIVersionLastCheckedAt = settings[SettingKeyGrokCLIVersionLastCheckedAt]
+	result.GrokCLIVersionLastError = settings[SettingKeyGrokCLIVersionLastError]
 
 	// Available channels feature (default: disabled; strict true)
 	result.AvailableChannelsEnabled = settings[SettingKeyAvailableChannelsEnabled] == "true"

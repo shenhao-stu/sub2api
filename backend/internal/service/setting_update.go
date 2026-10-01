@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"log/slog"
 	"math"
 	"strconv"
@@ -86,6 +87,9 @@ func (s *SettingService) UpdateSettingsWithAuthSourceDefaultsOmitting(ctx contex
 // it omitted, so in that case the caches are rebuilt from storage rather than
 // from the request struct.
 func (s *SettingService) refreshCachedSettingsAfterWrite(ctx context.Context, settings *SystemSettings, omitted OmittedSettingKeys) {
+	if s.grokCLIVersionSync != nil {
+		s.grokCLIVersionSync.Reload()
+	}
 	if len(omitted) == 0 {
 		s.refreshCachedSettings(settings)
 		return
@@ -428,6 +432,12 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	}
 	updates[SettingKeyGrokCrossClientModelMapEnabled] = strconv.FormatBool(settings.GrokCrossClientModelMapEnabled)
 	updates[SettingKeyGrokDefaultBaseURLMode] = normalizeGrokDefaultBaseURLMode(settings.GrokDefaultBaseURLMode)
+	version := strings.TrimSpace(settings.GrokCLIClientVersion)
+	if version != "" && !xai.IsSupportedCLIVersion(version) {
+		return nil, infraerrors.BadRequest("INVALID_GROK_CLI_VERSION", "Grok CLI version must be a stable x.y.z release >= "+xai.CLIStableVersion)
+	}
+	updates[SettingKeyGrokCLIClientVersion] = version
+	updates[SettingKeyGrokCLIVersionAutoSyncEnabled] = strconv.FormatBool(settings.GrokCLIVersionAutoSyncEnabled)
 
 	// Available channels feature switch
 	updates[SettingKeyAvailableChannelsEnabled] = strconv.FormatBool(settings.AvailableChannelsEnabled)

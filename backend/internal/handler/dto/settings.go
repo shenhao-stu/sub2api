@@ -317,6 +317,14 @@ type SystemSettings struct {
 	GrokDefaultTextModel           string `json:"grok_default_text_model"`
 	GrokCrossClientModelMapEnabled bool   `json:"grok_cross_client_model_map_enabled"`
 	GrokDefaultBaseURLMode         string `json:"grok_default_base_url_mode"`
+	GrokCLIClientVersion           string `json:"grok_cli_client_version"`
+	GrokCLIVersionAutoSyncEnabled  bool   `json:"grok_cli_version_auto_sync_enabled"`
+	GrokCLIClientVersionSynced     string `json:"grok_cli_client_version_synced"`
+	GrokCLIClientVersionEffective  string `json:"grok_cli_client_version_effective"`
+	GrokCLIUserAgent               string `json:"grok_cli_user_agent"`
+	GrokCLIVersionSource           string `json:"grok_cli_version_source"`
+	GrokCLIVersionLastCheckedAt    string `json:"grok_cli_version_last_checked_at"`
+	GrokCLIVersionLastError        string `json:"grok_cli_version_last_error"`
 
 	// Available Channels feature switch (user-facing aggregate view)
 	AvailableChannelsEnabled bool `json:"available_channels_enabled"`

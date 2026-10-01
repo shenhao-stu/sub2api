@@ -416,6 +416,13 @@ func ProvideOpenAICodexVersionSyncService(
 	return svc
 }
 
+func ProvideGrokCLIVersionSyncService(repo SettingRepository, settings *SettingService) *GrokCLIVersionSyncService {
+	svc := NewGrokCLIVersionSyncService(repo, xai.DefaultCLIIdentity, func(ctx context.Context) (string, error) { return xai.FetchCLIStableVersion(ctx, nil) })
+	settings.grokCLIVersionSync = svc
+	svc.Start()
+	return svc
+}
+
 // ProvideClaudeCodeVersionSyncService creates and starts ClaudeCodeVersionSyncService.
 // 出站 Claude Code 身份的版本号靠它跟随官方发布，无需为了跟版本而发新版本；面板可关闭。
 func ProvideClaudeCodeVersionSyncService(
@@ -942,6 +949,7 @@ var ProviderSet = wire.NewSet(
 	ProvideAccountExpiryService,
 	ProvideOpenAICodexVersionSyncService,
 	ProvideClaudeCodeVersionSyncService,
+	ProvideGrokCLIVersionSyncService,
 	ProvideProxyExpiryService,
 	ProvideSubscriptionExpiryService,
 	ProvideTimingWheelService,

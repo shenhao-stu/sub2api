@@ -1362,11 +1362,44 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(showSuccess).toHaveBeenCalledWith("上游倍率自动探测设置已保存");
   });
 
+  it("defaults Grok CLI sync on and saves only editable fingerprint fields", async () => {
+    getSettings.mockResolvedValueOnce({ ...baseSettingsResponse,
+      grok_cli_version_auto_sync_enabled: undefined,
+      grok_cli_client_version_effective: "1.0.50",
+      grok_cli_version_source: "synchronized",
+      grok_cli_user_agent: "xai-grok-workspace/1.0.50",
+      grok_cli_version_last_checked_at: "2026-10-01T00:00:00Z",
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    expect((wrapper.get('[data-testid="grok-cli-auto-sync"]').element as HTMLInputElement).checked).toBe(true);
+    expect(wrapper.get('[data-testid="grok-cli-effective"]').text()).toBe("1.0.50");
+    await wrapper.get('[data-testid="grok-cli-version"]').setValue("1.0.51");
+    await wrapper.get('[data-testid="grok-cli-auto-sync"]').setValue(false);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    const payload = updateSettings.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(payload.grok_cli_client_version).toBe("1.0.51");
+    expect(payload.grok_cli_version_auto_sync_enabled).toBe(false);
+    expect(payload).not.toHaveProperty("grok_cli_client_version_synced");
+    expect(payload).not.toHaveProperty("grok_cli_client_version_effective");
+  });
+
   it("loads and saves configurable Grok cross-client model mapping", async () => {
     getSettings.mockResolvedValueOnce({
       ...baseSettingsResponse,
       grok_default_text_model: "grok-4.1-fast",
       grok_cross_client_model_map_enabled: true,
+    grok_cli_client_version: "",
+    grok_cli_version_auto_sync_enabled: true,
+    grok_cli_client_version_synced: "",
+    grok_cli_client_version_effective: "",
+    grok_cli_user_agent: "",
+    grok_cli_version_source: "",
+    grok_cli_version_last_checked_at: "",
+    grok_cli_version_last_error: "",
+
     });
     const wrapper = mountView();
 

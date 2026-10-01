@@ -75,6 +75,7 @@ func newCleanupTest(t *testing.T, billingCacheSvc *service.BillingCacheService, 
 		nil, // cnProviderBalanceCheck
 		codexVersionSyncSvc,
 		claudeCodeVersionSyncSvc,
+		service.NewGrokCLIVersionSyncService(nil, nil, nil),
 		proxyExpirySvc,
 		subscriptionExpirySvc,
 		&service.UsageCleanupService{},

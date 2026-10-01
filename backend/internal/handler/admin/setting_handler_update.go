@@ -342,6 +342,8 @@ type UpdateSettingsRequest struct {
 	GrokDefaultTextModel           *string `json:"grok_default_text_model"`
 	GrokCrossClientModelMapEnabled *bool   `json:"grok_cross_client_model_map_enabled"`
 	GrokDefaultBaseURLMode         *string `json:"grok_default_base_url_mode"`
+	GrokCLIClientVersion           *string `json:"grok_cli_client_version"`
+	GrokCLIVersionAutoSyncEnabled  *bool   `json:"grok_cli_version_auto_sync_enabled"`
 
 	// Available Channels feature switch (user-facing)
 	AvailableChannelsEnabled *bool `json:"available_channels_enabled"`
@@ -1950,6 +1952,18 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.ChannelMonitorHideUserRanking
 		}(),
+		GrokCLIClientVersion: func() string {
+			if req.GrokCLIClientVersion != nil {
+				return *req.GrokCLIClientVersion
+			}
+			return previousSettings.GrokCLIClientVersion
+		}(),
+		GrokCLIVersionAutoSyncEnabled: func() bool {
+			if req.GrokCLIVersionAutoSyncEnabled != nil {
+				return *req.GrokCLIVersionAutoSyncEnabled
+			}
+			return previousSettings.GrokCLIVersionAutoSyncEnabled
+		}(),
 		GrokDefaultTextModel: func() string {
 			if req.GrokDefaultTextModel != nil {
 				return *req.GrokDefaultTextModel
@@ -2430,6 +2444,14 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		GrokDefaultTextModel:           updatedSettings.GrokDefaultTextModel,
 		GrokCrossClientModelMapEnabled: updatedSettings.GrokCrossClientModelMapEnabled,
 		GrokDefaultBaseURLMode:         updatedSettings.GrokDefaultBaseURLMode,
+		GrokCLIClientVersion:           updatedSettings.GrokCLIClientVersion,
+		GrokCLIVersionAutoSyncEnabled:  updatedSettings.GrokCLIVersionAutoSyncEnabled,
+		GrokCLIClientVersionSynced:     updatedSettings.GrokCLIClientVersionSynced,
+		GrokCLIClientVersionEffective:  updatedSettings.GrokCLIClientVersionEffective,
+		GrokCLIUserAgent:               updatedSettings.GrokCLIUserAgent,
+		GrokCLIVersionSource:           updatedSettings.GrokCLIVersionSource,
+		GrokCLIVersionLastCheckedAt:    updatedSettings.GrokCLIVersionLastCheckedAt,
+		GrokCLIVersionLastError:        updatedSettings.GrokCLIVersionLastError,
 
 		AvailableChannelsEnabled: updatedSettings.AvailableChannelsEnabled,
 		SubscriptionEnabled:      updatedSettings.SubscriptionEnabled,

@@ -602,6 +602,15 @@ export interface SystemSettings {
   grok_default_text_model: string;
   grok_cross_client_model_map_enabled: boolean;
   grok_default_base_url_mode: string;
+  grok_cli_client_version: string;
+  grok_cli_version_auto_sync_enabled: boolean;
+  grok_cli_client_version_synced: string;
+  grok_cli_client_version_effective: string;
+  grok_cli_user_agent: string;
+  grok_cli_version_source: string;
+  grok_cli_version_last_checked_at: string;
+  grok_cli_version_last_error: string;
+
 
   // Per-platform account auto-pause thresholds (100 = disabled)
   account_scheduling_thresholds: AccountSchedulingThresholdsMap;
@@ -939,6 +948,9 @@ export interface UpdateSettingsRequest {
   grok_default_text_model?: string;
   grok_cross_client_model_map_enabled?: boolean;
   grok_default_base_url_mode?: string;
+  grok_cli_client_version?: string;
+  grok_cli_version_auto_sync_enabled?: boolean;
+
   account_scheduling_thresholds?: AccountSchedulingThresholdsMap;
   enable_identity_patch?: boolean;
   identity_patch_prompt?: string;

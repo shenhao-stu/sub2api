@@ -8,17 +8,18 @@ import (
 	"golang.org/x/mod/semver"
 )
 
-// Fixed Grok Build / CLI-chat-proxy client identity.
-// These values are intentionally pinned in-binary (not scraped from live CLI).
-// Operators may bump the version via XAI_GROK_CLI_VERSION without a release.
+// Grok Build identity. Only version metadata is synchronized; no CLI code is run.
 const (
 	// CLIProxyHost is the hostname that requires the official CLI identity headers.
 	CLIProxyHost = "cli-chat-proxy.grok.com"
 
-	// CLIStableVersion is the known-good minimum client version accepted by cli-chat-proxy.
-	CLIStableVersion = "0.2.93"
+	// CLIClientVersion is the verified offline baseline; automatic metadata updates may advance it.
+	CLIClientVersion = "1.0.46"
 
-	// CLIVersionEnv is the optional operator override for CLIStableVersion.
+	// CLIStableVersion is the known-good minimum client version accepted by cli-chat-proxy.
+	CLIStableVersion = "1.0.13"
+
+	// CLIVersionEnv is the optional operator pin for the outbound identity.
 	CLIVersionEnv = "XAI_GROK_CLI_VERSION"
 
 	// CLITokenAuth is required by cli-chat-proxy for Grok Build OAuth tokens.
@@ -31,25 +32,18 @@ const (
 	CLIClientMode = "cli"
 )
 
-// ResolveCLIVersion returns a supported CLI client version.
-// Empty or invalid overrides fall back to CLIClientVersion (the pinned
-// preferred client pin in billing.go). CLIStableVersion is only the minimum
-// accepted by IsSupportedCLIVersion, not the default identity we advertise.
+// ResolveCLIVersion uses one policy for gateway, billing, and transport headers.
 func ResolveCLIVersion() string {
-	version := strings.TrimSpace(os.Getenv(CLIVersionEnv))
-	if !IsSupportedCLIVersion(version) {
-		return CLIClientVersion
-	}
+	version, _ := DefaultCLIIdentity.Policy().Resolve(os.Getenv(CLIVersionEnv))
 	return version
 }
 
-// IsSupportedCLIVersion reports whether version is a valid semver string at or
-// above CLIStableVersion (prereleases below a higher release are rejected when
-// they compare less than the stable pin).
+// IsSupportedCLIVersion accepts only canonical, stable versions above the protocol floor.
 func IsSupportedCLIVersion(version string) bool {
 	canonical := "v" + version
 	minimum := "v" + CLIStableVersion
-	return semver.IsValid(canonical) &&
+	return len(version) <= 32 && semver.IsValid(canonical) &&
+		semver.Prerelease(canonical) == "" &&
 		semver.Canonical(canonical) == canonical &&
 		semver.Compare(canonical, minimum) >= 0
 }

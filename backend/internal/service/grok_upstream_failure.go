@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -71,6 +72,9 @@ var (
 //
 // Content-policy 403s must be filtered by the caller before invoking this.
 func classifyGrokUpstreamFailure(statusCode int, responseBody []byte, requestedModel string) GrokUpstreamFailureDecision {
+	if xai.IsCLIOutdatedRejection(statusCode, responseBody) {
+		return GrokUpstreamFailureDecision{Class: GrokFailureCompatibility, Reason: "grok_cli_version_outdated"}
+	}
 	text, code, low := grokUpstreamErrorCorpus(statusCode, responseBody)
 	model := extractGrokFailureModel(text, responseBody, requestedModel)
 	actual, limit, hasTokens := parseGrokTokenPair(text)

@@ -1,0 +1,17 @@
+# Grok CLI identity
+
+Grok's CLI proxy rejected the previous 0.2.120 identity with HTTP 426 on 2026-10-01. Its explicit minimum was 1.0.13; the official stable endpoint and official npm package both advertised 1.0.46. This release uses 1.0.46 as its offline baseline.
+
+Administrators can configure **Grok CLI fingerprint** under Settings → Gateway forwarding. Official version synchronization is enabled by default. It checks hourly, retains the verified version on failure, and retries metadata failures at most once per five minutes. The page shows the active version, its source, the corresponding User-Agent and last successful metadata check. A disabled switch freezes the synchronized version across process restarts. Manual pins and `XAI_GROK_CLI_VERSION` take precedence; clearing a pin and enabling synchronization resumes following releases.
+
+Only stable three-part versions >=1.0.13 are accepted. Automatic updates never lower the compiled baseline or a persisted newer version. An atomic compare-and-set protects persistence against competing workers. Metadata is fetched only from `https://x.ai/cli/stable` and the `@xai-official/grok` npm registry entry; requests contain no account credentials, cannot redirect, have bounded time/size, and never download or execute CLI packages.
+
+Gateway, account tests, model discovery, billing, media and the final CLI transport share one immutable version policy. The `api.x.ai` transport is unchanged. Each request stamps its version and User-Agent from the same snapshot. An authenticated, replayable HTTPS request to the exact CLI proxy host can retry once after an explicit outdated-version 426, and only with a strictly newer accepted identity. Successful/streaming responses, ambiguous network failures and unrelated rejection bodies are never replayed by this mechanism. An outdated identity cannot trigger account quota cooldown, custom temporary suspension, or pool failover.
+
+## Reference review
+
+Reviewed [chenyme/grok2api](https://github.com/chenyme/grok2api/tree/7c889a960e2638341b4dae9a5c81af0e0f38c87f), MIT licensed. Its core `backend/internal/infra/provider/cli/adapter.go` centralizes configurable Build headers; `application/gateway/failure.go` distinguishes request, credential and quota failures; `infra/provider/cli/egress.go` preserves connection/account ownership and response-body lifetime; `cli/fallback.go` limits inference route changes by operation and entitlement. Those boundaries inform this implementation; no source or new dependency was copied.
+
+The reviewed Build default is1.0.40, so copying that constant would only postpone this outage. The new implementation follows official metadata instead. The reference Web provider also defaults to third-party `https://grok.wodf.de/sign`; inspected `web/statsig.go:requestSignature` sends method/path/verification metadata, without the account token in that request. This is an external trust dependency, not evidence of a backdoor. Its signing, IP inspection, clearance and broad Web/Console dependencies are not imported. Inspection covered relevant provider/configuration, credential/header handling, update checks, build/entrypoint and dependency manifests, not a proof about every dependency or future commit.
+
+Existing pricing admission, cancellation settlement, deleted-key/video deduplication, WS billing, Grok quota policy, CommandCode Go and custom-build update protection remain release invariants. No database migration or application dependency upgrade is required.

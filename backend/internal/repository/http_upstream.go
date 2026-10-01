@@ -15,7 +15,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,7 +22,6 @@ import (
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
-	"golang.org/x/mod/semver"
 	"golang.org/x/net/http2"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -90,11 +88,9 @@ const (
 	// The Grok CLI proxy rejects requests that do not identify a supported
 	// client version. Host/env/version pins live in package xai so service,
 	// billing, and transport layers advertise the same identity.
-	grokCLIProxyHost       = xai.CLIProxyHost
-	grokOfficialAPIHost    = "api.x.ai"
-	grokCLIStableVersion   = xai.CLIClientVersion // preferred pin (not the minimum floor)
-	grokCLIVersionOverride = xai.CLIVersionEnv
-	grokFallbackBodyLimit  = 64 << 10
+	grokCLIProxyHost      = xai.CLIProxyHost
+	grokOfficialAPIHost   = "api.x.ai"
+	grokFallbackBodyLimit = 64 << 10
 )
 
 const (
@@ -162,9 +158,10 @@ type openAIHTTP2FallbackState struct {
 // 7. 代理变更时清空旧连接池，避免复用错误代理
 // 8. 账号并发数与连接池上限对应（账号隔离策略下）
 type httpUpstreamService struct {
-	cfg     *config.Config                  // 全局配置
-	mu      sync.RWMutex                    // 保护 clients map 的读写锁
-	clients map[string]*upstreamClientEntry // 客户端缓存池，key 由隔离策略决定
+	grokVersionSync grokCLIVersionRefresher
+	cfg             *config.Config                  // 全局配置
+	mu              sync.RWMutex                    // 保护 clients map 的读写锁
+	clients         map[string]*upstreamClientEntry // 客户端缓存池，key 由隔离策略决定
 	// OpenAI 走 HTTP/HTTPS 代理时的 H2->H1 回退状态（key=标准化 proxyKey）
 	openAIHTTP2Fallbacks sync.Map
 }
@@ -218,7 +215,7 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 
 	// 执行请求
 	client := s.httpClientForUpstreamRequest(entry.client, req)
-	client = httpClientWithGrokAccessDeniedFallback(client)
+	client = httpClientWithGrokVersionRetry(httpClientWithGrokAccessDeniedFallback(client), s.grokVersionSync)
 	resp, err := doUpstreamRequest(client, req)
 	if err != nil {
 		s.recordOpenAIHTTP2Failure(profile, entry.protocolMode, entry.proxyKey, err)
@@ -279,7 +276,7 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	}
 
 	client := s.httpClientForUpstreamRequest(entry.client, req)
-	client = httpClientWithGrokAccessDeniedFallback(client)
+	client = httpClientWithGrokVersionRetry(httpClientWithGrokAccessDeniedFallback(client), s.grokVersionSync)
 	resp, err := doUpstreamRequest(client, req)
 	if err != nil {
 		atomic.AddInt64(&entry.inFlight, -1)
@@ -508,39 +505,8 @@ type prefixedReadCloser struct {
 	io.Closer
 }
 
-// applyGrokCLIProxyHeaders applies the official Grok Build client identity at
-// the final shared transport boundary. Keying this behavior to the exact CLI
-// proxy host keeps direct api.x.ai traffic unchanged and automatically covers
-// Responses, Chat Completions, media, quota probes, and account tests.
-//
-// Operator overrides must be >= CLIClientVersion (the preferred pin). Package
-// xai.IsSupportedCLIVersion uses a lower floor (CLIStableVersion) for general
-// validation; transport is stricter so we never silently advertise an older pin
-// than the binary default.
-func applyGrokCLIProxyHeaders(req *http.Request) {
-	if req == nil || req.URL == nil || !strings.EqualFold(strings.TrimSpace(req.URL.Hostname()), grokCLIProxyHost) {
-		return
-	}
-	if req.Header == nil {
-		req.Header = make(http.Header)
-	}
-	version := strings.TrimSpace(os.Getenv(grokCLIVersionOverride))
-	if !isSupportedGrokCLIVersion(version) {
-		version = grokCLIStableVersion
-	}
-	req.Header.Set("X-XAI-Token-Auth", xai.CLITokenAuth)
-	req.Header.Set("x-grok-client-version", version)
-	req.Header.Set("x-grok-client-identifier", xai.CLIClientIdentifier)
-	req.Header.Set("User-Agent", xai.CLIUserAgent(version))
-}
-
-func isSupportedGrokCLIVersion(version string) bool {
-	canonical := "v" + version
-	minimum := "v" + xai.CLIClientVersion
-	return semver.IsValid(canonical) &&
-		semver.Canonical(canonical) == canonical &&
-		semver.Compare(canonical, minimum) >= 0
-}
+// The final transport boundary shares the identity used by all Grok services.
+func applyGrokCLIProxyHeaders(req *http.Request) { xai.ApplyCLIProxyHeaders(req) }
 
 // acquireClientWithTLS 获取或创建带 TLS 指纹的客户端
 func (s *httpUpstreamService) acquireClientWithTLS(proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile, upstreamProfile service.HTTPUpstreamProfile) (*upstreamClientEntry, error) {

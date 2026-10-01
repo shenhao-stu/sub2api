@@ -2083,6 +2083,9 @@ func persistGrokTransientModelCooldown(account *Account, decision GrokUpstreamFa
 }
 
 func (s *OpenAIGatewayService) handleGrokAccountUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte) {
+	if xai.IsCLIOutdatedRejection(statusCode, responseBody) {
+		return
+	}
 	if s == nil || account == nil {
 		return
 	}
