@@ -49,6 +49,8 @@ func TestApplyCLIProxyHeaders(t *testing.T) {
 	require.Equal(t, CLIClientVersion, req.Header.Get("x-grok-client-version"))
 	require.Equal(t, CLIClientIdentifier, req.Header.Get("x-grok-client-identifier"))
 	require.Equal(t, CLITokenAuth, req.Header.Get("X-XAI-Token-Auth"))
+	require.Equal(t, "interactive", req.Header.Get("x-grok-client-mode"))
+	require.Equal(t, "authenticate-response", req.Header.Get("x-authenticateresponse"))
 	require.Equal(t, CLIUserAgent(CLIClientVersion), req.Header.Get("User-Agent"))
 }
 
@@ -64,5 +66,20 @@ func TestApplyCLIProxyHeadersLeavesAPIHostUnchanged(t *testing.T) {
 	require.Empty(t, req.Header.Get("x-grok-client-version"))
 	require.Empty(t, req.Header.Get("x-grok-client-identifier"))
 	require.Empty(t, req.Header.Get("X-XAI-Token-Auth"))
+	require.Empty(t, req.Header.Get("x-grok-client-mode"))
+	require.Empty(t, req.Header.Get("x-authenticateresponse"))
 	require.Equal(t, "direct-api-client/1.0", req.Header.Get("User-Agent"))
+}
+
+func TestCLIUserAgentOfficialPlatformNames(t *testing.T) {
+	for _, tc := range []struct{ os, arch, platform string }{
+		{"linux", "amd64", "linux; x86_64"},
+		{"darwin", "arm64", "macos; aarch64"},
+		{"windows", "386", "windows; x86"},
+		{"linux", "riscv64", "linux; riscv64"},
+	} {
+		t.Run(tc.platform, func(t *testing.T) {
+			require.Equal(t, "grok-pager/1.0.50 grok-shell/1.0.50 ("+tc.platform+")", cliUserAgent("1.0.50", tc.os, tc.arch))
+		})
+	}
 }

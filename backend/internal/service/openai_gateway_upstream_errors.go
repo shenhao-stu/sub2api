@@ -567,7 +567,10 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 	upstreamDetail := ""
-	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+	if account != nil && account.Platform == PlatformGrok {
+		upstreamMsg = extractGrokUpstreamErrorMessage(body)
+		upstreamDetail = s.grokUpstreamErrorDetail(body)
+	} else if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 		maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
 		if maxBytes <= 0 {
 			maxBytes = 2048
@@ -584,7 +587,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 			account.ID,
 			account.Platform,
 			account.Type,
-			truncateForLog(body, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
+			truncateForLog([]byte(sanitizeGrokUpstreamDiagnostic(string(body))), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
 		)
 	}
 

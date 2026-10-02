@@ -1685,8 +1685,7 @@ func applyGrokCLIHeaders(headers http.Header) {
 	headers.Set("X-Grok-Client-Version", version)
 	headers.Set("x-grok-client-version", version)
 	headers.Set("x-grok-client-identifier", xai.CLIClientIdentifier)
-	// Historical mode value expected by some unit tests / older CLI probes.
-	headers.Set("X-Grok-Client-Mode", "interactive")
+	headers.Set("X-Grok-Client-Mode", xai.CLIClientMode)
 }
 
 func (s *OpenAIGatewayService) updateGrokUsageSnapshot(ctx context.Context, account *Account, snapshot *xai.QuotaSnapshot) {
@@ -1700,7 +1699,7 @@ func (s *OpenAIGatewayService) updateGrokUsageSnapshotWithRateLimit(ctx context.
 	accountID := account.ID
 	now := time.Now()
 	resetAt, hasActiveLimit := grokRateLimitResetAtForAccount(account, snapshot, now)
-	if hasActiveLimit {
+	if installRateLimit && hasActiveLimit {
 		normalizeGrokExhaustedWindowResets(snapshot, resetAt, now)
 	}
 	recovery := isSuccessfulGrokRateLimitRecovery(account, snapshot)
@@ -1800,16 +1799,19 @@ func normalizeGrokExhaustedWindowResets(snapshot *xai.QuotaSnapshot, resetAt, no
 	}
 }
 
-func grokRateLimitResetAt(snapshot *xai.QuotaSnapshot, now time.Time) (time.Time, bool) {
+// observedGrokRateLimitResetAt separates upstream boundaries from local probe policy.
+// A known boundary that has expired is still an observation, not a new cooldown.
+func observedGrokRateLimitResetAt(snapshot *xai.QuotaSnapshot, now time.Time) (time.Time, bool) {
 	if snapshot == nil {
 		return time.Time{}, false
 	}
 
 	// Retry-After is xAI's explicit retry boundary. Use the observation time so
 	// a persisted snapshot does not start a fresh cooldown every time it is read.
-	retryAfterExpired := false
+	observed := false
 	var resetAt time.Time
 	if snapshot.RetryAfterSeconds != nil && *snapshot.RetryAfterSeconds > 0 {
+		observed = true
 		observedAt := now
 		if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(snapshot.UpdatedAt)); err == nil {
 			observedAt = parsed
@@ -1817,35 +1819,37 @@ func grokRateLimitResetAt(snapshot *xai.QuotaSnapshot, now time.Time) (time.Time
 		retryAfterResetAt := observedAt.Add(time.Duration(*snapshot.RetryAfterSeconds) * time.Second)
 		if retryAfterResetAt.After(now) {
 			resetAt = retryAfterResetAt
-		} else {
-			retryAfterExpired = true
 		}
 	}
 
-	exhausted := false
 	for _, window := range []*xai.QuotaWindow{snapshot.Requests, snapshot.Tokens} {
 		if window == nil || window.Remaining == nil || *window.Remaining > 0 {
 			continue
 		}
-		exhausted = true
 		candidate := time.Time{}
 		if window.ResetUnix != nil && *window.ResetUnix > 0 {
 			candidate = time.Unix(*window.ResetUnix, 0)
 		} else if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(window.ResetAt)); err == nil {
 			candidate = parsed
 		}
+		observed = observed || !candidate.IsZero()
 		if candidate.After(now) && candidate.After(resetAt) {
 			resetAt = candidate
 		}
 	}
-	if !resetAt.IsZero() {
-		return resetAt, true
-	}
-	// An observed Retry-After is an absolute boundary once combined with the
-	// snapshot timestamp. Do not turn an expired persisted snapshot into a new
-	// rolling fallback cooldown, but still allow a later explicit window reset.
-	if retryAfterExpired {
+	return resetAt, observed
+}
+
+func grokRateLimitResetAt(snapshot *xai.QuotaSnapshot, now time.Time) (time.Time, bool) {
+	if snapshot == nil {
 		return time.Time{}, false
+	}
+	if resetAt, observed := observedGrokRateLimitResetAt(snapshot, now); observed {
+		return resetAt, resetAt.After(now)
+	}
+	exhausted := false
+	for _, window := range []*xai.QuotaWindow{snapshot.Requests, snapshot.Tokens} {
+		exhausted = exhausted || (window != nil && window.Remaining != nil && *window.Remaining <= 0)
 	}
 	if exhausted || snapshot.StatusCode == http.StatusTooManyRequests {
 		return now.Add(grokRateLimitFallbackCooldown), true
@@ -1856,6 +1860,9 @@ func grokRateLimitResetAt(snapshot *xai.QuotaSnapshot, now time.Time) (time.Time
 func grokRateLimitResetAtForAccount(account *Account, snapshot *xai.QuotaSnapshot, now time.Time) (time.Time, bool) {
 	resetAt, limited := grokRateLimitResetAt(snapshot, now)
 	if !limited || !isGrokOAuthAccount(account) || snapshot == nil || snapshot.StatusCode != http.StatusTooManyRequests {
+		return resetAt, limited
+	}
+	if _, observed := observedGrokRateLimitResetAt(snapshot, now); observed {
 		return resetAt, limited
 	}
 	if account.RateLimitedAt == nil || account.RateLimitResetAt == nil {
@@ -2101,7 +2108,7 @@ func (s *OpenAIGatewayService) handleGrokAccountUpstreamError(ctx context.Contex
 	modelQuota := decision.Class == GrokFailureFreeUsage && decision.Model != "" &&
 		isGrokModelSpecificFreeUsage(strings.ToLower(decision.Reason), decision.Model)
 	unattributed := isGrokOpaqueForbidden(statusCode, responseBody)
-	accountQuota := !unattributed && !modelQuota && decision.Class != GrokFailureModelCapacity &&
+	accountQuota := !unattributed && !modelQuota && decision.Class != GrokFailureFreeUsage && decision.Class != GrokFailureModelCapacity &&
 		decision.Class != GrokFailureServer && decision.Class != GrokFailureEmptyUpstream
 	s.updateGrokUsageSnapshotWithRateLimit(ctx, account, snapshot, accountQuota)
 
@@ -2117,7 +2124,7 @@ func (s *OpenAIGatewayService) handleGrokAccountUpstreamError(ctx context.Contex
 			// apply only a short probe cooldown. Never start a fabricated 24h window
 			// at the instant this error was received.
 			if decision.Class == GrokFailureFreeUsage {
-				if resetAt, limited := grokRateLimitResetAtForAccount(account, parseGrokQuotaSnapshot(headers, statusCode, now), now); limited && resetAt.After(now) {
+				if resetAt, observed := observedGrokRateLimitResetAt(snapshot, now); observed && resetAt.After(now) {
 					if decision.Model != "" && isGrokModelSpecificFreeUsage(strings.ToLower(decision.Reason), decision.Model) {
 						markGrokModelQuotaCooldown(account, decision.Model, resetAt)
 						return

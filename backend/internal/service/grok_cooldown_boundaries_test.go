@@ -192,7 +192,7 @@ func TestGrokBodyQuotaCooldownMatchesTerminalAndHTTPFailures(t *testing.T) {
 			svc := &OpenAIGatewayService{accountRepo: repo}
 			body := []byte(`{"error":{"code":"subscription:free-usage-exhausted","message":"You have used all the included free usage for model grok-4.5"}}`)
 			start := time.Now()
-			cooldown := grokRateLimitFallbackCooldown
+			cooldown := grokFreeUsageProbeCooldown
 			if strings.HasPrefix(path, "http") {
 				status := 429
 				if path == "http400" {

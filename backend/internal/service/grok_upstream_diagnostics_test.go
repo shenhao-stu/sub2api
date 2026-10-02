@@ -64,6 +64,41 @@ func TestGrokUpstreamErrorDetailHonorsLoggingConfiguration(t *testing.T) {
 	require.NotContains(t, detail, "secret")
 }
 
+func TestGrokTerminalClientErrorRetainsSanitizedDiagnostic(t *testing.T) {
+	for _, logBody := range []bool{false, true} {
+		repo := &grokQuotaAccountRepo{}
+		svc := &OpenAIGatewayService{accountRepo: repo, cfg: &config.Config{
+			Gateway: config.GatewayConfig{LogUpstreamErrorBody: logBody},
+		}}
+		account := &Account{ID: 227, Platform: PlatformGrok, Type: AccountTypeOAuth}
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		response := &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":"invalid tool definition; Bearer bearer-secret", "access_token":"body-secret"}`)),
+		}
+		_, err := svc.handleErrorResponse(context.Background(), response, c, account, nil, "grok-4.7-fast")
+		require.Error(t, err)
+		require.Equal(t, http.StatusBadRequest, recorder.Code)
+		require.Contains(t, c.GetString(OpsUpstreamErrorMessageKey), "invalid tool definition")
+		require.NotContains(t, c.GetString(OpsUpstreamErrorMessageKey), "bearer-secret")
+		require.NotContains(t, err.Error(), "bearer-secret")
+		detail := c.GetString(OpsUpstreamErrorDetailKey)
+		require.NotContains(t, detail, "body-secret")
+		require.NotContains(t, detail, "bearer-secret")
+		if logBody {
+			require.Contains(t, detail, "invalid tool definition")
+		} else {
+			require.Empty(t, detail)
+		}
+		require.Zero(t, repo.tempUnschedCalls)
+		require.Zero(t, repo.rateLimitedCalls)
+		require.Zero(t, repo.updateCalls)
+	}
+}
+
 func TestForwardGrokResponsesRetainsDiagnosticWithoutChangingFailover(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, logBody := range []bool{false, true} {

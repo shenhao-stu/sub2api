@@ -3235,13 +3235,11 @@ func TestHandleGrokAccountUpstreamError429UsesFallbackReset(t *testing.T) {
 	require.Zero(t, repo.tempUnschedCalls)
 }
 
-func TestGrokRateLimitResetAtForAccountEscalatesRepeated429s(t *testing.T) {
+func TestGrokRateLimitResetAtForAccountEscalatesRepeated429sWithoutObservedBoundary(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	retryAfter := 45
 	snapshot := &xai.QuotaSnapshot{
-		StatusCode:        http.StatusTooManyRequests,
-		RetryAfterSeconds: &retryAfter,
-		UpdatedAt:         now.Format(time.RFC3339),
+		StatusCode: http.StatusTooManyRequests,
+		UpdatedAt:  now.Format(time.RFC3339),
 	}
 	tests := []struct {
 		name             string

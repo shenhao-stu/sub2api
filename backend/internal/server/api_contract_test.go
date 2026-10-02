@@ -19,6 +19,7 @@ import (
 	adminhandler "github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -892,7 +893,7 @@ func TestAPIContracts(t *testing.T) {
                     "grok_cli_version_auto_sync_enabled": true,
                     "grok_cli_client_version_synced": "",
                     "grok_cli_client_version_effective": "1.0.46",
-                    "grok_cli_user_agent": "xai-grok-workspace/1.0.46",
+                    "grok_cli_user_agent": "` + xai.CLIUserAgent(xai.CLIClientVersion) + `",
                     "grok_cli_version_source": "builtin",
                     "grok_cli_version_last_checked_at": "",
                     "grok_cli_version_last_error": "",
@@ -1191,7 +1192,7 @@ func TestAPIContracts(t *testing.T) {
                     "grok_cli_version_auto_sync_enabled": true,
                     "grok_cli_client_version_synced": "",
                     "grok_cli_client_version_effective": "1.0.46",
-                    "grok_cli_user_agent": "xai-grok-workspace/1.0.46",
+                    "grok_cli_user_agent": "` + xai.CLIUserAgent(xai.CLIClientVersion) + `",
                     "grok_cli_version_source": "builtin",
                     "grok_cli_version_last_checked_at": "",
                     "grok_cli_version_last_error": "",
