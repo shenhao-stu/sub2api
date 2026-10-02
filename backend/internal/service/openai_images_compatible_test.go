@@ -21,7 +21,7 @@ import (
 
 func TestCompatibleImagesGeminiModels(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, model := range []string{"gemini-2.5-flash-image", "gemini-2.5-flash-image-preview", "gemini-3-pro-image", "gemini-3.1-flash-image"} {
+	for _, model := range []string{"gemini-2.5-flash-image", "gemini-2.5-flash-image-preview", "gemini-3-pro-image", "gemini-3.1-flash-image", "nano-banana-2", "nano-banana-pro"} {
 		t.Run(model, func(t *testing.T) {
 			body := []byte(fmt.Sprintf(`{"model":%q,"prompt":"draw"}`, model))
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -35,7 +35,7 @@ func TestCompatibleImagesGeminiModels(t *testing.T) {
 			require.False(t, isOpenAIImageGenerationModel(model), "compatible image IDs must not enter native Responses normalization")
 		})
 	}
-	for _, model := range []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-3-pro-imageless", "unknown-image", "gpt-5.5"} {
+	for _, model := range []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-3-pro-imageless", "unknown-image", "gpt-5.5", "nano-banana-pro-text", "nano-banana-unknown"} {
 		t.Run("reject_"+model, func(t *testing.T) {
 			body := []byte(fmt.Sprintf(`{"model":%q,"prompt":"draw"}`, model))
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -48,14 +48,24 @@ func TestCompatibleImagesGeminiModels(t *testing.T) {
 
 func TestCompatibleImagesForwardGemini(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, kind := range []string{"generation", "json_edit", "multipart_edit", "composite_multipart_alias", "channel_mapping", "account_mapping"} {
+	for _, kind := range []string{"generation", "json_edit", "multipart_edit", "composite_multipart_alias", "channel_mapping", "account_mapping", "nano_banana_2", "nano_banana_pro", "nano_banana_account_mapping"} {
 		t.Run(kind, func(t *testing.T) {
 			model := "gemini-3.1-flash-image"
 			endpoint := openAIImagesGenerationsEndpoint
 			contentType := "application/json"
 			channelModel := ""
 			credentials := map[string]any{"api_key": "image-key", "base_url": "https://compatible.example/v1"}
+			if kind == "nano_banana_2" {
+				model = "nano-banana-2"
+			}
+			if kind == "nano_banana_pro" {
+				model = "nano-banana-pro"
+			}
 			requestModel := model
+			if kind == "nano_banana_account_mapping" {
+				requestModel = "nano-banana-pro"
+				credentials["model_mapping"] = map[string]any{requestModel: model}
+			}
 			if kind == "channel_mapping" {
 				requestModel, channelModel = "gpt-image-2", model
 			}
@@ -130,22 +140,24 @@ func TestCompatibleImagesForwardGemini(t *testing.T) {
 
 func TestCompatibleImagesNativeAccountsRejectGeminiBeforeForwarding(t *testing.T) {
 	for _, typ := range []string{AccountTypeOAuth, AccountTypeSetupToken} {
-		for _, mapping := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/mapping=%t", typ, mapping), func(t *testing.T) {
-				model := "gemini-3-pro-image"
-				account := &Account{Platform: PlatformOpenAI, Type: typ, Credentials: map[string]any{"access_token": "unused"}}
-				if mapping {
-					account.Credentials["model_mapping"] = map[string]any{"gpt-image-2": model}
-					model = "gpt-image-2"
-				}
-				c, _ := gin.CreateTestContext(httptest.NewRecorder())
-				c.Request = httptest.NewRequest(http.MethodPost, openAIImagesGenerationsEndpoint, nil)
-				upstream := &httpUpstreamRecorder{}
-				svc := &OpenAIGatewayService{httpUpstream: upstream}
-				_, err := svc.ForwardImages(context.Background(), c, account, nil, &OpenAIImagesRequest{Model: model}, "")
-				require.ErrorContains(t, err, "images endpoint requires an image model")
-				require.Empty(t, upstream.requests)
-			})
+		for _, target := range []string{"gemini-3-pro-image", "nano-banana-2", "nano-banana-pro"} {
+			for _, mapping := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/mapping=%t", typ, target, mapping), func(t *testing.T) {
+					model := target
+					account := &Account{Platform: PlatformOpenAI, Type: typ, Credentials: map[string]any{"access_token": "unused"}}
+					if mapping {
+						account.Credentials["model_mapping"] = map[string]any{"gpt-image-2": model}
+						model = "gpt-image-2"
+					}
+					c, _ := gin.CreateTestContext(httptest.NewRecorder())
+					c.Request = httptest.NewRequest(http.MethodPost, openAIImagesGenerationsEndpoint, nil)
+					upstream := &httpUpstreamRecorder{}
+					svc := &OpenAIGatewayService{httpUpstream: upstream}
+					_, err := svc.ForwardImages(context.Background(), c, account, nil, &OpenAIImagesRequest{Model: model}, "")
+					require.ErrorContains(t, err, "images endpoint requires an image model")
+					require.Empty(t, upstream.requests)
+				})
+			}
 		}
 	}
 }
