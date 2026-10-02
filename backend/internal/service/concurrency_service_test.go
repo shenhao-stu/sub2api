@@ -193,6 +193,12 @@ func TestCleanupStaleProcessSlots_DelegatesPrefix(t *testing.T) {
 	require.Equal(t, RequestIDPrefix(), cache.cleanupPrefix)
 }
 
+func TestConcurrencyStartupPreservesPeerProcessSlots(t *testing.T) {
+	cache := &trackingConcurrencyCache{}
+	require.NotNil(t, ProvideConcurrencyService(cache, nil, nil))
+	require.Empty(t, cache.cleanupPrefix, "a rolling release must not erase live peer reservations")
+}
+
 func TestAcquireAccountSlot_Success(t *testing.T) {
 	cache := &stubConcurrencyCacheForTest{acquireResult: true}
 	svc := NewConcurrencyService(cache)

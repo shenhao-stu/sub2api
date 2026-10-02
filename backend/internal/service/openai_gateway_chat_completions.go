@@ -569,6 +569,8 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
+	finishDrain := boundDisconnectedResponseDrain(c.Request.Context(), resp.Body)
+	defer finishDrain()
 	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(resp, c, "openai chat_completions buffered", requestID)
 	partialResult := func() *OpenAIForwardResult {
 		return openAICompatMeteredResult(c, resp, usage, originalModel, billingModel, upstreamModel, startTime)
@@ -737,6 +739,8 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	requestBodyLen int,
 ) (_ *OpenAIForwardResult, forwardErr error) {
 	requestID := resp.Header.Get("x-request-id")
+	finishDrain := boundDisconnectedResponseDrain(c.Request.Context(), resp.Body)
+	defer finishDrain()
 	writeStreamHeaders := s.newStreamHeaderWriter(c, resp.Header)
 
 	state := apicompat.NewResponsesEventToChatState()
