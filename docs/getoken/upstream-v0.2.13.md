@@ -1,4 +1,4 @@
-# Getoken 0.2.13+g3
+# Getoken 0.2.13+g4
 
 This release merges official tag `v0.2.13` (`3040209f2`) into the existing Getoken fork. It does not replace the fork with an upstream release binary.
 
@@ -19,3 +19,7 @@ The g2 follow-up recognizes xAI's exact structured refusal, `I'm sorry, I can't 
 The g3 follow-up fixes Ops classification of terminal Chat SSE envelopes shaped as `data: {"error": {...}}`. Such failures can occur after HTTP 200 has already been committed; Ops now records the logical failure while preserving the exact client stream and metered usage. Explicit stream-error markers retain their richer status and attribution, and successful retries still appear as recovered attempts. Nested or textual error content does not establish a terminal failure. Existing historical Ops rows are not rewritten.
 
 Grok media HTTP 400 with the exact top-level `imagine:content-moderated` code now returns a safe `content_policy_violation` diagnostic, including after a JSON heartbeat. Account-access markers retain precedence. It neither cools down the account nor retries it through another account, and upstream diagnostics are sanitized. Cost-only rejection payloads do not create invented usage or charges; determining the provider's actual charge and an appropriate settlement policy remains separate work.
+
+The g4 follow-up separates ordinary client cancellation from forced server shutdown. Detached upstream requests keep collecting usage after a client disconnect, but now retain a per-server cancellation signal that fires when shutdown must close connections. This lets handlers submit observed partial usage before dependencies close; absent usage stays unknown and is not replaced by estimates. Real HTTP and race regressions cover normal disconnects, forced termination, one-time usage submission, nested detachment and isolation between servers. A shutdown deadline is still reported as forced termination, never as graceful completion.
+
+For subsequent releases, route new traffic away from the retiring instance and verify its existing requests have finished before sending a termination signal. A bounded shutdown timeout cannot guarantee uninterrupted arbitrarily long streams. Do not remove a Docker network endpoint merely to change its DNS aliases, since that also breaks existing connections. Record runtime health separately from graceful-release acceptance, and retain failed drain evidence instead of rewriting it as a successful release.

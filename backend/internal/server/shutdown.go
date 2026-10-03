@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requestlifecycle"
 )
 
 const forcedHandlerDrainTimeout = 20 * time.Second
@@ -16,17 +18,23 @@ type requestConnKey struct{}
 // httpDrain tracks handler completion, including handlers whose connections have
 // been hijacked. It never wraps ResponseWriter, preserving streaming interfaces.
 type httpDrain struct {
-	next     http.Handler
-	mu       sync.Mutex
-	stopping bool
-	hijacked map[net.Conn]struct{}
-	active   int
-	done     chan struct{}
-	once     sync.Once
+	next        http.Handler
+	mu          sync.Mutex
+	stopping    bool
+	hijacked    map[net.Conn]struct{}
+	active      int
+	done        chan struct{}
+	once        sync.Once
+	force       context.Context
+	forceCancel context.CancelFunc
 }
 
 func installHTTPDrain(srv *http.Server) {
-	d := &httpDrain{next: srv.Handler, hijacked: make(map[net.Conn]struct{}), done: make(chan struct{})}
+	force, forceCancel := context.WithCancel(context.Background())
+	d := &httpDrain{
+		next: srv.Handler, hijacked: make(map[net.Conn]struct{}), done: make(chan struct{}),
+		force: force, forceCancel: forceCancel,
+	}
 	srv.Handler = d
 	previousContext, previousState := srv.ConnContext, srv.ConnState
 	srv.ConnContext = func(ctx context.Context, conn net.Conn) context.Context {
@@ -75,7 +83,7 @@ func (d *httpDrain) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		d.mu.Unlock()
 	}()
-	d.next.ServeHTTP(w, r)
+	d.next.ServeHTTP(w, r.WithContext(requestlifecycle.WithForceCancellation(r.Context(), d.force)))
 }
 
 func (d *httpDrain) beginDrain() {
@@ -121,6 +129,9 @@ func shutdownHTTPServer(ctx context.Context, srv *http.Server, forceWait time.Du
 	case <-d.done:
 		return true, err
 	case <-ctx.Done():
+		// Detached upstream requests must stop too, so handlers can settle known
+		// usage before their dependencies are closed.
+		d.forceCancel()
 		// Close cancels ordinary request contexts and unblocks request-body reads.
 		// Hijacked connections need their own close path.
 		_ = srv.Close()

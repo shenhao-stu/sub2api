@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requestlifecycle"
 	"github.com/stretchr/testify/require"
 )
 
@@ -177,6 +178,53 @@ func TestHTTPShutdownUncooperativeHandlerIsBoundedAndUnsafeForCleanup(t *testing
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Less(t, time.Since(before), time.Second)
 	awaitDrainSignal(t, srv.Handler.(*httpDrain).done)
+}
+
+func TestHTTPShutdownForceCancelsDetachedUpstreamBeforeSettlement(t *testing.T) {
+	started, abort, upstreamCancelled, settled := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, ": upstream connected\n\n")
+		w.(http.Flusher).Flush()
+		close(started)
+		select {
+		case <-r.Context().Done():
+			close(upstreamCancelled)
+		case <-abort:
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	t.Cleanup(func() { close(abort) })
+	srv, addr := startDrainTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := requestlifecycle.WithoutClientCancel(r.Context())
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstream.URL, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		resp, err := upstream.Client().Do(req)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		// Dependency cleanup must wait for the existing detached billing phase.
+		time.Sleep(20 * time.Millisecond)
+		close(settled)
+	}))
+	conn, err := net.Dial("tcp", addr)
+	require.NoError(t, err)
+	defer conn.Close()
+	_, err = io.WriteString(conn, "GET / HTTP/1.1\r\nHost: test\r\n\r\n")
+	require.NoError(t, err)
+	awaitDrainSignal(t, started)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	drained, err := shutdownHTTPServer(ctx, srv, time.Second)
+	require.True(t, drained, "forced upstream cancellation must allow handler settlement to finish")
+	require.ErrorIs(t, err, context.DeadlineExceeded, "forced close must remain distinguishable from graceful drain")
+	awaitDrainSignal(t, upstreamCancelled)
+	awaitDrainSignal(t, settled)
 }
 
 func TestHTTPDrainRejectsNewHandlersAndPreservesInterfaces(t *testing.T) {
