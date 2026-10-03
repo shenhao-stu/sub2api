@@ -1936,6 +1936,7 @@ func newOpenAIWSHandlerTestServer(t *testing.T, h *OpenAIGatewayHandler, subject
 }
 
 type openAIResponsesWSUsageLogCase struct {
+	keyChangeAfterFirst    string
 	simpleModeRejectAtRead int64
 	compositeResolver      *service.CompositeRouteResolver
 	accountPlatform        string
@@ -3053,6 +3054,9 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	}
 
 	apiKey := &service.APIKey{
+		Key:     "synthetic-ws-key",
+		Status:  service.StatusActive,
+		UserID:  1701,
 		ID:      1801,
 		GroupID: &groupID,
 		User:    &service.User{ID: 1701, Status: service.StatusActive},
@@ -3061,8 +3065,14 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		apiKey.RateLimit5h = 1
 	}
 	if tc.group != nil {
-		apiKey.Group = tc.group
+		group := *tc.group
+		group.Status = service.StatusActive
+		apiKey.Group = &group
+	} else {
+		apiKey.Group = &service.Group{ID: groupID, Status: service.StatusActive}
 	}
+	currentKeyRepo := &continuationWSKeyRepo{key: apiKey, change: tc.keyChangeAfterFirst}
+	h.apiKeyService = service.NewAPIKeyService(currentKeyRepo, nil, nil, nil, nil, nil, cfg)
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
 		c.Set(string(middleware.ContextKeyAPIKey), apiKey)
@@ -3132,6 +3142,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		clientEvents = append(clientEvents, append([]byte(nil), event...))
 	}
 	readCompleted()
+	currentKeyRepo.changed.Store(true)
 	if tc.midPayload != "" {
 		writeCtx, cancelWrite = context.WithTimeout(context.Background(), 3*time.Second)
 		err = clientConn.Write(writeCtx, coderws.MessageText, []byte(tc.midPayload))

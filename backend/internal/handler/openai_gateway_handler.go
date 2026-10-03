@@ -2991,7 +2991,14 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				}
 				currentUserRelease = wrapReleaseOnDone(ctx, userReleaseFunc)
 				currentAccountRelease = wrapReleaseOnDone(ctx, accountReleaseFunc)
-				return checkSimpleModeTurnBilling()
+				currentKey, err := h.apiKeyService.RevalidateContinuation(ctx, apiKey, ip.GetSecurityClientIP(c, h.cfg.TrustForwardedIPForAPIKeyACL()))
+				if err != nil {
+					return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "API key access revoked; reconnect", err)
+				}
+				if err := h.billingCacheService.CheckBillingEligibility(ctx, currentKey.User, currentKey, currentKey.Group, subscription, service.QuotaPlatform(ctx, currentKey)); err != nil {
+					return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "billing check failed", err)
+				}
+				return nil
 			},
 			AfterTurn: func(turn int, result *service.OpenAIForwardResult, turnErr error) {
 				if result != nil {
