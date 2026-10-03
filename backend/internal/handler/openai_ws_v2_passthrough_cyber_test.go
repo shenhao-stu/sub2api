@@ -96,12 +96,15 @@ func newOpenAIWSPassthroughHandlerHarness(t *testing.T, upstreamURL string, sett
 
 	apiKey := &service.APIKey{
 		ID:      1851,
+		Status:  service.StatusActive,
 		UserID:  1751,
 		Name:    "ws-cyber-key",
 		Key:     "sk-handler-cyber-test",
 		GroupID: &groupID,
+		Group:   &service.Group{ID: groupID, Status: service.StatusActive},
 		User:    &service.User{ID: 1751, Status: service.StatusActive},
 	}
+	h.apiKeyService = service.NewAPIKeyService(&continuationWSKeyRepo{key: apiKey}, nil, nil, nil, nil, nil, cfg)
 	handlerDone := make(chan struct{})
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
