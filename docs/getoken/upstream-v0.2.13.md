@@ -1,4 +1,4 @@
-# Getoken 0.2.13+g2
+# Getoken 0.2.13+g3
 
 This release merges official tag `v0.2.13` (`3040209f2`) into the existing Getoken fork. It does not replace the fork with an upstream release binary.
 
@@ -15,3 +15,7 @@ The upstream security-reporting policy is retained in `.github/SECURITY.md`; its
 Release operations: build while the current instance serves traffic, verify an isolated candidate on a separate loopback port without the trusted `sub2api` alias, validate a bounded real request and revoke its key, then transfer trusted ingress and drain the old instance. The steady state is one Sub2API instance with one verified rollback image. Preserve unrelated services and do not globally prune caches or volumes.
 
 The g2 follow-up recognizes xAI's exact structured refusal, `I'm sorry, I can't help with that request.`, alongside its existing shorter form. Both return a fixed `content_policy_violation` message through the existing error writer. They remain request-scoped: no account cooldown or failover, no invented usage, and actual upstream metering remains billable. Generic permission errors, entitlement failures and quoted or extended sentences are not newly classified as content refusals. HTTP regression tests exercise Responses, both Chat paths and Messages before and after heartbeat commitment without sending rejected customer prompts to any provider.
+
+The g3 follow-up fixes Ops classification of terminal Chat SSE envelopes shaped as `data: {"error": {...}}`. Such failures can occur after HTTP 200 has already been committed; Ops now records the logical failure while preserving the exact client stream and metered usage. Explicit stream-error markers retain their richer status and attribution, and successful retries still appear as recovered attempts. Nested or textual error content does not establish a terminal failure. Existing historical Ops rows are not rewritten.
+
+Grok media HTTP 400 with the exact top-level `imagine:content-moderated` code now returns a safe `content_policy_violation` diagnostic, including after a JSON heartbeat. Account-access markers retain precedence. It neither cools down the account nor retries it through another account, and upstream diagnostics are sanitized. Cost-only rejection payloads do not create invented usage or charges; determining the provider's actual charge and an appropriate settlement policy remains separate work.

@@ -866,11 +866,27 @@ func isOpsTerminalSSEFrame(frame []byte) bool {
 	if !bytes.Contains(payload, []byte("response.failed")) && !bytes.Contains(payload, []byte(`"error"`)) {
 		return false
 	}
-	var event struct {
-		Type string `json:"type"`
+	var event map[string]any
+	if json.Unmarshal(payload, &event) != nil {
+		return false
 	}
-	return json.Unmarshal(payload, &event) == nil &&
-		(event.Type == "response.failed" || event.Type == "error")
+	kind := opsSSEEventType(string(eventType), event)
+	return kind == "response.failed" || kind == "error"
+}
+
+func opsSSEEventType(eventType string, event map[string]any) string {
+	if eventType != "" {
+		return eventType
+	}
+	if value, exists := event["type"]; exists {
+		kind, _ := value.(string)
+		return kind
+	}
+	// Chat Completions reports terminal failures as data: {"error": {...}}.
+	if _, ok := event["error"].(map[string]any); ok {
+		return "error"
+	}
+	return ""
 }
 
 func parseOpsSSEFrameEnvelope(frame []byte) ([]byte, []byte) {
@@ -1020,8 +1036,8 @@ func mayContainOpsTerminalSSE(chunk []byte) bool {
 	if bytes.Contains(chunk, []byte("response.failed")) {
 		return true
 	}
-	return bytes.Contains(chunk, []byte("error")) &&
-		(bytes.Contains(chunk, []byte("event")) || bytes.Contains(chunk, []byte(`"type"`)))
+	return bytes.Contains(chunk, []byte(`"error"`)) ||
+		(bytes.Contains(chunk, []byte("error")) && bytes.Contains(chunk, []byte("event")))
 }
 
 func isOpsTerminalSSEEventLine(line []byte) bool {
@@ -1138,13 +1154,15 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			}
 		}
 		if status < 400 {
-			if parsed.StreamFailure {
+			streamErrs := service.GetOpsStreamErrors(c)
+			// Explicit marks retain their richer semantics for untyped error envelopes.
+			if parsed.StreamFailure && (!parsed.UntypedSSEError || len(streamErrs) == 0) {
 				status = inferStreamFailureStatus(c, parsed)
 			} else {
 				// A marked in-band error is a visible request failure even though its
 				// wire status is already 200. Otherwise retain recovered attempts as a
 				// provider-health row whose 2xx status keeps it outside request SLA.
-				if streamErrs := service.GetOpsStreamErrors(c); len(streamErrs) > 0 {
+				if len(streamErrs) > 0 {
 					logOpsStreamError(c, ops, status)
 					// 请求级带内结果不承载上游归因，此前尝试的上游错误仍按恢复行记录。
 					if opsStreamErrorsAllRequestScoped(streamErrs) {
@@ -1822,11 +1840,12 @@ func getContextLatencyMs(c *gin.Context, key string) *int64 {
 }
 
 type parsedOpsError struct {
-	ErrorType     string
-	Message       string
-	Code          string
-	StatusCode    int
-	StreamFailure bool
+	ErrorType       string
+	Message         string
+	Code            string
+	StatusCode      int
+	StreamFailure   bool
+	UntypedSSEError bool
 }
 
 func parseOpsErrorResponse(body []byte) parsedOpsError {
@@ -1929,15 +1948,17 @@ func parseOpsSSEFailure(body []byte) (parsedOpsError, bool) {
 		payload := string(payloadBytes)
 		var event map[string]any
 		if err := json.Unmarshal(payloadBytes, &event); err == nil {
-			if eventType == "" {
-				eventType, _ = event["type"].(string)
-			}
+			eventType = opsSSEEventType(eventType, event)
 		}
 		if eventType != "response.failed" && eventType != "error" {
 			continue
 		}
 
-		parsed := parsedOpsError{ErrorType: "upstream_error", StreamFailure: true}
+		parsed := parsedOpsError{
+			ErrorType:       "upstream_error",
+			StreamFailure:   true,
+			UntypedSSEError: len(eventTypeBytes) == 0 && event["type"] == nil,
+		}
 		if eventType == "error" {
 			parsed.ErrorType = "api_error"
 		}

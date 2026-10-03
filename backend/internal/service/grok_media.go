@@ -1321,25 +1321,24 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 	requestedModel string,
 ) (*OpenAIForwardResult, error) {
 	body := s.readUpstreamErrorBody(resp)
+	imageContentRejection := isGrokImageContentPolicyRejection(resp.StatusCode, body)
 	// Reconcile readiness before configurable passthrough branches can return;
 	// otherwise a Grok 429 can remain schedulable.
-	s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
-	upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body)))
+	if !imageContentRejection {
+		s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
+	}
+	upstreamMsg := extractGrokUpstreamErrorMessage(body)
 	if upstreamMsg == "" {
 		upstreamMsg = fmt.Sprintf("xAI upstream returned status %d", resp.StatusCode)
 	}
 
-	upstreamDetail := ""
-	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-		maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
-		if maxBytes <= 0 {
-			maxBytes = 2048
-		}
-		upstreamDetail = truncateString(string(body), maxBytes)
-	}
+	upstreamDetail := s.grokUpstreamErrorDetail(body)
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
-	if isGrokContentPolicyRejection(resp.StatusCode, body) {
+	if imageContentRejection || isGrokContentPolicyRejection(resp.StatusCode, body) {
 		clientMsg := grokContentPolicyClientMessage(body)
+		if imageContentRejection {
+			clientMsg = "Generated image rejected by upstream content policy"
+		}
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			ProxyID:            opsUpstreamProxyID(account),
 			ProxyName:          opsUpstreamProxyName(account),
@@ -1353,7 +1352,11 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 			Detail:             upstreamDetail,
 		})
 		MarkResponseCommitted(c)
-		writeGrokMediaErrorResponse(c, http.StatusForbidden, "invalid_request_error", clientMsg)
+		if imageContentRejection {
+			writeRequestAdmissionError(c, resp.StatusCode, "invalid_request_error", "content_policy_violation", clientMsg)
+		} else {
+			writeGrokMediaErrorResponse(c, http.StatusForbidden, "invalid_request_error", clientMsg)
+		}
 		return nil, fmt.Errorf("grok content policy rejection: %s", clientMsg)
 	}
 

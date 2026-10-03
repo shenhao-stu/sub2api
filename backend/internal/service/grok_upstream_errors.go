@@ -96,6 +96,13 @@ func isGrokFixedContentRefusalMessage(message string) bool {
 	}
 }
 
+func isGrokImageContentPolicyRejection(statusCode int, body []byte) bool {
+	var payload map[string]any
+	return statusCode == http.StatusBadRequest && json.Unmarshal(body, &payload) == nil &&
+		payload["code"] == "imagine:content-moderated" &&
+		!grokAccountAccessMessage(string(body)) && !grokStructuredAccountAccessMarker(payload)
+}
+
 func grokStructuredAccountAccessMarker(value any) bool {
 	switch node := value.(type) {
 	case map[string]any:
