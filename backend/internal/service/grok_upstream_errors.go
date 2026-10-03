@@ -78,13 +78,22 @@ func isGrokContentPolicyRejection(statusCode int, responseBody []byte) bool {
 			return true
 		}
 		for _, message := range grokStructuredErrorMessageCandidates(responseBody) {
-			if strings.EqualFold(strings.TrimSpace(message), "I can't help with that request.") {
+			if isGrokFixedContentRefusalMessage(message) {
 				return true
 			}
 		}
 	}
 
 	return grokContentPolicyMessage(string(responseBody))
+}
+
+func isGrokFixedContentRefusalMessage(message string) bool {
+	switch strings.ToLower(strings.TrimSpace(message)) {
+	case "i can't help with that request.", "i'm sorry, i can't help with that request.":
+		return true
+	default:
+		return false
+	}
 }
 
 func grokStructuredAccountAccessMarker(value any) bool {
@@ -251,7 +260,7 @@ func grokContentPolicyMessage(value string) bool {
 
 func grokContentPolicyClientMessage(responseBody []byte) string {
 	message := extractGrokUpstreamErrorMessage(responseBody)
-	if message == "" {
+	if message == "" || isGrokFixedContentRefusalMessage(message) {
 		return "Request blocked by upstream content policy"
 	}
 	return message

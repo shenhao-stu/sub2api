@@ -21,6 +21,7 @@ import (
 )
 
 const grokFixedContentRefusal = `{"code":"permission-denied","error":"I can't help with that request."}`
+const grokApologeticContentRefusal = `{"code":"permission-denied","error":"I'm sorry, I can't help with that request."}`
 
 // Exercise the real forwarding code and HTTP response lifecycle without any
 // provider traffic. Only the transport destination is replaced with localhost.
@@ -101,63 +102,73 @@ func runGrokRefusalHTTP(t *testing.T, protocol, committed string, status int, bo
 }
 
 func TestGrokFixedContentRefusalHTTPProtocols(t *testing.T) {
-	for _, protocol := range []string{"responses", "chat_bridge", "raw_chat", "messages"} {
-		for _, committed := range []string{"", "json", "sse"} {
-			t.Run(protocol+"/"+committed, func(t *testing.T) {
-				result, err, rec, repo := runGrokRefusalHTTP(t, protocol, committed, http.StatusForbidden, grokFixedContentRefusal)
-				require.Error(t, err)
-				require.Nil(t, result, "an unmetered refusal cannot become successful usage")
-				var failover *UpstreamFailoverError
-				require.False(t, errors.As(err, &failover))
-				require.Zero(t, repo.tempUnschedCalls)
-				require.Zero(t, repo.rateLimitedCalls)
-				require.Zero(t, repo.updateCalls)
-				wantStatus := http.StatusForbidden
-				if committed != "" {
-					wantStatus = http.StatusOK
-				}
-				require.Equal(t, wantStatus, rec.Code)
-				body := strings.TrimSpace(rec.Body.String())
-				errorPath := "error"
-				if committed == "sse" {
-					require.Contains(t, rec.Header().Get("Content-Type"), "text/event-stream")
-					require.Equal(t, 1, strings.Count(body, "data: "))
-					_, body, _ = strings.Cut(body, "data: ")
-					if protocol == "responses" {
-						require.Equal(t, "response.failed", gjson.Get(body, "type").String())
-						errorPath = "response.error"
-					} else if protocol == "messages" {
-						require.Contains(t, rec.Body.String(), "event: error\n")
+	for _, refusal := range []struct{ name, body string }{
+		{"original", grokFixedContentRefusal},
+		{"apologetic", grokApologeticContentRefusal},
+	} {
+		for _, protocol := range []string{"responses", "chat_bridge", "raw_chat", "messages"} {
+			for _, committed := range []string{"", "json", "sse"} {
+				t.Run(refusal.name+"/"+protocol+"/"+committed, func(t *testing.T) {
+					result, err, rec, repo := runGrokRefusalHTTP(t, protocol, committed, http.StatusForbidden, refusal.body)
+					require.Error(t, err)
+					require.Nil(t, result, "an unmetered refusal cannot become successful usage")
+					var failover *UpstreamFailoverError
+					require.False(t, errors.As(err, &failover))
+					require.Zero(t, repo.tempUnschedCalls)
+					require.Zero(t, repo.rateLimitedCalls)
+					require.Zero(t, repo.updateCalls)
+					wantStatus := http.StatusForbidden
+					if committed != "" {
+						wantStatus = http.StatusOK
 					}
-				}
-				var payload map[string]any
-				require.NoError(t, json.Unmarshal([]byte(body), &payload), "exactly one complete error object")
-				require.Equal(t, "content_policy_violation", gjson.Get(body, errorPath+".code").String())
-				require.Equal(t, "I can't help with that request.", gjson.Get(body, errorPath+".message").String())
-				require.False(t, gjson.Get(body, "usage").Exists())
-				if protocol == "messages" {
-					require.Equal(t, "error", gjson.Get(body, "type").String())
-				}
-			})
+					require.Equal(t, wantStatus, rec.Code)
+					body := strings.TrimSpace(rec.Body.String())
+					errorPath := "error"
+					if committed == "sse" {
+						require.Contains(t, rec.Header().Get("Content-Type"), "text/event-stream")
+						require.Equal(t, 1, strings.Count(body, "data: "))
+						_, body, _ = strings.Cut(body, "data: ")
+						if protocol == "responses" {
+							require.Equal(t, "response.failed", gjson.Get(body, "type").String())
+							errorPath = "response.error"
+						} else if protocol == "messages" {
+							require.Contains(t, rec.Body.String(), "event: error\n")
+						}
+					}
+					var payload map[string]any
+					require.NoError(t, json.Unmarshal([]byte(body), &payload), "exactly one complete error object")
+					require.Equal(t, "content_policy_violation", gjson.Get(body, errorPath+".code").String())
+					require.Equal(t, "Request blocked by upstream content policy", gjson.Get(body, errorPath+".message").String())
+					require.False(t, gjson.Get(body, "usage").Exists())
+					if protocol == "messages" {
+						require.Equal(t, "error", gjson.Get(body, "type").String())
+					}
+				})
+			}
 		}
 	}
 }
 
 func TestGrokFixedContentRefusalHTTPRetainsMeasuredUsage(t *testing.T) {
-	for _, protocol := range []string{"responses", "chat_bridge", "raw_chat", "messages"} {
-		t.Run(protocol, func(t *testing.T) {
-			body := `{"code":"permission-denied","error":"I can't help with that request.","usage":{"input_tokens":37,"output_tokens":2}}`
-			result, err, rec, repo := runGrokRefusalHTTP(t, protocol, "", http.StatusForbidden, body)
-			require.Error(t, err)
-			require.NotNil(t, result)
-			require.Equal(t, 37, result.Usage.InputTokens)
-			require.Equal(t, 2, result.Usage.OutputTokens)
-			require.True(t, gjson.GetBytes(rec.Body.Bytes(), "usage").IsObject())
-			require.Zero(t, repo.tempUnschedCalls)
-			require.Zero(t, repo.rateLimitedCalls)
-			var failover *UpstreamFailoverError
-			require.False(t, errors.As(err, &failover))
-		})
+	for _, refusal := range []struct{ name, message string }{
+		{"original", "I can't help with that request."},
+		{"apologetic", "I'm sorry, I can't help with that request."},
+	} {
+		for _, protocol := range []string{"responses", "chat_bridge", "raw_chat", "messages"} {
+			t.Run(refusal.name+"/"+protocol, func(t *testing.T) {
+				body := `{"code":"permission-denied","error":"` + refusal.message + `","usage":{"input_tokens":37,"output_tokens":2}}`
+				result, err, rec, repo := runGrokRefusalHTTP(t, protocol, "", http.StatusForbidden, body)
+				require.Error(t, err)
+				require.NotNil(t, result)
+				require.Equal(t, 37, result.Usage.InputTokens)
+				require.Equal(t, 2, result.Usage.OutputTokens)
+				require.True(t, gjson.GetBytes(rec.Body.Bytes(), "usage").IsObject())
+				require.Zero(t, repo.tempUnschedCalls)
+				require.Zero(t, repo.rateLimitedCalls)
+				var failover *UpstreamFailoverError
+				require.False(t, errors.As(err, &failover))
+			})
+		}
 	}
 }
 
@@ -170,6 +181,7 @@ func TestGrokRefusalHTTPKeepsAccountFailureSemantics(t *testing.T) {
 		{"unknown permission", `{"code":"permission-denied","error":"Forbidden"}`, 403, false},
 		{"plain forbidden", `{"error":{"message":"Forbidden"}}`, 403, false},
 		{"entitlement", `{"error":{"code":"subscription_required","message":"I can't help with that request."}}`, 403, true},
+		{"apologetic entitlement", `{"error":{"code":"subscription_required","message":"I'm sorry, I can't help with that request."}}`, 403, true},
 		{"invalid key", `{"error":{"code":"invalid_api_key","message":"invalid api key"}}`, 401, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -190,7 +202,12 @@ func TestGrokRefusalHTTPKeepsAccountFailureSemantics(t *testing.T) {
 		`{"error":{"message":"I can't help with that request. account disabled"}}`,
 		`{"content":"I can't help with that request."}`,
 		`I can't help with that request.`,
+		`{"error":{"message":"Quoted: I'm sorry, I can't help with that request."}}`,
+		`{"error":{"message":"I'm sorry, I can't help with that request. account disabled"}}`,
+		`{"content":"I'm sorry, I can't help with that request."}`,
+		`I'm sorry, I can't help with that request.`,
 	} {
 		require.False(t, isGrokContentPolicyRejection(http.StatusForbidden, []byte(body)))
 	}
+	require.False(t, isGrokContentPolicyRejection(http.StatusUnauthorized, []byte(grokApologeticContentRefusal)))
 }

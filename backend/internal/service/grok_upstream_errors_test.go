@@ -90,6 +90,30 @@ func TestIsGrokContentPolicyRejection(t *testing.T) {
 			want:   true,
 		},
 		{
+			name:   "exact apologetic refusal is request scoped",
+			status: http.StatusForbidden,
+			body:   `{"code":"permission-denied","error":"I'm sorry, I can't help with that request."}`,
+			want:   true,
+		},
+		{
+			name:   "exact nested refusal ignores case and surrounding whitespace",
+			status: http.StatusForbidden,
+			body:   `{"error":{"message":"  I'M SORRY, I CAN'T HELP WITH THAT REQUEST.  "}}`,
+			want:   true,
+		},
+		{
+			name:   "similar refusal is not an exact known message",
+			status: http.StatusForbidden,
+			body:   `{"code":"permission-denied","error":"I'm sorry, I can't help with that request without a subscription."}`,
+			want:   false,
+		},
+		{
+			name:   "permission denied code alone is not a content verdict",
+			status: http.StatusForbidden,
+			body:   `{"code":"permission-denied"}`,
+			want:   false,
+		},
+		{
 			name:   "permission-denied entitlement stays on the account path",
 			status: http.StatusForbidden,
 			body:   `{"code":"permission-denied","error":"Access to the chat endpoint is denied"}`,

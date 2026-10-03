@@ -1,4 +1,4 @@
-# Getoken 0.2.13+g1
+# Getoken 0.2.13+g2
 
 This release merges official tag `v0.2.13` (`3040209f2`) into the existing Getoken fork. It does not replace the fork with an upstream release binary.
 
@@ -13,3 +13,5 @@ Validation must use the repository's build tags: ordinary `go test` does not run
 The upstream security-reporting policy is retained in `.github/SECURITY.md`; its reporting address and advisory URL belong to the upstream project. Deployment-specific findings must be handled privately by the deployment operator.
 
 Release operations: build while the current instance serves traffic, verify an isolated candidate on a separate loopback port without the trusted `sub2api` alias, validate a bounded real request and revoke its key, then transfer trusted ingress and drain the old instance. The steady state is one Sub2API instance with one verified rollback image. Preserve unrelated services and do not globally prune caches or volumes.
+
+The g2 follow-up recognizes xAI's exact structured refusal, `I'm sorry, I can't help with that request.`, alongside its existing shorter form. Both return a fixed `content_policy_violation` message through the existing error writer. They remain request-scoped: no account cooldown or failover, no invented usage, and actual upstream metering remains billable. Generic permission errors, entitlement failures and quoted or extended sentences are not newly classified as content refusals. HTTP regression tests exercise Responses, both Chat paths and Messages before and after heartbeat commitment without sending rejected customer prompts to any provider.
