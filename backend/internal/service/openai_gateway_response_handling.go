@@ -565,6 +565,12 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 					})
 				}
 				outputStarted := openAIStreamClientOutputStarted(c, clientOutputStarted) || openAIUsageHasTokens(usage)
+				if !openAIStreamClientOutputStarted(c, clientOutputStarted) && isOpenAIStreamInvalidArguments(dataBytes, failedMessage) {
+					sawFailedEvent = true
+					s.recordOpenAIStreamUpstreamError(c, account, false, upstreamRequestID, "http_error", dataBytes, failedMessage)
+					streamEarlyErr = writeOpenAIStreamValidation(c, dataBytes, failedMessage, usage)
+					return
+				}
 				if !outputStarted && !cyberHit {
 					if compactErr := newOpenAICompactFallbackSignal(c, dataBytes, failedMessage); compactErr != nil {
 						sawFailedEvent = true
@@ -1743,6 +1749,10 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		if msg == "" {
 			msg = "Upstream compact response failed"
 		}
+		if isOpenAIStreamInvalidArguments(terminalPayload, msg) {
+			s.recordOpenAIStreamUpstreamError(c, account, false, resp.Header.Get("x-request-id"), "http_error", terminalPayload, msg)
+			return &openaiNonStreamingResult{OpenAIUsage: usage, usage: usage, responseID: extractOpenAIResponseIDFromJSONBytes(terminalPayload)}, writeOpenAIStreamValidation(c, terminalPayload, msg, usage)
+		}
 		if markOpenAICyberPolicyEvent(c, terminalPayload, resp.StatusCode, usage) && !openAIUsageHasTokens(usage) {
 			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, msg)
 		}
@@ -1918,7 +1928,7 @@ func sanitizeOpenAIResponseFailedEventForClient(payload []byte, eventType string
 	if (!isFailedEvent && eventType != "error") || len(payload) == 0 || !gjson.ValidBytes(payload) {
 		return payload, false
 	}
-	updated := payload
+	updated := normalizeOpenAIStreamValidation(payload)
 	// 容量降载码对 Codex CLI 是致命错误；事件既然要写给客户端（failover 已不可用），
 	// 就改写为客户端可重试的错误码。error 帧与 response.failed 都要改：上游降载
 	// 总是先推 error 帧再收 failed，两帧携带同一个错误。

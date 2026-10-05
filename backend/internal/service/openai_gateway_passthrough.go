@@ -1404,6 +1404,9 @@ var openAIStreamErrorStatusPaths = []string{
 }
 
 func openAIStreamFailedEventSemanticStatus(payload []byte, message string) int {
+	if isOpenAIStreamInvalidArguments(payload, message) {
+		return http.StatusBadRequest
+	}
 	if isOpenAIContextWindowError(message, payload) {
 		return http.StatusBadRequest
 	}
@@ -1443,6 +1446,9 @@ func openAIStreamFailureStatus(payload []byte, message string) int {
 		return http.StatusBadGateway
 	}
 	semanticStatus := openAIStreamFailedEventSemanticStatus(payload, message)
+	if isOpenAIStreamInvalidArguments(payload, message) {
+		return http.StatusBadRequest
+	}
 	switch semanticStatus {
 	case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests, 529:
 		return semanticStatus
@@ -1547,6 +1553,9 @@ func applyOpenAIStreamFailedErrorPassthroughRule(
 	payload []byte,
 	failedMessage string,
 ) (status int, errType string, errMsg string, matched bool) {
+	if isOpenAIStreamInvalidArguments(payload, failedMessage) {
+		return http.StatusBadRequest, "invalid_request_error", sanitizeUpstreamErrorMessage(failedMessage), true
+	}
 	ruleBody := openAIStreamFailedEventPassthroughBody(payload, failedMessage)
 	upstreamStatus := openAIStreamFailedEventSemanticStatus(payload, failedMessage)
 	return applyErrorPassthroughRule(
@@ -1561,6 +1570,9 @@ func applyOpenAIStreamFailedErrorPassthroughRule(
 }
 
 func openAIStreamFailedEventShouldFailover(payload []byte, message string) bool {
+	if isOpenAIStreamInvalidArguments(payload, message) {
+		return false
+	}
 	if hit, _, _ := detectOpenAICyberPolicy(payload); hit {
 		return false
 	}
@@ -1610,6 +1622,9 @@ func openAIStreamFailedEventShouldFailover(payload []byte, message string) bool 
 }
 
 func openAIStreamErrorEventShouldFailover(payload []byte, message string) bool {
+	if isOpenAIStreamInvalidArguments(payload, message) {
+		return false
+	}
 	if hit, _, _ := detectOpenAICyberPolicy(payload); hit {
 		return false
 	}
@@ -2144,6 +2159,10 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 					})
 				}
 				outputStarted := openAIStreamClientOutputStarted(c, clientOutputStarted) || openAIUsageHasTokens(usage)
+				if !openAIStreamClientOutputStarted(c, clientOutputStarted) && isOpenAIStreamInvalidArguments(dataBytes, failedMessage) {
+					s.recordOpenAIStreamUpstreamError(c, account, true, upstreamRequestID, "http_error", dataBytes, failedMessage)
+					return resultWithUsage(), writeOpenAIStreamValidation(c, dataBytes, failedMessage, usage)
+				}
 				if !outputStarted && !cyberHit {
 					if compactErr := newOpenAICompactFallbackSignal(c, dataBytes, failedMessage); compactErr != nil {
 						return resultWithUsage(), compactErr
@@ -2437,6 +2456,10 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 		msg := extractOpenAISSEErrorMessage(terminalPayload)
 		if msg == "" {
 			msg = "Upstream compact response failed"
+		}
+		if isOpenAIStreamInvalidArguments(terminalPayload, msg) {
+			s.recordOpenAIStreamUpstreamError(c, account, true, resp.Header.Get("x-request-id"), "http_error", terminalPayload, msg)
+			return &openaiNonStreamingResultPassthrough{OpenAIUsage: usage, usage: usage, responseID: extractOpenAIResponseIDFromJSONBytes(terminalPayload)}, writeOpenAIStreamValidation(c, terminalPayload, msg, usage)
 		}
 		if markOpenAICyberPolicyEvent(c, terminalPayload, resp.StatusCode, usage) && !openAIUsageHasTokens(usage) {
 			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, msg)
