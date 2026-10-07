@@ -265,7 +265,11 @@ func convertMessages(input []message) ([]map[string]any, []map[string]any, error
 			answered[m.ToolCallID] = true
 			texts := make([]string, 0, len(parts))
 			for _, part := range parts {
-				texts = append(texts, part["text"].(string))
+				text, ok := part["text"].(string)
+				if !ok {
+					return nil, nil, ErrRequest
+				}
+				texts = append(texts, text)
 			}
 			parts = []map[string]any{{"type": "tool-result", "toolCallId": m.ToolCallID, "toolName": name, "output": map[string]string{"type": "text", "value": strings.Join(texts, "\n")}}}
 		}

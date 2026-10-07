@@ -117,7 +117,10 @@ func (s *GrokCLIVersionSyncService) Refresh(ctx context.Context, rejected string
 	case <-s.ctx.Done():
 		return s.version()
 	case r := <-result:
-		return r.Val.(string)
+		if version, ok := r.Val.(string); ok {
+			return version
+		}
+		return s.version()
 	}
 }
 

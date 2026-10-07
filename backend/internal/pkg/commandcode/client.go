@@ -198,7 +198,13 @@ type streamBody struct {
 	cancelWatch func() bool
 }
 
-func (b *streamBody) stop()        { b.once.Do(func() { b.cancelWatch(); b.cancel(); b.upstream.Close() }) }
+func (b *streamBody) stop() {
+	b.once.Do(func() {
+		b.cancelWatch()
+		b.cancel()
+		_ = b.upstream.Close()
+	})
+}
 func (b *streamBody) Close() error { b.stop(); return b.PipeReader.Close() }
 
 func response(status int, header http.Header, body io.ReadCloser) *http.Response {
