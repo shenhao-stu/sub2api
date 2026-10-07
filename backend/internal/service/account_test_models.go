@@ -83,7 +83,7 @@ func (s *AccountTestService) fetchCommandCodeModelCatalog(ctx context.Context, a
 	if err != nil {
 		return nil, newUpstreamModelSyncUpstreamError("Command Code model catalog request failed", nil)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, newUpstreamModelSyncUpstreamError(fmt.Sprintf("Command Code model catalog returned HTTP %d", resp.StatusCode), nil)
 	}

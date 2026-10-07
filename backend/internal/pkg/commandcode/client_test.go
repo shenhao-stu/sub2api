@@ -79,7 +79,7 @@ func TestNoSecretsInErrorsAndStatuses(t *testing.T) {
 			t.Fatal(err)
 		}
 		data, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		want := status
 		if status < 400 {
 			want = 502
@@ -114,7 +114,7 @@ func TestMalformedAndIncompleteStreamsNeverComplete(t *testing.T) {
 				var data []byte
 				if err == nil {
 					data, err = io.ReadAll(resp.Body)
-					resp.Body.Close()
+					_ = resp.Body.Close()
 				}
 				if err == nil || strings.Contains(string(data), "[DONE]") || strings.Contains(string(data), `"finish_reason":"stop"`) {
 					t.Fatalf("failure reported success: %s, %v", data, err)
@@ -171,7 +171,7 @@ func TestToolsRoundTripAndChoices(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if !strings.Contains(string(data), `"id":"c1"`) || !strings.Contains(string(data), `"finish_reason":"tool_calls"`) {
 		t.Fatalf("lost tool call: %s", data)
 	}
@@ -225,7 +225,7 @@ func TestCancellationAndCloseStopProducer(t *testing.T) {
 				t.Fatal(err)
 			}
 			if closeBody {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			} else {
 				cancel()
 			}
@@ -234,7 +234,7 @@ func TestCancellationAndCloseStopProducer(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("producer not canceled")
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		})
 	}
 }
@@ -258,7 +258,7 @@ func TestIndependentConcurrentCredentials(t *testing.T) {
 				t.Error(err)
 				return
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}(key)
 	}
 	wg.Wait()
@@ -300,5 +300,5 @@ func TestToolInputMustCompleteAndRespectParallelChoice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }

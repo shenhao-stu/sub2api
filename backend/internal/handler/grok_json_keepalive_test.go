@@ -74,7 +74,7 @@ func runGrokJSONKeepaliveHTTP(t *testing.T, endpoint, scenario, platform string,
 		if scenario == "body" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			w.(http.Flusher).Flush()
+			require.NoError(t, http.NewResponseController(w).Flush())
 		}
 		entered <- attempt
 		select {
@@ -204,7 +204,7 @@ func runGrokJSONKeepaliveHTTP(t *testing.T, endpoint, scenario, platform string,
 	if wantPing {
 		result = <-responses
 		require.NoError(t, result.err)
-		defer result.resp.Body.Close()
+		defer func() { _ = result.resp.Body.Close() }()
 		require.Contains(t, result.resp.Header.Get("Content-Type"), "application/json")
 		readPing()
 	} else {
@@ -223,7 +223,7 @@ func runGrokJSONKeepaliveHTTP(t *testing.T, endpoint, scenario, platform string,
 	if !wantPing {
 		result = <-responses
 		require.NoError(t, result.err)
-		defer result.resp.Body.Close()
+		defer func() { _ = result.resp.Body.Close() }()
 	}
 	rest, err := io.ReadAll(result.resp.Body)
 	require.NoError(t, err)

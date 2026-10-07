@@ -114,7 +114,7 @@ func (s *AccountTestService) testCommandCodeAccountConnection(c *gin.Context, ac
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Command Code account test request failed")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Command Code account test returned HTTP %d", resp.StatusCode))
 	}

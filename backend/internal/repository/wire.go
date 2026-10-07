@@ -65,7 +65,7 @@ func ProvideSchedulerCache(rdb *redis.Client, cfg *config.Config) service.Schedu
 
 // ProviderSet is the Wire provider set for all repositories
 func ProvideHTTPUpstream(cfg *config.Config, versions *service.GrokCLIVersionSyncService) service.HTTPUpstream {
-	upstream := NewHTTPUpstream(cfg).(*httpUpstreamService)
+	upstream := newHTTPUpstream(cfg)
 	upstream.grokVersionSync = versions
 	return upstream
 }

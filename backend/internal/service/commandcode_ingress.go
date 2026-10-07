@@ -103,7 +103,7 @@ func validateCommandCodeGoIngress(body []byte, protocol, path string) error {
 }
 
 func unsupportedCommandCodeFeature() error {
-	return fmt.Errorf("Command Code Go cannot preserve these request options; use supported text, inline images and function tools, or choose the Provider API")
+	return fmt.Errorf("command code Go cannot preserve these request options; use supported text, inline images and function tools, or choose the Provider API")
 }
 
 func commandCodeAllowedFields(fields commandCodeFields, allowed string) error {
