@@ -611,7 +611,7 @@ func TestAntigravityCompatEmptyContentPreservesRealUsage(t *testing.T) {
 			name := fmt.Sprintf("responses=%v/read_failure=%v", responses, readFailure)
 			t.Run(name, func(t *testing.T) {
 				wire := []byte(`data: {"response":{"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":3},"candidates":[{"finishReason":"STOP"}]}}` + "\n\n")
-				var reader io.ReadCloser = io.NopCloser(bytes.NewReader(wire))
+				reader := io.NopCloser(bytes.NewReader(wire))
 				if readFailure {
 					reader = &antigravityCompatErrorReader{data: wire, err: io.ErrUnexpectedEOF}
 				}

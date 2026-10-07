@@ -2268,8 +2268,8 @@ func TestOpenAIStreamingPreambleKeepaliveUsesDownstreamIdle(t *testing.T) {
 		c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
 
 		pr, pw := io.Pipe()
-		defer pr.Close()
-		defer pw.Close()
+		defer func() { _ = pr.Close() }()
+		defer func() { _ = pw.Close() }()
 		resp := &http.Response{StatusCode: http.StatusOK, Body: pr, Header: http.Header{}}
 		var result *openaiStreamingResult
 		var err error

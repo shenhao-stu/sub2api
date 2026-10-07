@@ -115,7 +115,7 @@ func (w *VideoBillingWorker) process(parent context.Context, job PendingVideoBil
 		}
 		return
 	}
-	if result == nil || (result.VideoCount <= 0 && !(strings.HasPrefix(job.TaskID, "seedance:") && result.Usage.OutputTokens > 0)) {
+	if result == nil || (result.VideoCount <= 0 && (!strings.HasPrefix(job.TaskID, "seedance:") || result.Usage.OutputTokens <= 0)) {
 		switch status {
 		case "failed", "canceled", "cancelled":
 			state, reason = "failed", "provider_terminal_failure"

@@ -68,7 +68,7 @@ func TestCreditRejectionNormalization(t *testing.T) {
 			client := Client{HTTPClient: testDoer(func(req *http.Request) (*http.Response, error) { return fixtureResponse(req, tc.status, tc.body), nil })}
 			resp, err := client.ChatCompletion(context.Background(), "key", []byte(testInput), false)
 			require.NoError(t, err)
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			body, err := io.ReadAll(resp.Body)
 			require.NoError(t, err)
 			require.Equal(t, tc.exhausted, IsCreditExhausted(resp.StatusCode, body))

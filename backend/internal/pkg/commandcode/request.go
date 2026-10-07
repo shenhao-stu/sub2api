@@ -362,7 +362,9 @@ func validName(name string) bool {
 		return false
 	}
 	for _, ch := range name {
-		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '_' || ch == '-') {
+		switch {
+		case ch >= 'a' && ch <= 'z', ch >= 'A' && ch <= 'Z', ch >= '0' && ch <= '9', ch == '_', ch == '-':
+		default:
 			return false
 		}
 	}

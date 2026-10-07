@@ -74,7 +74,7 @@ func (r *usageBillingRepository) ClaimVideoBillingDue(ctx context.Context, limit
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var jobs []service.PendingVideoBilling
 	for rows.Next() {
 		var job service.PendingVideoBilling

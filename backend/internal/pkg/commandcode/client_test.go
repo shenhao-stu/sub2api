@@ -36,7 +36,10 @@ func TestChatJSONAndSSEPreserveUsage(t *testing.T) {
 				if json.Unmarshal(payload, &body) != nil {
 					t.Fatal("bad outgoing body")
 				}
-				params := body["params"].(map[string]any)
+				params, ok := body["params"].(map[string]any)
+				if !ok {
+					t.Fatal("missing inference parameters")
+				}
 				if params["max_tokens"] != float64(4096) || params["model"] != "test/model" {
 					t.Error("wrong inference parameters")
 				}
@@ -191,7 +194,8 @@ func TestUsageVariantsAndInvalidNumbers(t *testing.T) {
 		`{"prompt_tokens":10,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":4,"cache_creation_tokens":2},"completion_tokens_details":{"reasoning_tokens":1}}`,
 	} {
 		usage, err := convertUsage([]byte(raw))
-		if err != nil || usage["prompt_tokens"] != int64(10) || usage["prompt_tokens_details"].(map[string]any)["cached_tokens"] != int64(4) {
+		details, ok := usage["prompt_tokens_details"].(map[string]any)
+		if err != nil || !ok || usage["prompt_tokens"] != int64(10) || details["cached_tokens"] != int64(4) {
 			t.Fatalf("bad normalized usage: %#v %v", usage, err)
 		}
 	}
@@ -213,7 +217,7 @@ func TestCancellationAndCloseStopProducer(t *testing.T) {
 			closed := make(chan struct{})
 			client := Client{HTTPClient: testDoer(func(r *http.Request) (*http.Response, error) {
 				reader, writer := io.Pipe()
-				go func() { <-r.Context().Done(); writer.CloseWithError(r.Context().Err()); close(closed) }()
+				go func() { <-r.Context().Done(); _ = writer.CloseWithError(r.Context().Err()); close(closed) }()
 				return &http.Response{StatusCode: 200, Header: http.Header{}, Body: reader, Request: r}, nil
 			})}
 			resp, err := client.ChatCompletion(ctx, "secret", []byte(testInput), true)

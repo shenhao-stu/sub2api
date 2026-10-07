@@ -78,7 +78,7 @@ func TestOpsCaptureWriter_LateErrorStateIsBoundedAndReset(t *testing.T) {
 	require.Zero(t, reused.capturedErrorStatus())
 	w.WriteHeader(http.StatusInternalServerError)
 	require.Zero(t, reused.capturedErrorStatus(), "stale lease cannot change the new request")
-	_, err = reused.WriteString(fmt.Sprintf(`{"output":%q}`, strings.Repeat("x", opsCaptureWriterLimit+1)))
+	_, err = fmt.Fprintf(reused, `{"output":%q}`, strings.Repeat("x", opsCaptureWriterLimit+1))
 	require.NoError(t, err)
 	reused.finalizeCapture()
 	require.Empty(t, reused.capturedBytes(), "successful JSON must remain unbuffered")

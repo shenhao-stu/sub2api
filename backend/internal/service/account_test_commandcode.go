@@ -22,7 +22,7 @@ type commandCodeAccountTestClient struct {
 
 func (s *AccountTestService) GetCommandCodeQuota(ctx context.Context, account *Account) (*commandcode.BillingCredits, error) {
 	if !account.IsCommandCodeGo() {
-		return nil, errors.New("Command Code quota is available for Go accounts only")
+		return nil, errors.New("command code quota is available for Go accounts only")
 	}
 	if err := ValidateCommandCodeAccount(account); err != nil {
 		return nil, err
@@ -46,7 +46,7 @@ func (client commandCodeAccountTestClient) Do(req *http.Request) (*http.Response
 
 func (s *AccountTestService) commandCodeAccountTestUpstream(req *http.Request, account *Account) (*http.Response, error) {
 	if s == nil || s.httpUpstream == nil {
-		return nil, errors.New("Command Code upstream transport is unavailable")
+		return nil, errors.New("command code upstream transport is unavailable")
 	}
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {

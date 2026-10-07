@@ -68,13 +68,13 @@ func (c *Client) ChatCompletion(ctx context.Context, key string, body []byte, st
 	}
 	// This detects accidental transport redirects; redirect prevention belongs in HTTPDoer.
 	if upstream.Request != nil && (upstream.Request.URL == nil || upstream.Request.URL.String() != Endpoint) {
-		upstream.Body.Close()
+		_ = upstream.Body.Close()
 		cancel()
 		return nil, ErrUpstream
 	}
 	if upstream.StatusCode != http.StatusOK {
 		body, readErr := io.ReadAll(io.LimitReader(upstream.Body, maxBillingBody+1))
-		upstream.Body.Close()
+		_ = upstream.Body.Close()
 		cancel()
 		if readErr == nil && len(body) <= maxBillingBody {
 			var envelope struct {
@@ -110,7 +110,7 @@ func (c *Client) ChatCompletion(ctx context.Context, key string, body []byte, st
 	}
 	id, err := uuid()
 	if err != nil {
-		upstream.Body.Close()
+		_ = upstream.Body.Close()
 		cancel()
 		return nil, ErrUpstream
 	}
@@ -118,7 +118,7 @@ func (c *Client) ChatCompletion(ctx context.Context, key string, body []byte, st
 	header := safeHeaders(upstream.Header)
 	if !stream {
 		defer cancel()
-		defer upstream.Body.Close()
+		defer func() { _ = upstream.Body.Close() }()
 		out, err := readEvents(upstream.Body, prepared, nil, nil)
 		if err != nil {
 			return nil, withUsage(err, out.usage)
@@ -142,7 +142,7 @@ func (c *Client) ChatCompletion(ctx context.Context, key string, body []byte, st
 	}
 	reader, writer := io.Pipe()
 	bodyReader := &streamBody{PipeReader: reader, upstream: upstream.Body, cancel: cancel}
-	bodyReader.cancelWatch = context.AfterFunc(ctx, func() { reader.CloseWithError(ctx.Err()); upstream.Body.Close() })
+	bodyReader.cancelWatch = context.AfterFunc(ctx, func() { _ = reader.CloseWithError(ctx.Err()); _ = upstream.Body.Close() })
 	go func() {
 		defer bodyReader.stop()
 		identity["object"] = "chat.completion.chunk"
@@ -176,7 +176,7 @@ func (c *Client) ChatCompletion(ctx context.Context, key string, body []byte, st
 		if err == nil {
 			_, err = io.WriteString(writer, "data: [DONE]\n\n")
 		}
-		writer.CloseWithError(withUsage(err, out.usage))
+		_ = writer.CloseWithError(withUsage(err, out.usage))
 	}()
 	header.Set("Content-Type", "text/event-stream")
 	header.Set("Cache-Control", "no-cache")

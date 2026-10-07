@@ -140,9 +140,9 @@ func (c *eventConsumer) accept(line []byte) error {
 			return c.emit(map[string]any{"content": *text})
 		}
 		if reasoning {
-			c.result.reasoning.WriteString(*text)
+			_, _ = c.result.reasoning.WriteString(*text)
 		} else {
-			c.result.text.WriteString(*text)
+			_, _ = c.result.text.WriteString(*text)
 		}
 	case "tool-call":
 		if e.ProviderExecuted || !c.request.tools[e.ToolName] || e.ToolCallID == "" || len(e.ToolCallID) > 512 || c.callIDs[e.ToolCallID] || len(c.result.calls) >= 256 {
@@ -223,7 +223,8 @@ func (c *eventConsumer) accept(line []byte) error {
 				return ErrProtocol
 			}
 			for _, call := range c.result.calls {
-				if call["function"].(map[string]any)["name"] != c.request.choice.name {
+				function, ok := call["function"].(map[string]any)
+				if !ok || function["name"] != c.request.choice.name {
 					return ErrProtocol
 				}
 			}

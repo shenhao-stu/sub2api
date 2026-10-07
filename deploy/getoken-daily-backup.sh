@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# getoken netcup daily backup — deduplicated + incremental + extreme compression.
+# getoken netcup daily backup — deduplicated + incremental + bounded compression.
 #
 # Captures the three production data stores into ONE borg archive/day:
 #   - getoken  DB  (relay-db-postgres-1)  pg_dump plain SQL
@@ -7,7 +7,7 @@
 #   - panel.db     (getoken-panel)        sqlite online .backup + integrity_check
 #
 # borg gives incremental storage (only changed chunks persisted across days) and
-# zstd-19 compression ("极致" ratio at sane CPU). Retention pruned automatically.
+# zstd-6 compression balances archive size and backup duration. Retention is unchanged.
 # Mirrors the retired gcp/do-new-1 job: consistent online snapshot, integrity
 # gate, metadata-tagged archive names, bounded retention.
 set -euo pipefail
@@ -53,8 +53,8 @@ rm -f /opt/getoken-consolidated/getoken-panel/data/.panel.bak.db
 
 echo "-- staged sizes --"; ls -la "$STAGE"
 
-# 3) One archive/day; auto skips incompressible chunks, else zstd,19.
-borg create --stats --compression auto,zstd,19 "::getoken-$STAMP" "$STAGE"
+# 3) One archive/day; auto skips incompressible chunks, else zstd,6.
+borg create --stats --compression auto,zstd,6 "::getoken-$STAMP" "$STAGE"
 
 # 4) Bounded retention + reclaim.
 borg prune --stats --glob-archives 'getoken-*' --keep-daily=14 --keep-weekly=8 --keep-monthly=6
