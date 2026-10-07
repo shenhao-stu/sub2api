@@ -105,12 +105,12 @@ func (c *Client) BillingCredits(ctx context.Context, key string) (*BillingCredit
 	if resp == nil || resp.Body == nil {
 		return nil, ErrUpstream
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.Request != nil && (resp.Request.URL == nil || resp.Request.URL.String() != BillingEndpoint) {
 		return nil, ErrUpstream
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Command Code billing returned HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("command code billing returned HTTP %d", resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBillingBody+1))
 	var result BillingCredits

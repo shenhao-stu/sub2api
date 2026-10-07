@@ -63,7 +63,7 @@ func TestWSPricingUsesActualIngressMapping(t *testing.T) {
 			defer server.Close()
 			conn, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
 			require.NoError(t, err)
-			defer conn.CloseNow()
+			defer func() { _ = conn.CloseNow() }()
 			require.NoError(t, conn.Write(ctx, coderws.MessageText, []byte(`{"type":"response.create","model":"local-client","input":"local"}`)))
 			select {
 			case err = <-done:
@@ -94,8 +94,8 @@ func TestWSPricingChecksSessionModelBeforeImplicitFollowup(t *testing.T) {
 	upstream := newStagedPassthroughConn()
 	upstream.Send(`{"type":"response.completed","response":{"id":"resp_pricing_1","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`)
 	svc := newPassthroughLifecycleService(passthroughLifecycleConfig(), upstream)
-	prices, key, account := pricingAdmissionFixture()
-	account = passthroughLifecycleAccount()
+	prices, key, _ := pricingAdmissionFixture()
+	account := passthroughLifecycleAccount()
 	svc.billingService, svc.resolver = prices.billingService, prices.resolver
 	checked := make(chan string, 2)
 	hooks := &OpenAIWSIngressHooks{
@@ -107,7 +107,7 @@ func TestWSPricingChecksSessionModelBeforeImplicitFollowup(t *testing.T) {
 	server, done := startPassthroughHookRecordingServer(t, ctx, svc, account, hooks)
 	defer server.Close()
 	conn := dialPassthroughLifecycleClient(t, server)
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 	requirePassthroughUpstreamWrite(t, upstream, time.Second)
 	_, err := readPassthroughLifecycleFrame(t, conn, time.Second)
 	require.NoError(t, err)

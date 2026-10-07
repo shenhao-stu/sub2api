@@ -36,7 +36,10 @@ func TestChatJSONAndSSEPreserveUsage(t *testing.T) {
 				if json.Unmarshal(payload, &body) != nil {
 					t.Fatal("bad outgoing body")
 				}
-				params := body["params"].(map[string]any)
+				params, ok := body["params"].(map[string]any)
+				if !ok {
+					t.Fatal("missing inference parameters")
+				}
 				if params["max_tokens"] != float64(4096) || params["model"] != "test/model" {
 					t.Error("wrong inference parameters")
 				}
@@ -46,7 +49,7 @@ func TestChatJSONAndSSEPreserveUsage(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			data, err := io.ReadAll(resp.Body)
 			if err != nil {
 				t.Fatal(err)
@@ -76,7 +79,7 @@ func TestNoSecretsInErrorsAndStatuses(t *testing.T) {
 			t.Fatal(err)
 		}
 		data, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		want := status
 		if status < 400 {
 			want = 502
@@ -111,7 +114,7 @@ func TestMalformedAndIncompleteStreamsNeverComplete(t *testing.T) {
 				var data []byte
 				if err == nil {
 					data, err = io.ReadAll(resp.Body)
-					resp.Body.Close()
+					_ = resp.Body.Close()
 				}
 				if err == nil || strings.Contains(string(data), "[DONE]") || strings.Contains(string(data), `"finish_reason":"stop"`) {
 					t.Fatalf("failure reported success: %s, %v", data, err)
@@ -168,7 +171,7 @@ func TestToolsRoundTripAndChoices(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if !strings.Contains(string(data), `"id":"c1"`) || !strings.Contains(string(data), `"finish_reason":"tool_calls"`) {
 		t.Fatalf("lost tool call: %s", data)
 	}
@@ -191,7 +194,8 @@ func TestUsageVariantsAndInvalidNumbers(t *testing.T) {
 		`{"prompt_tokens":10,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":4,"cache_creation_tokens":2},"completion_tokens_details":{"reasoning_tokens":1}}`,
 	} {
 		usage, err := convertUsage([]byte(raw))
-		if err != nil || usage["prompt_tokens"] != int64(10) || usage["prompt_tokens_details"].(map[string]any)["cached_tokens"] != int64(4) {
+		details, ok := usage["prompt_tokens_details"].(map[string]any)
+		if err != nil || !ok || usage["prompt_tokens"] != int64(10) || details["cached_tokens"] != int64(4) {
 			t.Fatalf("bad normalized usage: %#v %v", usage, err)
 		}
 	}
@@ -213,7 +217,7 @@ func TestCancellationAndCloseStopProducer(t *testing.T) {
 			closed := make(chan struct{})
 			client := Client{HTTPClient: testDoer(func(r *http.Request) (*http.Response, error) {
 				reader, writer := io.Pipe()
-				go func() { <-r.Context().Done(); writer.CloseWithError(r.Context().Err()); close(closed) }()
+				go func() { <-r.Context().Done(); _ = writer.CloseWithError(r.Context().Err()); close(closed) }()
 				return &http.Response{StatusCode: 200, Header: http.Header{}, Body: reader, Request: r}, nil
 			})}
 			resp, err := client.ChatCompletion(ctx, "secret", []byte(testInput), true)
@@ -221,7 +225,7 @@ func TestCancellationAndCloseStopProducer(t *testing.T) {
 				t.Fatal(err)
 			}
 			if closeBody {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			} else {
 				cancel()
 			}
@@ -230,7 +234,7 @@ func TestCancellationAndCloseStopProducer(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("producer not canceled")
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		})
 	}
 }
@@ -254,7 +258,7 @@ func TestIndependentConcurrentCredentials(t *testing.T) {
 				t.Error(err)
 				return
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}(key)
 	}
 	wg.Wait()
@@ -296,5 +300,5 @@ func TestToolInputMustCompleteAndRespectParallelChoice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }

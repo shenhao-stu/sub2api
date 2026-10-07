@@ -3795,3 +3795,7 @@ func TestBuildGrokSchedulerExtraUpdates_NilWhenNoQuotaWindows(t *testing.T) {
 	require.Nil(t, buildGrokSchedulerExtraUpdates(&xai.QuotaSnapshot{}))
 	require.Nil(t, buildGrokSchedulerExtraUpdates(nil))
 }
+
+func convertGrokResponseToOpenAICompact(body []byte) ([]byte, error) {
+	return convertGrokResponseToOpenAICompactWithSummary(body, nil)
+}

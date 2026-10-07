@@ -50,7 +50,7 @@ func TestHTTPShutdownWaitsForResponseAndSettlement(t *testing.T) {
 			response <- err.Error()
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		body, _ := io.ReadAll(resp.Body)
 		response <- string(body)
 	}()
@@ -83,23 +83,24 @@ func TestHTTPShutdownWaitsForHijackedHandlerSettlement(t *testing.T) {
 			srv, addr := startDrainTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				close(entered)
 				<-hijack
-				conn, _, err := w.(http.Hijacker).Hijack()
+				conn, _, err := http.NewResponseController(w).Hijack()
 				if err != nil {
 					t.Error(err)
 					return
 				}
-				defer conn.Close()
+				defer func() { _ = conn.Close() }()
 				_, _ = io.Copy(io.Discard, conn)
 				close(disconnected)
 				<-settle
 			}))
 			conn, err := net.Dial("tcp", addr)
 			require.NoError(t, err)
-			defer conn.Close()
+			defer func() { _ = conn.Close() }()
 			_, err = io.WriteString(conn, "GET / HTTP/1.1\r\nHost: test\r\n\r\n")
 			require.NoError(t, err)
 			awaitDrainSignal(t, entered)
-			d := srv.Handler.(*httpDrain)
+			d, ok := srv.Handler.(*httpDrain)
+			require.True(t, ok)
 			if lateHijack {
 				d.beginDrain()
 				close(hijack)
@@ -144,7 +145,7 @@ func TestHTTPShutdownDeadlineCancelsAndWaitsForHandler(t *testing.T) {
 	}))
 	conn, err := net.Dial("tcp", addr)
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_, err = io.WriteString(conn, "GET / HTTP/1.1\r\nHost: test\r\n\r\n")
 	require.NoError(t, err)
 	awaitDrainSignal(t, started)
@@ -165,7 +166,7 @@ func TestHTTPShutdownUncooperativeHandlerIsBoundedAndUnsafeForCleanup(t *testing
 	}))
 	conn, err := net.Dial("tcp", addr)
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_, err = io.WriteString(conn, "GET / HTTP/1.1\r\nHost: test\r\n\r\n")
 	require.NoError(t, err)
 	awaitDrainSignal(t, started)
@@ -177,14 +178,16 @@ func TestHTTPShutdownUncooperativeHandlerIsBoundedAndUnsafeForCleanup(t *testing
 	require.False(t, drained)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Less(t, time.Since(before), time.Second)
-	awaitDrainSignal(t, srv.Handler.(*httpDrain).done)
+	d, ok := srv.Handler.(*httpDrain)
+	require.True(t, ok)
+	awaitDrainSignal(t, d.done)
 }
 
 func TestHTTPShutdownForceCancelsDetachedUpstreamBeforeSettlement(t *testing.T) {
 	started, abort, upstreamCancelled, settled := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, ": upstream connected\n\n")
-		w.(http.Flusher).Flush()
+		require.NoError(t, http.NewResponseController(w).Flush())
 		close(started)
 		select {
 		case <-r.Context().Done():
@@ -214,7 +217,7 @@ func TestHTTPShutdownForceCancelsDetachedUpstreamBeforeSettlement(t *testing.T) 
 	}))
 	conn, err := net.Dial("tcp", addr)
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_, err = io.WriteString(conn, "GET / HTTP/1.1\r\nHost: test\r\n\r\n")
 	require.NoError(t, err)
 	awaitDrainSignal(t, started)
@@ -237,7 +240,9 @@ func TestHTTPDrainRejectsNewHandlersAndPreservesInterfaces(t *testing.T) {
 	before := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(before, httptest.NewRequest("GET", "/", nil))
 	require.Equal(t, "ok", before.Body.String())
-	srv.Handler.(*httpDrain).beginDrain()
+	d, ok := srv.Handler.(*httpDrain)
+	require.True(t, ok)
+	d.beginDrain()
 	after := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(after, httptest.NewRequest("GET", "/", nil))
 	require.Equal(t, http.StatusServiceUnavailable, after.Code)

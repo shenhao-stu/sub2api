@@ -83,7 +83,7 @@ func (s *AccountTestService) fetchCommandCodeModelCatalog(ctx context.Context, a
 	if err != nil {
 		return nil, newUpstreamModelSyncUpstreamError("Command Code model catalog request failed", nil)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, newUpstreamModelSyncUpstreamError(fmt.Sprintf("Command Code model catalog returned HTTP %d", resp.StatusCode), nil)
 	}
@@ -113,7 +113,7 @@ func filterCommandCodeModelCatalog(body []byte, account *Account) ([]byte, error
 		Data []json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(body, &catalog); err != nil {
-		return nil, errors.New("Command Code model catalog is invalid JSON")
+		return nil, errors.New("command code model catalog is invalid JSON")
 	}
 	models := make([]map[string]json.RawMessage, 0, len(catalog.Data))
 	seen := make(map[string]bool, len(catalog.Data))
@@ -128,7 +128,7 @@ func filterCommandCodeModelCatalog(body []byte, account *Account) ([]byte, error
 			SupportedEndpoints []string `json:"supported_endpoints"`
 		}
 		if json.Unmarshal(raw, &model) != nil || model.ID == "" || strings.ContainsAny(model.ID, " \t\r\n") {
-			return nil, errors.New("Command Code model catalog contains an invalid model")
+			return nil, errors.New("command code model catalog contains an invalid model")
 		}
 		compatible := false
 		for _, supported := range model.SupportedEndpoints {
@@ -156,7 +156,7 @@ func filterCommandCodeModelCatalog(body []byte, account *Account) ([]byte, error
 		models = append(models, fields)
 	}
 	if len(models) == 0 {
-		return nil, errors.New("Command Code catalog has no models for the configured protocol")
+		return nil, errors.New("command code catalog has no models for the configured protocol")
 	}
 	return json.Marshal(map[string]any{"data": models})
 }

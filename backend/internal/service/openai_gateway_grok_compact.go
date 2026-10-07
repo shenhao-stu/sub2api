@@ -153,10 +153,6 @@ func convertOpenAICompactInputsForGrok(body []byte) ([]byte, error) {
 	return encoded, nil
 }
 
-func convertGrokResponseToOpenAICompact(body []byte) ([]byte, error) {
-	return convertGrokResponseToOpenAICompactWithSummary(body, nil)
-}
-
 func convertGrokResponseToOpenAICompactWithSummary(body []byte, sealSummary func(string) (string, error)) ([]byte, error) {
 	var response map[string]any
 	if err := json.Unmarshal(body, &response); err != nil {

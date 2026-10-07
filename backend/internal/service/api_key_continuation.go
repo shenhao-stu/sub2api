@@ -41,7 +41,7 @@ func validateAPIKeyContinuation(accepted, current *APIKey, simple bool, now time
 		current.GroupID != nil && *current.GroupID != *accepted.GroupID {
 		return ErrAPIKeyAccessRevoked
 	}
-	if !current.IsActive() && !(simple && (current.Status == StatusAPIKeyExpired || current.Status == StatusAPIKeyQuotaExhausted)) {
+	if !current.IsActive() && (!simple || current.Status != StatusAPIKeyExpired && current.Status != StatusAPIKeyQuotaExhausted) {
 		return ErrAPIKeyAccessRevoked
 	}
 	if current.GroupID != nil {

@@ -67,7 +67,9 @@ func TestGrokBareValidationDeliveryAndUsage(t *testing.T) {
 			require.Contains(t, recorder.Body.String(), `"input_tokens":17`)
 			events, _ := c.Get(OpsUpstreamErrorsKey)
 			require.Len(t, events, 1)
-			require.Equal(t, 400, events.([]*OpsUpstreamErrorEvent)[0].UpstreamStatusCode)
+			upstreamErrors, ok := events.([]*OpsUpstreamErrorEvent)
+			require.True(t, ok)
+			require.Equal(t, 400, upstreamErrors[0].UpstreamStatusCode)
 		}
 	}
 }

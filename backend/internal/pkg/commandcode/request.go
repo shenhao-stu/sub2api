@@ -265,7 +265,11 @@ func convertMessages(input []message) ([]map[string]any, []map[string]any, error
 			answered[m.ToolCallID] = true
 			texts := make([]string, 0, len(parts))
 			for _, part := range parts {
-				texts = append(texts, part["text"].(string))
+				text, ok := part["text"].(string)
+				if !ok {
+					return nil, nil, ErrRequest
+				}
+				texts = append(texts, text)
 			}
 			parts = []map[string]any{{"type": "tool-result", "toolCallId": m.ToolCallID, "toolName": name, "output": map[string]string{"type": "text", "value": strings.Join(texts, "\n")}}}
 		}
@@ -362,7 +366,9 @@ func validName(name string) bool {
 		return false
 	}
 	for _, ch := range name {
-		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '_' || ch == '-') {
+		switch {
+		case ch >= 'a' && ch <= 'z', ch >= 'A' && ch <= 'Z', ch >= '0' && ch <= '9', ch == '_', ch == '-':
+		default:
 			return false
 		}
 	}

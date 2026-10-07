@@ -115,7 +115,7 @@ func (w *VideoBillingWorker) process(parent context.Context, job PendingVideoBil
 		}
 		return
 	}
-	if result == nil || (result.VideoCount <= 0 && !(strings.HasPrefix(job.TaskID, "seedance:") && result.Usage.OutputTokens > 0)) {
+	if result == nil || (result.VideoCount <= 0 && (!strings.HasPrefix(job.TaskID, "seedance:") || result.Usage.OutputTokens <= 0)) {
 		switch status {
 		case "failed", "canceled", "cancelled":
 			state, reason = "failed", "provider_terminal_failure"
@@ -212,7 +212,7 @@ func (w *VideoBillingWorker) poll(ctx context.Context, account *Account, task st
 	if err != nil {
 		return nil, "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, "", fmt.Errorf("video status HTTP %d", resp.StatusCode)
 	}

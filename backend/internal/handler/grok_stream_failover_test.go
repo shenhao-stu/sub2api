@@ -52,7 +52,7 @@ type grokStreamFailoverUpstream struct {
 func (u *grokStreamFailoverUpstream) Do(_ *http.Request, _ string, accountID int64, _ int) (*http.Response, error) {
 	u.accountIDs = append(u.accountIDs, accountID)
 	body := `data: {"type":"response.completed","sequence_number":0,"response":{"id":"resp_healthy","object":"response","created_at":1,"status":"completed","model":"grok-4.6","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n"
-	var reader io.ReadCloser = io.NopCloser(strings.NewReader(body))
+	reader := io.NopCloser(strings.NewReader(body))
 	if accountID == 9920 || u.allFail {
 		metadata := fmt.Sprintf("event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_failed_%d_%d\"}}\n\n", accountID, len(u.accountIDs))
 		failure := "event: error\ndata: {\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit exceeded\"}}\n\n"
@@ -60,7 +60,7 @@ func (u *grokStreamFailoverUpstream) Do(_ *http.Request, _ string, accountID int
 			pipeReader, pipeWriter := io.Pipe()
 			reader = pipeReader
 			go func() {
-				defer pipeWriter.Close()
+				defer func() { _ = pipeWriter.Close() }()
 				if _, err := io.WriteString(pipeWriter, metadata); err != nil {
 					return
 				}

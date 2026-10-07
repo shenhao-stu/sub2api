@@ -21,7 +21,7 @@ const grokCompactStateLimit = 1024 * 1024
 
 func (s *OpenAIGatewayService) grokCompactStateCipher() (cipher.AEAD, error) {
 	if s == nil || s.cfg == nil || len(s.cfg.JWT.Secret) < 32 {
-		return nil, fmt.Errorf("Grok compaction state key unavailable")
+		return nil, fmt.Errorf("grok compaction state key unavailable")
 	}
 	derive := hmac.New(sha256.New, []byte(s.cfg.JWT.Secret))
 	_, _ = derive.Write([]byte(grokCompactStatePrefix))
