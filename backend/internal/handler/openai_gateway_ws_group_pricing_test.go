@@ -73,6 +73,10 @@ func (s *wsGroupPricingAPIKeyRepoStub) GetByKeyForAuth(ctx context.Context, key 
 	return &apiKey, nil
 }
 
+func (s *wsGroupPricingAPIKeyRepoStub) GetByKey(ctx context.Context, key string) (*service.APIKey, error) {
+	return s.GetByKeyForAuth(ctx, key)
+}
+
 func (s *wsGroupPricingAPIKeyRepoStub) ListKeysByGroupID(ctx context.Context, groupID int64) ([]string, error) {
 	return []string{s.apiKey.Key}, nil
 }
@@ -143,14 +147,16 @@ func TestOpenAIResponsesWebSocket_GroupRateChangeReachesProfitGateOnNextTurn(t *
 	})
 }
 
-func TestOpenAIResponsesWebSocket_KeyMovedToAnotherGroupKeepsConnectionGroup(t *testing.T) {
+func TestOpenAIResponsesWebSocket_KeyMovedToAnotherGroupRevokesContinuation(t *testing.T) {
 	repo := newWSGroupPricingAPIKeyRepoStub(3.0)
 	apiKeyService := newWSGroupPricingAPIKeyService(repo)
-	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
-		firstPayload:     wsGroupPricingFirst,
-		secondPayload:    wsGroupPricingSecond,
-		apiKeyService:    apiKeyService,
-		apiKeyCredential: wsGroupPricingKey,
+	runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
+		firstPayload:            wsGroupPricingFirst,
+		secondPayload:           wsGroupPricingSecond,
+		apiKeyService:           apiKeyService,
+		apiKeyCredential:        wsGroupPricingKey,
+		secondTurnCloseExpected: true,
+		closeReason:             "access revoked",
 		afterFirstUpstreamRequest: func(*service.ChannelService) error {
 			return repo.adminUpdate(apiKeyService, func(apiKey *service.APIKey, group *service.Group) {
 				other := wsGroupPricingGroupID + 1
@@ -160,20 +166,18 @@ func TestOpenAIResponsesWebSocket_KeyMovedToAnotherGroupKeepsConnectionGroup(t *
 			})
 		},
 	})
-
-	require.Len(t, got.logs, 2)
-	require.InDelta(t, 3.0, got.logs[1].RateMultiplier, 1e-12,
-		"a key moved to another group keeps the connection's group: the connection was scheduled from it")
 }
 
-func TestOpenAIResponsesWebSocket_FailedKeyRefreshKeepsConnectionGroup(t *testing.T) {
+func TestOpenAIResponsesWebSocket_FailedKeyRefreshRejectsNewWork(t *testing.T) {
 	repo := newWSGroupPricingAPIKeyRepoStub(3.0)
 	apiKeyService := newWSGroupPricingAPIKeyService(repo)
-	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
-		firstPayload:     wsGroupPricingFirst,
-		secondPayload:    wsGroupPricingSecond,
-		apiKeyService:    apiKeyService,
-		apiKeyCredential: wsGroupPricingKey,
+	runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
+		firstPayload:            wsGroupPricingFirst,
+		secondPayload:           wsGroupPricingSecond,
+		apiKeyService:           apiKeyService,
+		apiKeyCredential:        wsGroupPricingKey,
+		secondTurnCloseExpected: true,
+		closeReason:             "access revoked",
 		afterFirstUpstreamRequest: func(*service.ChannelService) error {
 			return repo.adminUpdate(apiKeyService, func(_ *service.APIKey, group *service.Group) {
 				group.RateMultiplier = 0.3
@@ -182,8 +186,6 @@ func TestOpenAIResponsesWebSocket_FailedKeyRefreshKeepsConnectionGroup(t *testin
 		},
 	})
 
-	require.Len(t, got.logs, 2)
-	require.InDelta(t, 3.0, got.logs[1].RateMultiplier, 1e-12, "a failed refresh keeps the connection snapshot")
 	require.GreaterOrEqual(t, repo.lookupCount(), 2, "the second turn must have attempted a refresh")
 }
 

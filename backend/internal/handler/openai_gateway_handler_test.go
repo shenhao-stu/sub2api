@@ -3082,11 +3082,13 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		group := *tc.group
 		group.Status = service.StatusActive
 		apiKey.Group = &group
-	} else {
+	} else if apiKey.Group == nil {
 		apiKey.Group = &service.Group{ID: groupID, Status: service.StatusActive}
 	}
 	currentKeyRepo := &continuationWSKeyRepo{key: apiKey, change: tc.keyChangeAfterFirst}
-	h.apiKeyService = service.NewAPIKeyService(currentKeyRepo, nil, nil, nil, nil, nil, cfg)
+	if tc.apiKeyService == nil {
+		h.apiKeyService = service.NewAPIKeyService(currentKeyRepo, nil, nil, nil, nil, nil, cfg)
+	}
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
 		c.Set(string(middleware.ContextKeyAPIKey), apiKey)
