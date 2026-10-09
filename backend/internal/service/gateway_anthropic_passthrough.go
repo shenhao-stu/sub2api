@@ -495,6 +495,8 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 		keepaliveTimer.Reset(keepaliveInterval)
 	}
 	inPartialEvent := false
+	var pingState anthropicPingState
+	reportedUnnamedPing := false
 
 	for {
 		select {
@@ -552,11 +554,18 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 			}
 
 			if !clientDisconnected {
-				restored := string(reverseToolNamesIfPresent(c, []byte(line)))
+				wireLine, next, repaired := pingState.next(line)
+				pingState = next
+				if repaired && !reportedUnnamedPing {
+					logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Named upstream ping: account=%d", account.ID)
+					reportedUnnamedPing = true
+				}
+				if wireLine == "" {
+					inPartialEvent = true
+					continue
+				}
+				restored := string(reverseToolNamesIfPresent(c, []byte(wireLine)))
 				if _, err := io.WriteString(w, restored); err != nil {
-					clientDisconnected = true
-					logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
-				} else if _, err := io.WriteString(w, "\n"); err != nil {
 					clientDisconnected = true
 					logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
 				} else if line == "" {

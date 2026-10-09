@@ -1,6 +1,6 @@
-# Getoken 0.2.15+g9
+# Getoken 0.2.15+g10
 
-Official v0.2.15 (`f2669c8cf62555cd92389b3f55920e9e6e7c6ff2`) is merged into the custom fork. Build with `BuildType=custom`; automatic replacement with the official binary remains disabled. The short public version is `0.2.15+g9`.
+Official v0.2.15 (`f2669c8cf62555cd92389b3f55920e9e6e7c6ff2`) is merged into the custom fork. Build with `BuildType=custom`; automatic replacement with the official binary remains disabled. The short public version is `0.2.15+g10`.
 
 ## Preserved contracts
 
@@ -15,7 +15,7 @@ Command Code uses one platform and the upstream Provider catalog, protocol routi
 - Unsupported independent `alpha/search` endpoints enter a one-hour capability cache tied to their origin. This suppresses repeated unsupported calls without disabling ordinary chat. It does not create search support where none exists.
 - A structured wallet-exhaustion response stops same-account pool retries and uses the existing atomic quota cooldown. Its minimum is ten minutes; a longer recorded window, Retry-After or administrator policy is preserved. State writes survive caller cancellation.
 - Scheduler cache projections retain account mode, origin and protocol/capability metadata so those decisions remain valid after cache refresh.
-- Claude queue keepalives contain `event: ping` followed by the ping data frame. This fixes a real wire-format mismatch with strict Anthropic clients and guards. Tests exercise both user-slot and account-slot waiting; the downstream protocol guard remains strict.
+- Claude queue keepalives contain `event: ping` followed by the ping data frame. This fixes a real wire-format mismatch with strict Anthropic clients and guards. Tests exercise both user-slot and account-slot waiting; the downstream protocol guard remains strict. A later follow-up also names locally generated Messages error events. The Anthropic passthrough normalizes a data-only ping only after observing a complete, single-data-line frame; unknown, mixed and multiline frames remain unchanged. It buffers at most one candidate line, preserves usage draining, and records only an account ID when this repair is applied.
 
 ## Deployment evidence and invariants
 

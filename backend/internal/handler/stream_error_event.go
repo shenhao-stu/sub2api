@@ -127,6 +127,17 @@ func inboundIsResponses(c *gin.Context) bool {
 	return strings.HasSuffix(p, "/responses") || strings.Contains(p, "/responses/")
 }
 
+func inboundIsMessages(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	p := strings.TrimRight(c.FullPath(), "/")
+	if p == "" && c.Request != nil && c.Request.URL != nil {
+		p = strings.TrimRight(c.Request.URL.Path, "/")
+	}
+	return strings.HasSuffix(p, "/messages")
+}
+
 // synthesizeResponseID 为合成的 response.failed 事件生成一个稳定的 id。
 // 优先复用 server 端生成的 request_id（存在 request.Context 里，由 request_logger 写入），
 // 以便客户端报错能与 server 日志关联；缺失时回退 uuid。
