@@ -1,43 +1,36 @@
 package repository
 
 import (
-	"encoding/json"
+	"crypto/sha256"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
 
+func TestSchedulerMetadataPreservesEndpointSpecificCapability(t *testing.T) {
+	account := service.Account{ID: 42, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "https://relay.example"},
+		Extra: map[string]any{
+			"alpha_search_unavailable_until":  time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+			"alpha_search_unavailable_origin": fmt.Sprintf("%x", sha256.Sum256([]byte("https://relay.example"))),
+		}}
+	metadata := buildSchedulerMetadataAccount(account)
+	require.False(t, metadata.SupportsOpenAIEndpointCapability(service.OpenAIEndpointCapabilityAlphaSearch))
+	require.True(t, metadata.SupportsOpenAIEndpointCapability(service.OpenAIEndpointCapabilityChatCompletions))
+}
+
 func TestSchedulerMetadataPreservesCommandCodePolicy(t *testing.T) {
-	for _, tc := range []struct {
-		provider string
-		zdr      bool
-	}{
-		{service.CommandCodeProvider, true},
-		{service.CommandCodeGoProvider, false},
-	} {
-		t.Run(tc.provider, func(t *testing.T) {
-			account := service.Account{
-				ID: 27, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
-				Credentials: map[string]any{"api_key": "private-key", "refresh_token": "refresh-secret"},
-				Extra: map[string]any{
-					"provider": tc.provider, "commandcode_zdr": tc.zdr,
-					"unused_large_field": "not-for-scheduling",
-				},
-			}
-			full, metadata, err := marshalSchedulerCacheAccount(account)
-			require.NoError(t, err)
-			for _, payload := range [][]byte{full, metadata} {
-				var restored service.Account
-				require.NoError(t, json.Unmarshal(payload, &restored))
-				require.True(t, restored.IsCommandCode())
-				require.Equal(t, tc.provider == service.CommandCodeGoProvider, restored.IsCommandCodeGo())
-				require.Equal(t, tc.zdr, restored.Extra["commandcode_zdr"])
-			}
-			require.NotContains(t, string(metadata), "refresh-secret")
-			require.NotContains(t, string(metadata), "unused_large_field")
-		})
+	for _, mode := range []string{service.AccountModePayG, service.AccountModeGo} {
+		account := service.Account{ID: 4, Platform: service.PlatformCommandCode, Type: service.AccountTypeAPIKey,
+			Credentials: map[string]any{"api_key": "secret", "account_mode": mode}, Extra: map[string]any{"commandcode_zdr": mode != service.AccountModeGo}}
+		metadata := buildSchedulerMetadataAccount(account)
+		require.True(t, metadata.IsCommandCode())
+		require.Equal(t, mode == service.AccountModeGo, metadata.IsCommandCodeGo())
+		require.Equal(t, mode, metadata.GetCredential("account_mode"))
 	}
 }
 

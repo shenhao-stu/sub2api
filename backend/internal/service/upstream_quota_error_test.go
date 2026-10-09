@@ -166,6 +166,9 @@ func TestHandleUpstreamError_QuotaPreservesNewerResetWithStaleAccount(t *testing
 }
 
 func TestHandleUpstreamError_QuotaHonorsExistingPolicies(t *testing.T) {
+	// Generic quota errors still honor pool mode; only an explicit credential
+	// wallet rejection overrides it (covered by TestWalletExhaustionOverridesPool).
+	body := []byte(`{"error":{"code":"insufficient_quota","message":"Monthly quota exhausted"}}`)
 	for _, tt := range []struct {
 		name        string
 		credentials map[string]any
@@ -184,7 +187,7 @@ func TestHandleUpstreamError_QuotaHonorsExistingPolicies(t *testing.T) {
 			account := &Account{ID: 123, Type: AccountTypeAPIKey, Platform: PlatformAnthropic, Credentials: tt.credentials}
 			repo := &upstreamQuotaRepo{account: account}
 			svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
-			svc.HandleUpstreamError(context.Background(), account, 429, nil, []byte(upstreamQuotaErrorBody))
+			svc.HandleUpstreamError(context.Background(), account, 429, nil, body)
 			require.Zero(t, repo.atomicCalls)
 			require.Equal(t, tt.tempCalls, repo.tempCalls)
 			require.Zero(t, repo.setErrorCalls)

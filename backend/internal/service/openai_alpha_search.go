@@ -91,8 +91,12 @@ func (s *OpenAIGatewayService) ForwardAlphaSearch(ctx context.Context, c *gin.Co
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		upstreamMessage := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
+		unsupported := isOpenAIAlphaSearchEndpointUnsupported(account, resp.StatusCode, respBody)
+		if unsupported {
+			s.rememberUnsupportedAlphaSearch(ctx, account)
+		}
 		if s.shouldFailoverOpenAIUpstreamResponse(account, resp.StatusCode, upstreamMessage, respBody) ||
-			isOpenAIAlphaSearchEndpointUnsupported(account, resp.StatusCode) {
+			unsupported {
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 			// alpha/search 是独立的工具端点，单次 401 不能证明账号的模型调用
 			// 凭据全局失效。若沿用通用 401 逻辑，PAT 会因没有 refresh_token
@@ -100,10 +104,10 @@ func (s *OpenAIGatewayService) ForwardAlphaSearch(ctx context.Context, c *gin.Co
 			// 漏过 PAT 类型判断。这里仍允许本次请求换号，但不修改任何账号状态；
 			// 真正的凭据失效由普通 Responses 请求或 whoami 校验判定。
 			shouldDisable := false
-			if shouldApplyOpenAIAlphaSearchAccountErrorSideEffects(resp.StatusCode) {
+			if !unsupported && shouldApplyOpenAIAlphaSearchAccountErrorSideEffects(resp.StatusCode) {
 				shouldDisable = s.handleFailoverSideEffects(ctx, resp, account, respBody, openAIAlphaSearchSchedulingModel(account, requestedModel))
 			}
-			retryableOnSameAccount := !shouldDisable && account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode)
+			retryableOnSameAccount := !unsupported && !shouldDisable && account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode)
 			if account.IsOpenAIOAuthLike() && resp.StatusCode == http.StatusTooManyRequests {
 				return nil, s.newOpenAIAccountFailoverError(account, resp.StatusCode, resp.Header, respBody, upstreamMessage, shouldDisable, retryableOnSameAccount)
 			}
@@ -569,11 +573,18 @@ func (s *OpenAIGatewayService) ensureOpenAIAlphaSearchAuthMetadata(ctx context.C
 // 意味着所选上游（官方平台或第三方中转）不提供该端点——应换号重试，而
 // 不是把 404 透传给客户端，否则混合分组里 OAuth 账号明明可以承接搜索，
 // 请求却可能死在先被选中的 API key 账号上。
-func isOpenAIAlphaSearchEndpointUnsupported(account *Account, statusCode int) bool {
+func isOpenAIAlphaSearchEndpointUnsupported(account *Account, statusCode int, body ...[]byte) bool {
 	if account == nil || account.Type != AccountTypeAPIKey {
 		return false
 	}
-	return statusCode == http.StatusNotFound || statusCode == http.StatusMethodNotAllowed
+	if statusCode == http.StatusNotFound || statusCode == http.StatusMethodNotAllowed || statusCode == http.StatusNotImplemented {
+		if statusCode == http.StatusNotFound && len(body) > 0 && strings.Contains(strings.ToLower(extractUpstreamErrorMessage(body[0])), "model") {
+			return false
+		}
+		return true
+	}
+	return statusCode == http.StatusInternalServerError && len(body) > 0 &&
+		strings.HasPrefix(strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(body[0]))), "channel does not support /v1/alpha/search")
 }
 
 func shouldApplyOpenAIAlphaSearchAccountErrorSideEffects(statusCode int) bool {

@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
+import {
+  BUILTIN_PLATFORM_CATALOG,
+  resetPlatformCatalog,
+  setPlatformCatalog
+} from '@/constants/platformCatalog'
 
 const { updateAccountMock, checkMixedChannelRiskMock, authIsSimpleMode } = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
@@ -537,6 +542,104 @@ describe('EditAccountModal', () => {
       account_mode: 'go',
       api_protocol: 'adaptive',
       base_url: 'https://opencode.ai/zen/go/v1'
+    })
+  })
+
+  describe('providers using the generic form', () => {
+    beforeEach(() => {
+      setPlatformCatalog({
+        platforms: [
+          ...BUILTIN_PLATFORM_CATALOG.platforms,
+          {
+            id: 'acme_router',
+            display_name: 'Acme Router',
+            gateway: 'openai',
+            cn_provider: false,
+            multi_protocol: {
+              default_mode: 'standard',
+              routing: 'by_model',
+              modes: [
+                {
+                  mode: 'standard',
+                  base_urls: {
+                    chat_completions: 'https://api.acme-router.example/provider/v1',
+                    anthropic: 'https://api.acme-router.example/provider'
+                  },
+                  protocol_rules: [{ pattern: 'claude-*', protocol: 'anthropic' }]
+                },
+                {
+                  mode: 'team',
+                  base_urls: {
+                    chat_completions: 'https://team.acme-router.example/provider/v1',
+                    anthropic: 'https://team.acme-router.example/provider'
+                  },
+                  protocol_rules: [{ pattern: 'sonnet-*', protocol: 'anthropic' }]
+                }
+              ]
+            }
+          }
+        ],
+        composite_precedence: [...BUILTIN_PLATFORM_CATALOG.composite_precedence, 'acme_router']
+      })
+      checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    })
+
+    afterEach(() => {
+      resetPlatformCatalog()
+    })
+
+    function commandCodeAccount() {
+      const account = buildAccount()
+      account.platform = 'acme_router'
+      account.credentials = {
+        api_key: 'sk-cc',
+        account_mode: 'standard',
+        api_protocol: 'adaptive',
+        base_url: 'https://relay.example.com/v1',
+        api_base_urls: {
+          chat_completions: 'https://relay.example.com/v1',
+          anthropic: 'https://relay.example.com'
+        },
+        protocol_rules: [{ pattern: 'custom-*', protocol: 'anthropic' }]
+      }
+      updateAccountMock.mockReset().mockResolvedValue(account)
+      return account
+    }
+
+    it('preserves stored endpoints and rules on submit', async () => {
+      const wrapper = mountModal(commandCodeAccount())
+      await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+      expect(updateAccountMock).toHaveBeenCalledTimes(1)
+      expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toMatchObject({
+        account_mode: 'standard',
+        api_protocol: 'adaptive',
+        base_url: 'https://relay.example.com/v1',
+        api_base_urls: {
+          chat_completions: 'https://relay.example.com/v1',
+          anthropic: 'https://relay.example.com'
+        },
+        protocol_rules: [{ pattern: 'custom-*', protocol: 'anthropic' }]
+      })
+      expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.api_base_urls).not.toHaveProperty('responses')
+    })
+
+    it('offers the provider modes and keeps customised endpoints when switching mode', async () => {
+      const wrapper = mountModal(commandCodeAccount())
+      const modeButtons = wrapper.get('[data-testid="edit-generic-account-mode"]').findAll('button')
+      expect(modeButtons.map(button => button.text())).toEqual(['standard', 'team'])
+      await modeButtons[1].trigger('click')
+      await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+      expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toMatchObject({
+        account_mode: 'team',
+        // 自定义端点与规则不是上一模式的默认值，切换模式时保留。
+        api_base_urls: {
+          chat_completions: 'https://relay.example.com/v1',
+          anthropic: 'https://relay.example.com'
+        },
+        protocol_rules: [{ pattern: 'custom-*', protocol: 'anthropic' }]
+      })
     })
   })
 
@@ -1741,44 +1844,21 @@ describe('EditAccountModal Command Code', () => {
     updateAccountMock.mockReset().mockResolvedValue({})
     checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
   })
-
-  it('preserves redacted credentials and corrects conflicting Go transport flags on save', async () => {
+  it.each(['go', 'payg'])('preserves a redacted key and enforces %s policy', async (mode) => {
     const account = buildAccount()
-    delete account.credentials.api_key
-    account.credentials.base_url = 'https://api.commandcode.ai'
-    account.credentials.pool_mode = true
+    account.platform = 'command_code'
+    account.credentials = { account_mode: mode, api_protocol: 'adaptive', base_url: mode === 'go' ? 'https://api.commandcode.ai' : 'https://api.commandcode.ai/provider/v1', pool_mode: true }
     account.credentials_status = { has_api_key: true }
-    account.extra = { provider: 'commandcode_go', commandcode_zdr: true, openai_passthrough: true, openai_responses_mode: 'force_responses' }
+    account.extra = { commandcode_zdr: true, unrelated: 'keep' }
     const wrapper = mountModal(account)
-    expect((wrapper.get('[data-testid="commandcode-preset-select"]').element as HTMLSelectElement).value).toBe('go')
-    expect(wrapper.find('[data-testid="commandcode-zdr"]').exists()).toBe(false)
-    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('accountId')).toBeUndefined()
-    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('syncCredentials')).toMatchObject({ api_key: '', extra: { provider: 'commandcode_go' } })
+    expect(wrapper.find('[data-testid="commandcode-zdr"]').exists()).toBe(mode !== 'go')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     await flushPromises()
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
-    const payload = updateAccountMock.mock.calls[0]?.[1]
+    const payload = updateAccountMock.mock.calls[0][1]
     expect(payload.credentials).not.toHaveProperty('api_key')
-    expect(payload.credentials).toMatchObject({ base_url: 'https://api.commandcode.ai', pool_mode: false, openai_capabilities: ['chat_completions'] })
-    expect(payload.extra).toMatchObject({ provider: 'commandcode_go', commandcode_zdr: false, openai_passthrough: false, openai_responses_supported: false, openai_responses_mode: 'force_chat_completions' })
-    wrapper.unmount()
-  })
-
-  it('requires a new key when switching provider families and saves the official ZDR option', async () => {
-    const account = buildAccount()
-    delete account.credentials.api_key
-    account.credentials_status = { has_api_key: true }
-    const wrapper = mountModal(account)
-    await wrapper.get('[data-testid="commandcode-preset-select"]').setValue('provider_openai')
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-    expect(updateAccountMock).not.toHaveBeenCalled()
-    await wrapper.get('input[type="password"]').setValue('new-command-code-key')
-    await wrapper.get('[data-testid="commandcode-zdr"]').setValue(true)
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-    expect(updateAccountMock).toHaveBeenCalledTimes(1)
-    expect(updateAccountMock.mock.calls[0]?.[1]).toMatchObject({ credentials: { api_key: 'new-command-code-key', base_url: 'https://api.commandcode.ai/provider' }, extra: { provider: 'commandcode', commandcode_zdr: true, openai_responses_supported: true } })
+    expect(payload.credentials).toMatchObject({ account_mode: mode, pool_mode: false })
+    expect(payload.extra).toMatchObject({ commandcode_zdr: mode !== 'go', unrelated: 'keep' })
     wrapper.unmount()
   })
 })

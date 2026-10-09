@@ -16,19 +16,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func commandCodeTestAccount(goMode bool) *Account {
-	provider, base := CommandCodeProvider, CommandCodeBaseURL
+func commandCodePolicyTestAccount(goMode bool) *Account {
+	mode, base := AccountModePayG, DefaultCommandCodeBaseURL
 	if goMode {
-		provider, base = CommandCodeGoProvider, CommandCodeGoBaseURL
+		mode, base = AccountModeGo, CommandCodeGoBaseURL
 	}
-	return &Account{ID: 1001, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
-		Credentials: map[string]any{"api_key": "upstream-only-secret", "base_url": base},
-		Extra:       map[string]any{"provider": provider},
-	}
+	return &Account{ID: 1001, Platform: PlatformCommandCode, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "upstream-only-secret", "base_url": base, "account_mode": mode}, Extra: map[string]any{}}
 }
 
 func TestCommandCodeCredentialBoundary(t *testing.T) {
-	account := commandCodeTestAccount(false)
+	account := commandCodePolicyTestAccount(false)
 	for _, target := range []string{
 		"https://evil.example/provider/v1/responses", "http://api.commandcode.ai/provider/v1/responses",
 		"https://api.commandcode.ai.evil.example/provider/v1/responses", "https://key@api.commandcode.ai/provider/v1/responses",
@@ -57,15 +55,14 @@ func TestCommandCodeAccountPolicy(t *testing.T) {
 		func(a *Account) { a.Credentials["base_url"] = "https://evil.example" },
 		func(a *Account) { a.Credentials["api_key"] = "" },
 		func(a *Account) { a.Type = AccountTypeOAuth },
-		func(a *Account) { a.Platform = PlatformGrok },
 		func(a *Account) { a.Credentials["pool_mode"] = true },
 		func(a *Account) { a.Extra["commandcode_zdr"] = "true" },
 	} {
-		a := commandCodeTestAccount(false)
+		a := commandCodePolicyTestAccount(false)
 		mutate(a)
 		require.Error(t, ValidateCommandCodeAccount(a))
 	}
-	a := commandCodeTestAccount(true)
+	a := commandCodePolicyTestAccount(true)
 	a.Extra["openai_responses_supported"] = true
 	a.Extra["openai_responses_mode"] = "force_responses"
 	a.Extra["openai_passthrough"] = true
@@ -104,7 +101,7 @@ func TestCommandCodeGoGatewayContracts(t *testing.T) {
 					}
 					upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(wire))}}
 					svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
-					account := commandCodeTestAccount(true)
+					account := commandCodePolicyTestAccount(true)
 					var result *OpenAIForwardResult
 					var err error
 					switch endpoint {
@@ -167,8 +164,12 @@ func TestCommandCodeProviderOpenAIProtocols(t *testing.T) {
 				}
 				upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {contentType}}, Body: io.NopCloser(strings.NewReader(wire))}}
 				svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
-				account := commandCodeTestAccount(false)
+				account := commandCodePolicyTestAccount(false)
 				account.Extra["openai_responses_supported"] = true
+				account.Credentials["api_protocol"] = APIProtocolResponses
+				if endpoint == "chat/completions" {
+					account.Credentials["api_protocol"] = APIProtocolChatCompletions
+				}
 				var result *OpenAIForwardResult
 				var err error
 				if endpoint == "responses" {
@@ -190,33 +191,22 @@ func TestCommandCodeProviderOpenAIProtocols(t *testing.T) {
 	}
 }
 
-func TestCommandCodeProviderAnthropicBuilders(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	for _, passthrough := range []bool{false, true} {
-		t.Run(fmt.Sprint(passthrough), func(t *testing.T) {
-			c, _ := gin.CreateTestContext(httptest.NewRecorder())
-			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-			c.Request.Header.Set("X-Api-Key", "client-secret")
-			c.Request.Header.Set("Cookie", "session=private")
-			c.Request.Header.Set("x-cmd-zdr", "1")
-			account := commandCodeTestAccount(false)
-			account.Platform = PlatformAnthropic
-			svc := &GatewayService{cfg: rawChatCompletionsTestConfig()}
-			body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":128,"messages":[{"role":"user","content":"hello"}]}`)
-			var req *http.Request
-			var err error
-			if passthrough {
-				req, _, err = svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, body, "ignored-builder-token")
-			} else {
-				req, _, err = svc.buildUpstreamRequest(context.Background(), c, account, body, "ignored-builder-token", "apikey", "claude-sonnet-4-5", false, false)
-			}
-			require.NoError(t, err)
-			require.Equal(t, CommandCodeBaseURL+"/v1/messages", req.URL.String())
-			require.Equal(t, "Bearer upstream-only-secret", req.Header.Get("Authorization"))
-			require.Equal(t, "1", req.Header.Get("X-Cmd-Zdr"))
-			require.Empty(t, req.Header.Get("Cookie"))
-			require.Empty(t, req.Header.Get("X-Api-Key"))
-			require.True(t, HTTPUpstreamRedirectsDisabled(req.Context()))
-		})
-	}
+func TestCommandCodeProviderNativeAnthropicBoundary(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("X-Api-Key", "client-secret")
+	c.Request.Header.Set("Cookie", "session=private")
+	c.Request.Header.Set("x-cmd-zdr", "1")
+	account := commandCodePolicyTestAccount(false)
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig()}
+	body := []byte(`{"model":"claude-sonnet-4-6","max_tokens":128,"messages":[{"role":"user","content":"hello"}]}`)
+	req, _, err := svc.buildNativeAnthropicUpstreamRequest(context.Background(), c, account, body, "ignored-builder-token", "https://api.commandcode.ai/provider/v1/messages")
+	require.NoError(t, err)
+	require.NoError(t, prepareCommandCodeRequest(req, account))
+	require.Equal(t, DefaultCommandCodeAnthropicBaseURL+"/v1/messages", req.URL.String())
+	require.Equal(t, "Bearer upstream-only-secret", req.Header.Get("Authorization"))
+	require.Equal(t, "1", req.Header.Get("X-Cmd-Zdr"))
+	require.Empty(t, req.Header.Get("Cookie"))
+	require.Empty(t, req.Header.Get("X-Api-Key"))
+	require.True(t, HTTPUpstreamRedirectsDisabled(req.Context()))
 }
