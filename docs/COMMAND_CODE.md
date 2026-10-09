@@ -1,36 +1,35 @@
 # Command Code accounts
 
-This fork preserves its existing providers and adds opt-in Command Code accounts. No database migration or separate relay process is required. Existing accounts are not converted.
+This fork preserves its existing providers and offers opt-in Command Code accounts through the built-in platform. No separate relay process is required. Existing accounts are not automatically converted.
 
 ## Configure an account
 
-In **Accounts → Add account**, select the **Command Code Go** card for a Go subscription, or choose a Provider preset for another supported plan. The preset selects the appropriate platform and API-key type:
+In **Accounts → Add account**, select the **Command Code** platform and an API-key account. Choose Go for a Go subscription, or the Provider mode for a plan with public API access. Both modes use platform `command_code`; `credentials.account_mode` is `go` or `payg`. The `payg` value identifies the Provider transport, not a claim that the subscription has no included credits.
 
-| Preset | Platform | Base URL | Upstream protocol |
-| --- | --- | --- | --- |
-| Command Code Provider (OpenAI) | OpenAI | `https://api.commandcode.ai/provider` | Responses or Chat Completions |
-| Command Code Provider (Anthropic) | Anthropic | `https://api.commandcode.ai/provider` | Messages |
-| Command Code Go (experimental) | OpenAI | `https://api.commandcode.ai` | CLI `/alpha/generate` |
+| Mode | Fixed origin | Upstream protocol |
+| --- | --- | --- |
+| Go (experimental) | `https://api.commandcode.ai` | CLI `/alpha/generate` |
+| Provider | `https://api.commandcode.ai/provider` | Messages, Responses or Chat Completions, selected by model |
 
-Enter the API key from Command Code Studio, select the appropriate proxy and group, and configure model mapping and prices. Public model discovery does not require the key. It filters the official catalog by protocol, preserves full model IDs and does not prove that a subscription can use every listed model. Discovery failure is reported; it does not substitute OpenAI's catalog or infer free prices.
+Enter the API key from Command Code Studio, select the appropriate proxy and group, and configure model mapping and explicit prices. Go uses the public model catalog without sending its key; Provider uses the shared platform catalog and protocol routing. Discovery preserves full model IDs and does not prove subscription entitlement. Failure is reported rather than substituting another provider's catalog or assuming free prices. Choose an explicit model for account tests, which generate a small response and can consume credits.
 
-For an OpenAI Provider account, the Responses mode and supported capabilities control Responses/compatibility routing; native Chat Completions input uses the official Chat endpoint. Models that support only Messages require the Anthropic preset. Choose an explicit model for an account test. Tests generate a small response and therefore can consume credits.
+The old OpenAI/Anthropic Provider presets and separate Go quota dialog were removed in v0.2.15+g8. Provider protocol routing and account usage now use the upstream platform components. No legacy accounts existed in the audited deployment; the upgrade does not silently convert legacy `extra.provider` accounts. A manually maintained legacy account must be recreated on the Command Code platform with its original key, group, proxy and prices reviewed.
 
-[Official Provider documentation](https://commandcode.ai/docs/provider) states that GOAT, Pro, Max and Team API calls consume their plan credits. The Go plan does not support this official API. The experimental Go adapter uses an internal CLI protocol, which may change independently. There is no automatic fallback between these two modes and no fabricated token-refresh flow. A real subscription test is required before relying on the Go adapter in production.
+[Official Provider documentation](https://commandcode.ai/docs/provider) excludes Go from public Provider API access. Keep the Go CLI adapter for that plan; its private protocol may change independently. Other eligible subscriptions use the Provider transport and their applicable credits. There is no automatic fallback between these modes or fabricated token-refresh flow. A real subscription test remains required before relying on the Go adapter in production.
 
 Provider accounts can require zero data retention with the account setting or request header `x-cmd-zdr: 1`. Invalid or ambiguous headers are rejected. Go does not support this guarantee and rejects requests requiring it.
 
 ## Go quota and exhausted credit
 
-Saved Go accounts offer **Check quota** in the edit dialog. It reads `/alpha/billing/credits` with that account's saved key, proxy and transport, displaying monthly credit and five-hour/weekly windows. The request has a 20-second deadline and a bounded response; it never imports browser cookies, accepts an alternate origin or falls back to another account's key. Missing values remain unavailable, distinct from a measured zero. Save credential changes before checking. Quota snapshots do not automatically change scheduling based on rounded balances.
+Go and Provider share the platform's account usage and balance components. The read-only workflow first resolves the organization with `/alpha/whoami`, then queries credits, subscription and usage summary as needed. It sends `orgId` only for an organization account. It uses the saved account key, proxy and transport, fixed official HTTPS endpoints, bounded responses and request deadlines; redirects are disabled. Missing subscription or usage data remains unavailable rather than being interpreted as a zero balance or unlimited allowance.
 
-The official structured `BAD_REQUEST` insufficient-credit rejection stops the affected Command Code account and allows bounded failover before client output. Verify or replenish the subscription before manually re-enabling the account. Generic validation errors do not disable accounts. A rejected response carrying observed usage is accounted for without replay. Go's connection test uses a 512-token output budget to avoid the false truncation seen with a 64-token test on reasoning models.
+Rolling five-hour and weekly windows, monthly credits, purchased credits and organization spending limits retain their distinct meanings. Purchased credits can exempt the account from subscription windows; a model-scoped spending cap does not disable unrelated models. The structured Go insufficient-credit rejection enters the shared recoverable balance-stop workflow, instead of permanently disabling the account. Unrelated validation errors do not trigger that classification. Before any client output, bounded failover remains available; observed usage must be settled and cannot be replayed. The Go account test keeps a 512-token budget to avoid false truncation on reasoning models.
 
-This update follows Fwind43/sub2api commits `c27038d9f5bd4f9b98fc7911f11948617efbdd91` and `74417b974a7f78d0dc5ea6c9407759a6cb20d799`, and CPA-CommandCode-Provider `36c60d52189c57d73ae3379218fa9c1c769b9eaf`. Transport and billing remain native to this fork; no sidecar or upstream script is installed.
+The retained Go transport was originally reviewed against Fwind43/sub2api commits `c27038d9f5bd4f9b98fc7911f11948617efbdd91` and `74417b974a7f78d0dc5ea6c9407759a6cb20d799`, and CPA-CommandCode-Provider `36c60d52189c57d73ae3379218fa9c1c769b9eaf`. Transport and billing remain native to this fork; no sidecar or upstream script is installed.
 
 ## Protocol and accounting boundaries
 
-The Go adapter independently converts supported text, image input, reasoning effort and function tools to the CLI wire format and back through the existing Chat Completions, Responses and Messages adapters. It rejects unsupported request semantics before conversion; it does not silently emulate server-side state, compact requests, provider-hosted tools or structured-output guarantees. Use the official Provider preset when its broader API features are required.
+The Go adapter independently converts supported text, image input, reasoning effort and function tools to the CLI wire format and back through the existing Chat Completions, Responses and Messages adapters. It rejects unsupported request semantics before conversion; it does not silently emulate server-side state, compact requests, provider-hosted tools or structured-output guarantees. Use the Provider mode when its broader API features are required.
 
 Credentials are restricted to Command Code's fixed HTTPS origin and endpoint set. Credential-bearing requests never follow redirects. Incoming authorization, cookies and account header overrides cannot replace the selected account's key. The public model catalog sends neither account keys nor cookies. Go uses a fixed CLI identity and does not apply ordinary custom header overrides. No browser cookie import, local OAuth listener, telemetry fingerprint emulation, shell execution or third-party runtime dependency was added.
 
