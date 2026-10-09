@@ -135,7 +135,7 @@ type SSEPingFormat string
 
 const (
 	// SSEPingFormatClaude is the Claude/Anthropic SSE ping format
-	SSEPingFormatClaude SSEPingFormat = "data: {\"type\": \"ping\"}\n\n"
+	SSEPingFormatClaude SSEPingFormat = "event: ping\ndata: {\"type\": \"ping\"}\n\n"
 	// SSEPingFormatNone indicates no ping should be sent (e.g., OpenAI has no ping spec)
 	SSEPingFormatNone SSEPingFormat = ""
 	// SSEPingFormatComment is an SSE comment ping for OpenAI/Codex CLI clients
