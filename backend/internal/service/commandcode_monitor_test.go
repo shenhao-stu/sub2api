@@ -56,7 +56,7 @@ func TestMonitorCommandCodeGoDoesNotDiscardUnsupportedSemantics(t *testing.T) {
 			wire := `{"type":"text-delta","text":"wrong-success"}` + "\n" + `{"type":"finish","finishReason":"stop","usage":{"inputTokens":3,"outputTokens":2}}` + "\n"
 			upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(wire))}}
 			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
-			account := commandCodeTestAccount(true)
+			account := commandCodePolicyTestAccount(true)
 			if tc.path == "/v1/messages" {
 				_, err = svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
 			} else {
@@ -74,7 +74,7 @@ func TestMonitorCommandCodeGoRejectsZDRHeaderOverrides(t *testing.T) {
 		req, err := http.NewRequest(http.MethodPost, CommandCodeGoBaseURL+"/alpha/generate", nil)
 		require.NoError(t, err)
 		req.Header[spelling] = []string{"1"}
-		require.Error(t, prepareCommandCodeRequest(req, commandCodeTestAccount(true)), spelling)
+		require.Error(t, prepareCommandCodeRequest(req, commandCodePolicyTestAccount(true)), spelling)
 	}
 }
 
@@ -91,7 +91,7 @@ func TestMonitorCommandCodeGoBridgePreservesCoreInputs(t *testing.T) {
 			wire := `{"type":"text-delta","text":"ok"}` + "\n" + `{"type":"finish","finishReason":"stop","usage":{"inputTokens":3,"outputTokens":2}}` + "\n"
 			upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(wire))}}
 			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
-			account := commandCodeTestAccount(true)
+			account := commandCodePolicyTestAccount(true)
 			var err error
 			if protocol == "responses" {
 				_, err = svc.Forward(context.Background(), c, account, []byte(input))
@@ -114,7 +114,7 @@ func TestMonitorCommandCodeGoMessagesPreservesTemperatureAcrossModelAlias(t *tes
 	wire := `{"type":"finish","finishReason":"stop","usage":{"inputTokens":3,"outputTokens":2}}` + "\n"
 	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(wire))}}
 	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
-	account := commandCodeTestAccount(true)
+	account := commandCodePolicyTestAccount(true)
 	account.Credentials["model_mapping"] = map[string]any{"gpt-5-alias": "glm-5.3-flash"}
 	_, err := svc.ForwardAsAnthropic(context.Background(), c, account, []byte(input), "", "")
 	require.NoError(t, err, rec.Body.String())
@@ -137,7 +137,7 @@ func TestMonitorCommandCodeGoRejectsResponsesShapeOnChatURL(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 	upstream := &httpUpstreamRecorder{}
 	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
-	_, err := svc.ForwardAsChatCompletions(context.Background(), c, commandCodeTestAccount(true), body, "", "")
+	_, err := svc.ForwardAsChatCompletions(context.Background(), c, commandCodePolicyTestAccount(true), body, "", "")
 	require.Error(t, err)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	require.Nil(t, upstream.lastReq)
@@ -154,7 +154,7 @@ func TestMonitorCommandCodeGoClientPolicyFailsBeforeTransport(t *testing.T) {
 			c.Request.Header.Set("x-cmd-zdr", hdr)
 			upstream := &httpUpstreamRecorder{}
 			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
-			_, err := svc.ForwardAsChatCompletions(context.Background(), c, commandCodeTestAccount(true), input, "", "")
+			_, err := svc.ForwardAsChatCompletions(context.Background(), c, commandCodePolicyTestAccount(true), input, "", "")
 			require.Error(t, err)
 			require.Equal(t, http.StatusBadRequest, rec.Code)
 			require.Nil(t, upstream.lastReq)
@@ -184,7 +184,7 @@ func TestMonitorCommandCodeFailuresRetainCacheCreation(t *testing.T) {
 					`{"type":"error","message":"private-upstream-error"}` + "\n"
 				upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(wire))}}
 				svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
-				account := commandCodeTestAccount(true)
+				account := commandCodePolicyTestAccount(true)
 				var result *OpenAIForwardResult
 				var err error
 				switch endpoint {
@@ -244,7 +244,7 @@ func TestMonitorCommandCodePartialJSONWithoutUsageDoesNotReplay(t *testing.T) {
 				}
 				upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(reader)}}
 				svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
-				account := commandCodeTestAccount(true)
+				account := commandCodePolicyTestAccount(true)
 				var result *OpenAIForwardResult
 				var err error
 				switch endpoint {

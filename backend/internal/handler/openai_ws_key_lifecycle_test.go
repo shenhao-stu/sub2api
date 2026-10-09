@@ -15,6 +15,10 @@ type continuationWSKeyRepo struct {
 	changed atomic.Bool
 }
 
+func (r *continuationWSKeyRepo) GetByKeyForAuth(ctx context.Context, key string) (*service.APIKey, error) {
+	return r.GetByKey(ctx, key)
+}
+
 func (r *continuationWSKeyRepo) GetByKey(context.Context, string) (*service.APIKey, error) {
 	k := *r.key
 	if r.changed.Load() {

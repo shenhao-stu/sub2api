@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 )
 
 const commandCodeModelCatalogLimit = 2 << 20
@@ -46,19 +45,9 @@ func (s *AccountTestService) FetchCommandCodeAccountModels(ctx context.Context, 
 }
 
 func validateCommandCodeCatalogAccount(account *Account) error {
-	if !account.IsCommandCode() || account.Type != AccountTypeAPIKey ||
-		(account.Platform != PlatformOpenAI && account.Platform != PlatformAnthropic) {
-		return newUpstreamModelSyncConfigError("Command Code model discovery requires a compatible API key account", nil)
-	}
-	expected := CommandCodeBaseURL
-	if account.IsCommandCodeGo() {
-		expected = CommandCodeGoBaseURL
-		if account.Platform != PlatformOpenAI {
-			return newUpstreamModelSyncConfigError("Command Code Go requires the OpenAI protocol", nil)
-		}
-	}
-	if strings.TrimRight(strings.TrimSpace(account.GetCredential("base_url")), "/") != expected {
-		return newUpstreamModelSyncConfigError("Command Code requires its fixed official base URL", nil)
+	if !account.IsCommandCodeGo() || account.Type != AccountTypeAPIKey ||
+		strings.TrimRight(strings.TrimSpace(account.GetOpenAIBaseURL()), "/") != CommandCodeGoBaseURL {
+		return errors.New("command code Go catalog requires the official base URL")
 	}
 	return nil
 }
@@ -68,7 +57,7 @@ func (s *AccountTestService) fetchCommandCodeModelCatalog(ctx context.Context, a
 		return nil, newUpstreamModelSyncConfigError("Command Code model discovery is unavailable", nil)
 	}
 	if err := validateCommandCodeCatalogAccount(account); err != nil {
-		return nil, err
+		return nil, newUpstreamModelSyncConfigError(err.Error(), nil)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
@@ -98,16 +87,6 @@ func (s *AccountTestService) fetchCommandCodeModelCatalog(ctx context.Context, a
 	return body, nil
 }
 
-func commandCodeAccountEndpoint(account *Account) string {
-	if account.Platform == PlatformAnthropic {
-		return "/messages"
-	}
-	if !account.IsCommandCodeGo() && openai_compat.ShouldUseResponsesAPI(account.Extra) {
-		return "/responses"
-	}
-	return "/chat/completions"
-}
-
 func filterCommandCodeModelCatalog(body []byte, account *Account) ([]byte, error) {
 	var catalog struct {
 		Data []json.RawMessage `json:"data"`
@@ -117,7 +96,6 @@ func filterCommandCodeModelCatalog(body []byte, account *Account) ([]byte, error
 	}
 	models := make([]map[string]json.RawMessage, 0, len(catalog.Data))
 	seen := make(map[string]bool, len(catalog.Data))
-	endpoint := commandCodeAccountEndpoint(account)
 	for _, raw := range catalog.Data {
 		var model struct {
 			ID                 string   `json:"id"`
@@ -133,11 +111,7 @@ func filterCommandCodeModelCatalog(body []byte, account *Account) ([]byte, error
 		compatible := false
 		for _, supported := range model.SupportedEndpoints {
 			supported = strings.TrimPrefix(strings.TrimPrefix(supported, "/provider"), "/v1")
-			if account.IsCommandCodeGo() {
-				compatible = compatible || supported == "/chat/completions" || supported == "/responses" || supported == "/messages"
-			} else {
-				compatible = compatible || supported == endpoint
-			}
+			compatible = compatible || supported == "/chat/completions" || supported == "/responses" || supported == "/messages"
 		}
 		if !compatible || seen[model.ID] {
 			continue

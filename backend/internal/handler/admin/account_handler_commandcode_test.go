@@ -24,8 +24,8 @@ func commandCodeModelsRouter(account service.Account, upstream service.HTTPUpstr
 }
 
 func TestAccountHandlerGetAvailableModels_CommandCodeDoesNotFallBack(t *testing.T) {
-	account := service.Account{ID: 87, Type: service.AccountTypeAPIKey, Platform: service.PlatformOpenAI,
-		Credentials: map[string]any{"base_url": service.CommandCodeGoBaseURL, "api_key": "private-test-key"},
+	account := service.Account{ID: 87, Type: service.AccountTypeAPIKey, Platform: service.PlatformCommandCode,
+		Credentials: map[string]any{"account_mode": service.AccountModeGo, "base_url": service.CommandCodeGoBaseURL, "api_key": "private-test-key"},
 		Extra:       map[string]any{"provider": service.CommandCodeGoProvider}}
 	upstream := &syncUpstreamHTTPUpstream{resp: &http.Response{StatusCode: 503, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("private-upstream-details"))}}
 	router := commandCodeModelsRouter(account, upstream)
@@ -41,9 +41,9 @@ func TestAccountHandlerCommandCodePreviewNeedsNoKeyAndFiltersProtocol(t *testing
 		name, input string
 		status      int
 	}{
-		{"public", `{"platform":"anthropic","type":"apikey","base_url":"https://api.commandcode.ai/provider","extra":{"provider":"commandcode"}}`, 200},
+		{"public", `{"platform":"command_code","type":"apikey","base_url":"https://api.commandcode.ai","account_mode":"go"}`, 200},
 		{"ordinary_requires_key", `{"platform":"anthropic","type":"apikey","base_url":"https://api.anthropic.com"}`, 400},
-		{"foreign_origin_rejected", `{"platform":"anthropic","type":"apikey","base_url":"https://attacker.invalid","extra":{"provider":"commandcode"}}`, 400},
+		{"foreign_origin_rejected", `{"platform":"command_code","type":"apikey","base_url":"https://attacker.invalid","account_mode":"go"}`, 400},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			catalog := `{"data":[{"id":"vendor/messages","context_length":12345,"supported_endpoints":["/messages"]},{"id":"vendor/chat","supported_endpoints":["/chat/completions"]}]}`
@@ -59,7 +59,7 @@ func TestAccountHandlerCommandCodePreviewNeedsNoKeyAndFiltersProtocol(t *testing
 					Data service.UpstreamModelCatalog `json:"data"`
 				}
 				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
-				require.Equal(t, []string{"vendor/messages"}, response.Data.Models)
+				require.Equal(t, []string{"vendor/chat", "vendor/messages"}, response.Data.Models)
 				require.EqualValues(t, 12345, response.Data.Metadata["vendor/messages"].ContextWindow)
 			}
 		})

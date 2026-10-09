@@ -25,6 +25,10 @@ type alphaSearchAccountStateRepo struct {
 	lastError     string
 }
 
+func (r *alphaSearchAccountStateRepo) UpdateExtra(context.Context, int64, map[string]any) error {
+	return nil
+}
+
 func (r *alphaSearchAccountStateRepo) SetError(_ context.Context, _ int64, errorMsg string) error {
 	r.setErrorCalls++
 	r.lastError = errorMsg

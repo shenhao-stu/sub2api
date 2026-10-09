@@ -1226,7 +1226,7 @@ func (h *AccountHandler) Update(c *gin.Context) {
 // 网关会按"现状即证据"默认走 Responses。
 func (h *AccountHandler) scheduleOpenAIResponsesProbe(account *service.Account) {
 	if account == nil || account.Type != service.AccountTypeAPIKey ||
-		(account.Platform != service.PlatformOpenAI && !service.IsCNProvider(account.Platform)) {
+		(account.Platform != service.PlatformOpenAI && !account.RoutesProtocolByInbound()) {
 		return
 	}
 	if h.accountTestService == nil {
@@ -2803,7 +2803,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		response.NotFound(c, "Account not found")
 		return
 	}
-	if account.IsCommandCode() {
+	if account.IsCommandCodeGo() {
 		models, err := h.accountTestService.FetchCommandCodeAccountModels(c.Request.Context(), account)
 		if err != nil {
 			response.Error(c, http.StatusBadGateway, err.Error())
@@ -2903,10 +2903,9 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		return
 	}
 
-	// Handle Antigravity accounts: return Claude + Gemini models
+	// Explicit account mappings expose their request-side names to connectivity tests.
 	if account.Platform == service.PlatformAntigravity {
-		// 直接复用 antigravity.DefaultModels()，与 /v1/models 端点保持同步
-		response.Success(c, antigravity.DefaultModels())
+		response.Success(c, antigravityAccountTestModels(account.Credentials["model_mapping"]))
 		return
 	}
 
@@ -3007,6 +3006,48 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	response.Success(c, models)
 }
 
+// antigravityAccountTestModels uses the stored mapping rather than GetModelMapping,
+// which supplies defaults and compatibility aliases that the administrator did not configure.
+func antigravityAccountTestModels(rawMapping any) []antigravity.ClaudeModel {
+	var mappedIDs []string
+	switch mapping := rawMapping.(type) {
+	case map[string]any:
+		for id := range mapping {
+			if strings.TrimSpace(id) != "" {
+				mappedIDs = append(mappedIDs, id)
+			}
+		}
+	case map[string]string:
+		for id := range mapping {
+			if strings.TrimSpace(id) != "" {
+				mappedIDs = append(mappedIDs, id)
+			}
+		}
+	}
+	if len(mappedIDs) == 0 {
+		return antigravity.DefaultModels()
+	}
+
+	sort.Strings(mappedIDs)
+	defaultByID := make(map[string]antigravity.ClaudeModel)
+	for _, model := range antigravity.DefaultModels() {
+		defaultByID[model.ID] = model
+	}
+	models := make([]antigravity.ClaudeModel, 0, len(mappedIDs))
+	for _, id := range mappedIDs {
+		if model, ok := defaultByID[id]; ok {
+			models = append(models, model)
+			continue
+		}
+		models = append(models, antigravity.ClaudeModel{
+			ID:          id,
+			Type:        "model",
+			DisplayName: id,
+		})
+	}
+	return models
+}
+
 // SyncUpstreamModels handles syncing live supported models from an account's upstream.
 // POST /api/v1/admin/accounts/:id/models/sync-upstream
 func (h *AccountHandler) SyncUpstreamModels(c *gin.Context) {
@@ -3057,6 +3098,7 @@ func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 	var req struct {
 		Platform     string            `json:"platform" binding:"required"`
 		Type         string            `json:"type" binding:"required"`
+		AccountMode  string            `json:"account_mode"`
 		BaseURL      string            `json:"base_url"`
 		APIKey       string            `json:"api_key"`
 		ModelMapping map[string]string `json:"model_mapping"`
@@ -3078,10 +3120,11 @@ func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 		Credentials: map[string]any{
 			"api_key":       req.APIKey,
 			"base_url":      req.BaseURL,
+			"account_mode":  req.AccountMode,
 			"model_mapping": modelMapping,
 		},
 	}
-	if !tempAccount.IsCommandCode() && strings.TrimSpace(req.APIKey) == "" {
+	if !tempAccount.IsCommandCodeGo() && strings.TrimSpace(req.APIKey) == "" {
 		response.BadRequest(c, "API key is required")
 		return
 	}

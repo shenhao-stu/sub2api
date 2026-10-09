@@ -1,6 +1,11 @@
 import { defineComponent } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  BUILTIN_PLATFORM_CATALOG,
+  resetPlatformCatalog,
+  setPlatformCatalog,
+} from '@/constants/platformCatalog'
 
 const {
   createAccountMock,
@@ -215,65 +220,28 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
   afterEach(() => vi.useRealTimers())
 
-  it.each([
-    ['provider_openai', 'openai', 'commandcode', 'https://api.commandcode.ai/provider'],
-    ['provider_anthropic', 'anthropic', 'commandcode', 'https://api.commandcode.ai/provider'],
-    ['go', 'openai', 'commandcode_go', 'https://api.commandcode.ai'],
-  ])('creates the %s preset with a fixed host and the selected protocol', async (preset, platform, provider, baseUrl) => {
+  it.each(['payg', 'go'])('creates Command Code %s through one platform form', async (mode) => {
     const wrapper = mountModal()
-    await wrapper.get('[data-testid="commandcode-preset-select"]').setValue(preset)
+    await wrapper.get('[data-testid="platform-button-command_code"]').trigger('click')
+    if (mode === 'go') await selectButtonByText(wrapper, 'admin.accounts.commandCode.go')
     await flushPromises()
     await wrapper.get('form#create-account-form input[type="text"]').setValue('Command Code account')
     await wrapper.get('form#create-account-form input[type="password"]').setValue('command-code-key')
-    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('syncCredentials')).toMatchObject({ api_key: '', extra: { provider } })
+    expect(wrapper.find('[data-testid="commandcode-preset-select"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="commandcode-zdr"]').exists()).toBe(mode !== 'go')
+    if (mode === 'go') expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('syncCredentials')).toMatchObject({ platform: 'command_code', account_mode: 'go', api_key: '' })
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
     expect(createAccountMock).toHaveBeenCalledTimes(1)
-    const payload = createAccountMock.mock.calls[0]?.[0]
-    expect(payload.credentials.pool_mode).toBe(false)
-    expect(payload.extra.openai_apikey_responses_websockets_v2_mode).toBe('off')
-    expect(wrapper.find('[data-testid="create-openai-ws-mode"]').exists()).toBe(false)
-    expect(payload).toMatchObject({ platform, type: 'apikey', credentials: { base_url: baseUrl, api_key: 'command-code-key' }, extra: { provider, commandcode_zdr: false } })
-    if (preset === 'go') {
-      expect(payload.extra).toMatchObject({ openai_responses_mode: 'force_chat_completions', openai_responses_supported: false, openai_passthrough: false, openai_apikey_responses_websockets_v2_mode: 'off' })
-      expect(payload.credentials).toMatchObject({ pool_mode: false, openai_capabilities: ['chat_completions'] })
-    } else if (platform === 'openai') {
-      expect(payload.extra.openai_responses_supported).toBe(true)
-      expect(payload.extra.openai_responses_mode ?? 'auto').toBe('auto')
-    } else {
-      expect(payload.extra.anthropic_apikey_auth_scheme).toBe('authorization_bearer')
-    }
+    expect(createAccountMock.mock.calls[0][0]).toMatchObject({ platform: 'command_code', type: 'apikey', credentials: { account_mode: mode, pool_mode: false, api_key: 'command-code-key', base_url: mode === 'go' ? 'https://api.commandcode.ai' : 'https://api.commandcode.ai/provider/v1' }, extra: { commandcode_zdr: false } })
     wrapper.unmount()
   })
 
-  it('clears an entered key when selecting another upstream preset', async () => {
+  it('clears a key when changing the credential destination to Command Code', async () => {
     const wrapper = await submitApiKeyAccount('openai')
-    await wrapper.get('[data-testid="commandcode-preset-select"]').setValue('go')
+    await wrapper.get('[data-testid="platform-button-command_code"]').trigger('click')
     await flushPromises()
     expect((wrapper.get('input[type="password"]').element as HTMLInputElement).value).toBe('')
-    wrapper.unmount()
-  })
-
-  it('uses the Command Code catalog instead of OpenAI defaults and retains explicit model choices', async () => {
-    const wrapper = mountModal()
-    await selectButtonByText(wrapper, 'OpenAI')
-    await selectButtonByText(wrapper, 'API Key')
-    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('modelValue').length).toBeGreaterThan(0)
-    await wrapper.get('[data-testid="commandcode-go-action"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props()).toMatchObject({ modelValue: [], suggestedModels: [] })
-    expect(wrapper.text()).not.toContain('admin.accounts.openai.baseUrlHint')
-    expect(wrapper.text()).not.toContain('admin.accounts.openai.apiKeyHint')
-    expect(wrapper.text()).not.toContain('admin.accounts.headerOverride.title')
-    expect(wrapper.text()).not.toContain('admin.accounts.openai.imagesUrlToB64Json')
-    await wrapper.get('[data-testid="model-whitelist-selector"]').trigger('click')
-    await selectButtonByText(wrapper, 'admin.accounts.modelMapping')
-    await selectButtonByText(wrapper, 'admin.accounts.modelWhitelist')
-    await wrapper.get('input[type="password"]').setValue('test-commandcode-key')
-    await wrapper.get('[data-testid="commandcode-go-action"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('modelValue')).toEqual(['public-glm'])
-    expect((wrapper.get('input[type="password"]').element as HTMLInputElement).value).toBe('test-commandcode-key')
     wrapper.unmount()
   })
 
@@ -532,6 +500,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
         { pattern: 'gpt-*', protocol: 'responses' },
         { pattern: 'muse-spark-*', protocol: 'responses' },
         { pattern: 'claude-*', protocol: 'anthropic' },
+        { pattern: 'qwen3.8-max', protocol: 'chat_completions' },
         { pattern: 'qwen*', protocol: 'anthropic' }
       ]
     })
@@ -565,6 +534,183 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
         { pattern: 'qwen*', protocol: 'anthropic' }
       ]
     })
+  })
+
+  describe('providers using the generic form', () => {
+    const serverOnlyProviders = {
+      platforms: [
+        ...BUILTIN_PLATFORM_CATALOG.platforms,
+        {
+          id: 'acme_router',
+          display_name: 'Acme Router',
+          gateway: 'openai',
+          cn_provider: false,
+          multi_protocol: {
+            default_mode: 'standard',
+            routing: 'by_model',
+            modes: [
+              {
+                mode: 'standard',
+                base_urls: {
+                  chat_completions: 'https://api.acme-router.example/provider/v1',
+                  anthropic: 'https://api.acme-router.example/provider',
+                },
+                protocol_rules: [{ pattern: 'claude-*', protocol: 'anthropic' }],
+              },
+              {
+                mode: 'team',
+                base_urls: {
+                  chat_completions: 'https://team.acme-router.example/provider/v1',
+                  anthropic: 'https://team.acme-router.example/provider',
+                },
+                protocol_rules: [{ pattern: 'sonnet-*', protocol: 'anthropic' }],
+              },
+            ],
+          },
+        },
+        {
+          id: 'acme_chat',
+          display_name: 'Acme Chat',
+          gateway: 'openai',
+          cn_provider: false,
+          multi_protocol: {
+            default_mode: 'pass',
+            routing: 'by_inbound',
+            modes: [{ mode: 'pass', base_urls: { chat_completions: 'https://api.acme-chat.example/v1' } }],
+          },
+        },
+      ],
+      composite_precedence: [...BUILTIN_PLATFORM_CATALOG.composite_precedence, 'acme_router', 'acme_chat'],
+    }
+
+    beforeEach(() => {
+      setPlatformCatalog(serverOnlyProviders)
+    })
+
+    afterEach(() => {
+      resetPlatformCatalog()
+    })
+
+    it('creates a by-model provider account from its profile defaults', async () => {
+      const wrapper = mountModal()
+      await wrapper.get('[data-testid="platform-button-acme_router"]').trigger('click')
+      await wrapper.get('form#create-account-form input[type="text"]').setValue('cc')
+      await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-cc')
+
+      await wrapper.get('form#create-account-form').trigger('submit.prevent')
+      await flushPromises()
+
+      expect(createAccountMock).toHaveBeenCalledTimes(1)
+      const payload = createAccountMock.mock.calls[0]?.[0]
+      expect(payload?.platform).toBe('acme_router')
+      expect(payload?.type).toBe('apikey')
+      expect(payload?.credentials).toMatchObject({
+        api_key: 'sk-cc',
+        account_mode: 'standard',
+        api_protocol: 'adaptive',
+        base_url: 'https://api.acme-router.example/provider/v1',
+        api_base_urls: {
+          chat_completions: 'https://api.acme-router.example/provider/v1',
+          anthropic: 'https://api.acme-router.example/provider',
+        },
+        protocol_rules: [{ pattern: 'claude-*', protocol: 'anthropic' }],
+      })
+      // 该供应商没有原生 Responses 端点，不下发 responses 基址。
+      expect(payload?.credentials?.api_base_urls).not.toHaveProperty('responses')
+      // 没有内置模型列表时不预填白名单，新账号不限制模型。
+      expect(payload?.credentials).not.toHaveProperty('model_mapping')
+    })
+
+    it('switches endpoints and default rules with the provider mode', async () => {
+      const wrapper = mountModal()
+      await wrapper.get('[data-testid="platform-button-acme_router"]').trigger('click')
+      await wrapper.get('[data-testid="generic-account-mode"]').findAll('button')[1].trigger('click')
+      await wrapper.get('form#create-account-form input[type="text"]').setValue('cc-team')
+      await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-cc')
+
+      await wrapper.get('form#create-account-form').trigger('submit.prevent')
+      await flushPromises()
+
+      expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+        account_mode: 'team',
+        base_url: 'https://team.acme-router.example/provider/v1',
+        api_base_urls: {
+          chat_completions: 'https://team.acme-router.example/provider/v1',
+          anthropic: 'https://team.acme-router.example/provider',
+        },
+        protocol_rules: [{ pattern: 'sonnet-*', protocol: 'anthropic' }],
+      })
+    })
+
+    it('creates a by-inbound provider account without protocol rules', async () => {
+      const wrapper = mountModal()
+      await wrapper.get('[data-testid="platform-button-acme_chat"]').trigger('click')
+      // 单一接入模式时不显示模式选择。
+      expect(wrapper.find('[data-testid="generic-account-mode"]').exists()).toBe(false)
+      await wrapper.get('form#create-account-form input[type="text"]').setValue('acme-chat')
+      await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-acme-chat')
+
+      await wrapper.get('form#create-account-form').trigger('submit.prevent')
+      await flushPromises()
+
+      const credentials = createAccountMock.mock.calls[0]?.[0]?.credentials
+      expect(credentials).toMatchObject({
+        account_mode: 'pass',
+        api_protocol: 'adaptive',
+        base_url: 'https://api.acme-chat.example/v1',
+        api_base_urls: { chat_completions: 'https://api.acme-chat.example/v1' },
+      })
+      expect(credentials).not.toHaveProperty('protocol_rules')
+    })
+
+    it('falls back to the Kimi default mode after a server-only provider', async () => {
+      const wrapper = mountModal()
+      await wrapper.get('[data-testid="platform-button-acme_router"]').trigger('click')
+      await selectButtonByText(wrapper, 'Kimi')
+      await wrapper.get('form#create-account-form input[type="text"]').setValue('kimi')
+      await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-kimi')
+
+      await wrapper.get('form#create-account-form').trigger('submit.prevent')
+      await flushPromises()
+
+      expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+        account_mode: 'payg',
+        base_url: 'https://api.moonshot.cn/v1',
+      })
+      expect(createAccountMock.mock.calls[0]?.[0]?.credentials).not.toHaveProperty('protocol_rules')
+    })
+  })
+
+  it('groups the aggregators on their own row below the CN providers', () => {
+    const wrapper = mountModal()
+    const labels = (testid: string) =>
+      wrapper.get(`[data-testid="${testid}"]`).findAll('button').map(button => button.text().trim())
+    expect(labels('platform-row-cn')).toEqual(['Kimi', 'Zhipu GLM', 'DeepSeek', 'MiniMax'])
+    expect(labels('platform-row-aggregators')).toEqual(['OpenCode', 'Command Code', 'Cline'])
+  })
+
+  it('creates a Cline account without an account type and with only the Chat Completions endpoint', async () => {
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="platform-button-cline"]').trigger('click')
+    // 积分与 ClinePass 共用同一个 Key，按模型计费，不需要选择账号类型。
+    expect(wrapper.find('[data-testid="generic-account-mode"]').exists()).toBe(false)
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('cline')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-cline')
+
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    const payload = createAccountMock.mock.calls[0]?.[0]
+    expect(payload?.platform).toBe('cline')
+    expect(payload?.credentials).toMatchObject({
+      account_mode: 'payg',
+      api_protocol: 'adaptive',
+      base_url: 'https://api.cline.bot/api/v1',
+      api_base_urls: { chat_completions: 'https://api.cline.bot/api/v1' },
+    })
+    expect(payload?.credentials).not.toHaveProperty('protocol_rules')
+    expect(payload?.credentials?.api_base_urls).not.toHaveProperty('responses')
+    expect(payload?.credentials?.api_base_urls).not.toHaveProperty('anthropic')
   })
 
   it('submits adaptive Kimi protocol endpoints', async () => {

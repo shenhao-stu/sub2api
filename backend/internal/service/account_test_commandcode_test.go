@@ -17,13 +17,10 @@ import (
 )
 
 func newCommandCodeProbeAccount(provider, platform string) *Account {
-	base := CommandCodeBaseURL
-	if provider == CommandCodeGoProvider {
-		base = CommandCodeGoBaseURL
-	}
-	return &Account{ID: 71, Platform: platform, Type: AccountTypeAPIKey, Credentials: map[string]any{
-		"base_url": base, "api_key": "private-test-credential",
-	}, Extra: map[string]any{"provider": provider}}
+	account := commandCodePolicyTestAccount(provider == CommandCodeGoProvider)
+	account.ID = 71
+	account.Credentials["api_key"] = "private-test-credential"
+	return account
 }
 
 type commandCodeTestUpstream func(*http.Request, string, int64, int) (*http.Response, error)
@@ -41,9 +38,6 @@ func TestCommandCodeAccountTestUsesSelectedNativeProtocol(t *testing.T) {
 		chat                                   bool
 	}{
 		{CommandCodeGoProvider, PlatformOpenAI, "/alpha/generate", "data: {\"type\":\"text-delta\",\"text\":\"ok\"}\n\ndata: {\"type\":\"finish\",\"finishReason\":\"stop\",\"totalUsage\":{\"inputTokens\":1,\"outputTokens\":1}}\n\ndata: [DONE]\n\n", false},
-		{CommandCodeProvider, PlatformOpenAI, "/provider/v1/chat/completions", "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n", true},
-		{CommandCodeProvider, PlatformOpenAI, "/provider/v1/responses", "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\ndata: {\"type\":\"response.completed\"}\n\n", false},
-		{CommandCodeProvider, PlatformAnthropic, "/provider/v1/messages", "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"ok\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n", false},
 	} {
 		t.Run(tc.endpoint, func(t *testing.T) {
 			account := newCommandCodeProbeAccount(tc.provider, tc.platform)
@@ -109,26 +103,6 @@ func TestCommandCodeAccountTestRejectsUnsupportedInputsBeforeNetwork(t *testing.
 	}
 }
 
-func TestCommandCodeAccountTestFailureIsNotSuccessOrCredentialDisclosure(t *testing.T) {
-	for _, tc := range []struct {
-		name, platform, body string
-		status               int
-	}{
-		{"provider_error", PlatformAnthropic, "private-test-credential", 403},
-		{"incomplete_messages", PlatformAnthropic, "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"partial\"}}\n\n", 200},
-		{"malformed_messages", PlatformAnthropic, "data: not-json\n\n", 200},
-		{"empty_messages", PlatformAnthropic, "", 200},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			service := &AccountTestService{httpUpstream: &queuedHTTPUpstream{responses: []*http.Response{newJSONResponse(tc.status, tc.body)}}}
-			c, rec := newTestContext()
-			require.Error(t, service.testCommandCodeAccountConnection(c, newCommandCodeProbeAccount(CommandCodeProvider, tc.platform), "vendor/model", "", "", AccountTestOptions{}))
-			require.NotContains(t, rec.Body.String(), `"success":true`)
-			require.NotContains(t, rec.Body.String(), "private-test-credential")
-		})
-	}
-}
-
 const commandCodeCatalogFixture = `{"data":[
  {"id":"vendor/chat","name":"Chat Model","context_length":123456,"supported_endpoints":["/chat/completions"]},
  {"id":"vendor/responses","name":"Responses Model","supported_endpoints":["/responses"]},
@@ -140,8 +114,6 @@ const commandCodeCatalogFixture = `{"data":[
 func TestCommandCodeModelCatalogIsPublicBoundedAndProtocolFiltered(t *testing.T) {
 	for _, tc := range []struct{ provider, platform, expected string }{
 		{CommandCodeGoProvider, PlatformOpenAI, "vendor/chat"},
-		{CommandCodeProvider, PlatformOpenAI, "vendor/responses"},
-		{CommandCodeProvider, PlatformAnthropic, "vendor/messages"},
 	} {
 		t.Run(tc.expected, func(t *testing.T) {
 			account := newCommandCodeProbeAccount(tc.provider, tc.platform)

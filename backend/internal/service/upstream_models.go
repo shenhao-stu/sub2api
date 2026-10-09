@@ -242,7 +242,7 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 	capabilityIDs := capabilitySyncModelIDs(enrichIDs)
 
 	source := "upstream"
-	if !account.IsCommandCode() && upstreamCatalogNeedsRegistry(capabilityIDs, catalog.Metadata) {
+	if !account.IsCommandCodeGo() && upstreamCatalogNeedsRegistry(capabilityIDs, catalog.Metadata) {
 		if registryMetadata, registryErr := s.fetchModelsDevMetadata(ctx, account, enrichIDs); registryErr == nil {
 			for modelID, fallback := range registryMetadata {
 				current := catalog.Metadata[modelID]
@@ -262,7 +262,7 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 	}
 
 	completeMetadata := completeUpstreamModelMetadataSubset(capabilityIDs, catalog.Metadata)
-	if account.IsCommandCode() {
+	if account.IsCommandCodeGo() {
 		// Public catalog fields are useful even when capability details are absent.
 		// Preserve only observed fields and never infer the account's entitlement.
 		completeMetadata = catalog.Metadata
@@ -275,7 +275,7 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 	persistedCapabilities := false
 	if len(completeMetadata) > 0 && account != nil && account.ID > 0 && s.accountRepo != nil {
 		// Retain known metadata only for models still listed or explicitly mapped.
-		if previous := account.GetUpstreamModelMetadataSnapshot(); previous != nil && !account.IsCommandCode() {
+		if previous := account.GetUpstreamModelMetadataSnapshot(); previous != nil && !account.IsCommandCodeGo() {
 			retainedModels := capabilityIDs
 			if !liveListAvailable {
 				retainedModels = append([]string(nil), capabilityIDs...)
@@ -635,7 +635,7 @@ func upstreamModelRegistryBaseURL(account *Account) string {
 		return ""
 	}
 	switch {
-	case account.IsOpenAI() || account.IsCNProvider() || account.IsOpenCodeGo():
+	case account.IsOpenAI() || account.IsMultiProtocolAPIKey():
 		return account.GetOpenAIFormatBaseURL()
 	case account.IsGrok():
 		return account.GetGrokBaseURL()
@@ -741,7 +741,7 @@ func (s *AccountTestService) fetchUpstreamModelList(ctx context.Context, account
 	if account == nil {
 		return nil, nil, newUpstreamModelSyncConfigError("Account is required", nil)
 	}
-	if account.IsCommandCode() {
+	if account.IsCommandCodeGo() {
 		body, err := s.fetchCommandCodeModelCatalog(ctx, account)
 		if err != nil {
 			return nil, nil, err
@@ -810,9 +810,8 @@ func (s *AccountTestService) buildUpstreamModelsRequest(ctx context.Context, acc
 		return s.buildAntigravityAPIKeyModelsRequest(ctx, account)
 	case account.IsGrok():
 		return s.buildGrokUpstreamModelsRequest(ctx, account)
-	case account.IsOpenAI() || account.IsCNProvider() || account.IsOpenCodeGo():
-		// 国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）与 OpenCode Go
-		// 复用 OpenAI /v1/models 探测。
+	case account.IsOpenAI() || account.IsMultiProtocolAPIKey():
+		// 多协议 API Key 供应商（国产厂商与聚合平台）复用 OpenAI /v1/models 探测。
 		return s.buildOpenAIUpstreamModelsRequest(ctx, account)
 	case account.IsGemini():
 		return s.buildGeminiUpstreamModelsRequest(ctx, account)

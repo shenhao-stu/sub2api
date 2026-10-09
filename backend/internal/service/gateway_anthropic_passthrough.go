@@ -367,12 +367,6 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	account.ApplyHeaderOverrides(req.Header)
 	filterSonnet55ToolsetBetaHeader(req.Header, body, gjson.GetBytes(body, "model").String())
 
-	if err := applyCommandCodeClientPolicy(req, c, account); err != nil {
-		return nil, nil, err
-	}
-	if err := prepareCommandCodeRequest(req, account); err != nil {
-		return nil, nil, err
-	}
 	return req, body, nil
 }
 

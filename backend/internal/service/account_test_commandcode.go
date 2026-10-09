@@ -1,13 +1,9 @@
 package service
 
 import (
-	"bufio"
-	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -20,25 +16,11 @@ type commandCodeAccountTestClient struct {
 	account *Account
 }
 
-func (s *AccountTestService) GetCommandCodeQuota(ctx context.Context, account *Account) (*commandcode.BillingCredits, error) {
-	if !account.IsCommandCodeGo() {
-		return nil, errors.New("command code quota is available for Go accounts only")
-	}
-	if err := ValidateCommandCodeAccount(account); err != nil {
-		return nil, err
-	}
-	client := commandcode.Client{HTTPClient: commandCodeAccountTestClient{s, account}, UserAgent: commandCodeCLIUserAgent, Version: commandCodeCLIVersion}
-	return client.BillingCredits(ctx, account.GetCredential("api_key"))
-}
-
 func (client commandCodeAccountTestClient) Do(req *http.Request) (*http.Response, error) {
-	if !client.account.IsCommandCodeGo() {
-		client.account.ApplyHeaderOverrides(req.Header)
-	}
 	if err := prepareCommandCodeRequest(req, client.account); err != nil {
 		return nil, err
 	}
-	if client.account.Platform == PlatformOpenAI {
+	if client.account.IsCommandCode() {
 		req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
 	}
 	return client.service.commandCodeAccountTestUpstream(req, client.account)
@@ -72,18 +54,9 @@ func (s *AccountTestService) testCommandCodeAccountConnection(c *gin.Context, ac
 	if strings.TrimSpace(prompt) == "" {
 		prompt = "hi"
 	}
-	endpoint := commandCodeAccountEndpoint(account)
 	payload := map[string]any{
 		"model": modelID, "messages": []map[string]any{{"role": "user", "content": prompt}},
-		"max_tokens": 64, "stream": true,
-	}
-	if account.IsCommandCodeGo() {
-		payload["max_tokens"] = 512
-	}
-	if endpoint == "/responses" {
-		payload = map[string]any{
-			"model": modelID, "input": prompt, "max_output_tokens": 64, "stream": true,
-		}
+		"max_tokens": 512, "stream": true,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -95,22 +68,8 @@ func (s *AccountTestService) testCommandCodeAccountConnection(c *gin.Context, ac
 	c.Writer.Flush()
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: modelID})
 	client := commandCodeAccountTestClient{service: s, account: account}
-	var resp *http.Response
-	if account.IsCommandCodeGo() {
-		native := commandcode.Client{HTTPClient: client, UserAgent: commandCodeCLIUserAgent, Version: commandCodeCLIVersion}
-		resp, err = native.ChatCompletion(c.Request.Context(), account.GetCredential("api_key"), body, true)
-	} else {
-		req, requestErr := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, CommandCodeBaseURL+"/v1"+endpoint, bytes.NewReader(body))
-		if requestErr != nil {
-			return s.sendErrorAndEnd(c, "Failed to create Command Code test request")
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "text/event-stream")
-		if endpoint == "/messages" {
-			req.Header.Set("Anthropic-Version", "2023-06-01")
-		}
-		resp, err = client.Do(req)
-	}
+	native := commandcode.Client{HTTPClient: client, UserAgent: commandCodeCLIUserAgent, Version: commandCodeCLIVersion}
+	resp, err := native.ChatCompletion(c.Request.Context(), account.GetCredential("api_key"), body, true)
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Command Code account test request failed")
 	}
@@ -118,44 +77,5 @@ func (s *AccountTestService) testCommandCodeAccountConnection(c *gin.Context, ac
 	if resp.StatusCode != http.StatusOK {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Command Code account test returned HTTP %d", resp.StatusCode))
 	}
-	switch endpoint {
-	case "/messages":
-		return s.processCommandCodeMessagesStream(c, resp.Body)
-	case "/responses":
-		return s.processOpenAIStream(c, resp.Body)
-	default:
-		return s.processOpenAIChatCompletionsStream(c, resp.Body)
-	}
-}
-
-func (s *AccountTestService) processCommandCodeMessagesStream(c *gin.Context, body io.Reader) error {
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 4096), 1<<20)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !sseDataPrefix.MatchString(line) {
-			continue
-		}
-		var event struct {
-			Type  string `json:"type"`
-			Delta struct {
-				Text string `json:"text"`
-			} `json:"delta"`
-		}
-		if json.Unmarshal([]byte(sseDataPrefix.ReplaceAllString(line, "")), &event) != nil {
-			return s.sendErrorAndEnd(c, "Command Code Messages stream contains invalid JSON")
-		}
-		switch event.Type {
-		case "content_block_delta":
-			if event.Delta.Text != "" {
-				s.sendEvent(c, TestEvent{Type: "content", Text: event.Delta.Text})
-			}
-		case "message_stop":
-			s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
-			return nil
-		case "error":
-			return s.sendErrorAndEnd(c, "Command Code Messages stream returned an error")
-		}
-	}
-	return s.sendErrorAndEnd(c, "Command Code Messages stream ended before message_stop")
+	return s.processOpenAIChatCompletionsStream(c, resp.Body)
 }

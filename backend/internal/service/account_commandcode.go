@@ -26,34 +26,31 @@ func touchesCommandCodePolicy(extra map[string]any) bool {
 	return false
 }
 
-func (a *Account) IsCommandCode() bool {
-	return a != nil && (a.GetExtraString("provider") == CommandCodeProvider || a.IsCommandCodeGo())
-}
-
 func (a *Account) IsCommandCodeGo() bool {
-	return a != nil && a.GetExtraString("provider") == CommandCodeGoProvider
+	return a.IsCommandCode() && a.GetCredential("account_mode") == AccountModeGo
 }
 
 // ValidateCommandCodeAccount binds a credential to its protocol and official origin.
 // The same validation runs at persistence and again at the network boundary.
 func ValidateCommandCodeAccount(a *Account) error {
+	if a != nil && !a.IsCommandCode() && (a.GetExtraString("provider") == CommandCodeProvider || a.GetExtraString("provider") == CommandCodeGoProvider) {
+		return infraerrors.BadRequest("LEGACY_COMMANDCODE_ACCOUNT", "Select the Command Code platform and the Go or Provider mode")
+	}
 	if a == nil || !a.IsCommandCode() {
 		return nil
 	}
 	invalid := func(message string) error {
 		return infraerrors.BadRequest("INVALID_COMMANDCODE_ACCOUNT", message)
 	}
-	if a.Type != AccountTypeAPIKey || (a.Platform != PlatformOpenAI && a.Platform != PlatformAnthropic) {
-		return invalid("Command Code requires an OpenAI or Anthropic API key account")
+	if a.Type != AccountTypeAPIKey {
+		return invalid("Command Code requires an API key account")
 	}
-	expected := CommandCodeBaseURL
+	expected := DefaultCommandCodeBaseURL
 	if a.IsCommandCodeGo() {
 		expected = CommandCodeGoBaseURL
-		if a.Platform != PlatformOpenAI {
-			return invalid("Command Code Go requires the OpenAI protocol")
-		}
 	}
-	if strings.TrimRight(strings.TrimSpace(a.GetCredential("base_url")), "/") != expected {
+	base := strings.TrimRight(strings.TrimSpace(a.GetOpenAIBaseURL()), "/")
+	if base != expected && (a.IsCommandCodeGo() || base != DefaultCommandCodeAnthropicBaseURL) {
 		return invalid("Command Code requires its fixed official base URL")
 	}
 	key := a.GetCredential("api_key")
@@ -90,10 +87,8 @@ func prepareCommandCodeRequest(req *http.Request, account *Account) error {
 			(req.Method == http.MethodGet && req.URL.Path == "/alpha/billing/credits")
 	} else {
 		switch req.URL.Path {
-		case "/provider/v1/messages":
-			allowed = req.Method == http.MethodPost && account.Platform == PlatformAnthropic
-		case "/provider/v1/chat/completions", "/provider/v1/responses":
-			allowed = req.Method == http.MethodPost && account.Platform == PlatformOpenAI
+		case "/provider/v1/messages", "/provider/v1/chat/completions", "/provider/v1/responses":
+			allowed = req.Method == http.MethodPost
 		case "/provider/v1/models":
 			allowed = req.Method == http.MethodGet
 		}
