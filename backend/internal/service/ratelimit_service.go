@@ -347,7 +347,7 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			return true
 		}
 		if isAPIKeyWalletExhausted(account, statusCode, responseBody) {
-			return s.handleUpstreamQuotaExhausted(ctx, account, headers, responseBody)
+			return s.cooldownUpstreamQuota(ctx, account, headers)
 		}
 		slog.Info("pool_mode_error_skipped", "account_id", account.ID, "status_code", statusCode)
 		return false
@@ -403,7 +403,7 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 	// Reuse the atomic quota extension: a wallet rejection must never shorten an
 	// existing real reset window. Explicit operator policies above still apply.
 	if isAPIKeyWalletExhausted(account, statusCode, responseBody) {
-		return s.handleUpstreamQuotaExhausted(ctx, account, headers, responseBody)
+		return s.cooldownUpstreamQuota(ctx, account, headers)
 	}
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(responseBody))

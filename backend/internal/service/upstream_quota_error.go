@@ -68,6 +68,10 @@ func (s *RateLimitService) handleUpstreamQuotaExhausted(ctx context.Context, acc
 	if !IsUpstreamQuotaExhausted(http.StatusTooManyRequests, body) {
 		return false
 	}
+	return s.cooldownUpstreamQuota(ctx, account, headers)
+}
+
+func (s *RateLimitService) cooldownUpstreamQuota(ctx context.Context, account *Account, headers http.Header) bool {
 	stateCtx, cancel := openAIAccountStateContext(ctx)
 	defer cancel()
 	cooldown, enabled := s.get429FallbackCooldown(stateCtx, account)
