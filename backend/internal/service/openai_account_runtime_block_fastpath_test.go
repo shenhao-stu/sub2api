@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -538,33 +539,71 @@ func TestOpenAIPoolModeRetryable5xx_DoesNotCreateModelTransientBlock(t *testing.
 	require.False(t, gateway.isOpenAIAccountRequestRuntimeBlocked(account, "gpt-5.4"))
 }
 
-func TestOpenAIPoolModeNonRetryable5xx_StillCreatesModelTransientBlock(t *testing.T) {
+func TestOpenAIPoolModeTransientError_DoesNotBlockPoolOrExpandRetryPolicy(t *testing.T) {
+	for _, policy := range []struct {
+		name       string
+		configured bool
+		codes      []any
+	}{
+		{name: "default"},
+		{name: "no_retries", configured: true, codes: []any{}},
+		{name: "explicit_504", configured: true, codes: []any{float64(http.StatusGatewayTimeout)}},
+	} {
+		t.Run(policy.name, func(t *testing.T) {
+			for _, status := range []int{http.StatusBadRequest, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout} {
+				t.Run(strconv.Itoa(status), func(t *testing.T) {
+					repo := &errorPolicyRepoStub{}
+					gateway := &OpenAIGatewayService{rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil)}
+					account := &Account{
+						ID: 48, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+						Status: StatusActive, Schedulable: true,
+						Credentials: map[string]any{"pool_mode": true, "pool_mode_retry_count": 10},
+					}
+					if policy.configured {
+						account.Credentials["pool_mode_retry_status_codes"] = policy.codes
+					}
+					wantRetry := status == http.StatusBadRequest || (policy.name == "explicit_504" && status == http.StatusGatewayTimeout)
+					message := "upstream failure"
+					body := []byte(`{"error":{"message":"upstream failure"}}`)
+					if status == http.StatusBadRequest {
+						message = "An error occurred while processing your request"
+						body = []byte(`{"error":{"message":"An error occurred while processing your request"}}`)
+					}
+					for range 3 {
+						failure := gateway.failoverOpenAIUpstreamHTTPError(context.Background(), nil, account,
+							&http.Response{StatusCode: status, Header: http.Header{}},
+							body, message, "test-model")
+						require.NotNil(t, failure)
+						require.Equal(t, status, failure.StatusCode)
+						require.Equal(t, wantRetry, failure.RetryableOnSameAccount)
+						require.False(t, gateway.isOpenAIAccountRequestRuntimeBlocked(account, "test-model"))
+						require.True(t, account.IsSchedulable())
+					}
+					require.Zero(t, repo.tempCalls)
+					require.Zero(t, repo.setErrCalls)
+					require.Empty(t, repo.modelRateLimitCalls)
+				})
+			}
+		})
+	}
+}
+
+func TestOpenAIPoolModeInvalidParameter_DoesNotRetryOrBlock(t *testing.T) {
 	repo := &errorPolicyRepoStub{}
-	rateLimitService := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
-	gateway := &OpenAIGatewayService{rateLimitService: rateLimitService}
-	account := &Account{
-		ID:       48,
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"pool_mode":                    true,
-			"pool_mode_retry_status_codes": []any{float64(http.StatusGatewayTimeout)},
-		},
+	gateway := &OpenAIGatewayService{rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil)}
+	account := &Account{ID: 48, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true}}
+	for range 3 {
+		failure := gateway.failoverOpenAIUpstreamHTTPError(context.Background(), nil, account,
+			&http.Response{StatusCode: http.StatusBadRequest, Header: http.Header{}},
+			[]byte(`{"error":{"type":"invalid_request_error","message":"Invalid type for input[0].arguments"}}`),
+			"Invalid type for input[0].arguments", "test-model")
+		require.Nil(t, failure)
+		require.False(t, gateway.isOpenAIAccountRequestRuntimeBlocked(account, "test-model"))
 	}
-
-	for i := 0; i < 2; i++ {
-		shouldDisable := gateway.handleOpenAIAccountUpstreamError(
-			context.Background(),
-			account,
-			http.StatusServiceUnavailable,
-			http.Header{},
-			[]byte(`{"error":{"message":"upstream unavailable"}}`),
-			"gpt-5.4",
-		)
-		require.False(t, shouldDisable)
-	}
-
-	require.True(t, gateway.isOpenAIAccountRequestRuntimeBlocked(account, "gpt-5.4"))
+	require.Zero(t, repo.tempCalls)
+	require.Zero(t, repo.setErrCalls)
+	require.Empty(t, repo.modelRateLimitCalls)
 }
 
 func TestOpenAINonPoolAPIKey5xx_StillCreatesModelTransientBlock(t *testing.T) {
