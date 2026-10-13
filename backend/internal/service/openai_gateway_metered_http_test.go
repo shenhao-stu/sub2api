@@ -161,7 +161,7 @@ func runMeteredHTTPForward(t *testing.T, path string, status int, responseBody s
 	case "raw_chat":
 		result, err = svc.forwardAsRawChatCompletions(c.Request.Context(), c, account, request, "")
 	case "responses_cc":
-		result, err = svc.forwardResponsesViaRawChatCompletions(c.Request.Context(), c, account, request)
+		result, err = svc.forwardResponsesViaRawChatCompletions(c.Request.Context(), c, account, request, time.Now())
 	case "messages_cc":
 		result, err = svc.forwardAnthropicViaRawChatCompletions(c.Request.Context(), c, account, request, "")
 	}

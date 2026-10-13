@@ -80,6 +80,7 @@ func newCleanupTest(t *testing.T, billingCacheSvc *service.BillingCacheService, 
 		subscriptionExpirySvc,
 		&service.UsageCleanupService{},
 		idempotencyCleanupSvc,
+		service.NewGeminiCachedContentService(nil, nil, cfg),
 		&service.BatchImageCleanupService{},
 		nil, // batchImageWorker
 		pricingSvc,

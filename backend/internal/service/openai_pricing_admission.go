@@ -42,14 +42,14 @@ func (s *OpenAIGatewayService) RequireOpenAIResolvedRequestPricing(ctx context.C
 	}
 	models := usageBillingModelCandidates(model, forwarded, requested, upstreamModel)
 	models = s.filterCNProviderBillingModelCandidates(ctx, account, apiKey, models)
-	result := &OpenAIForwardResult{Model: forwarded, UpstreamModel: model}
+	result := &OpenAIForwardResult{Model: forwarded, UpstreamModel: upstreamModel}
 	// Only native image model families use media pricing here. Merely adding an
 	// image tool to an unknown text model must not skip its token-price gate.
 	if isOpenAIImageGenerationModel(model) {
 		result.ImageCount, result.ImageSize = 1, "2K"
 	}
 	_, err := s.calculateOpenAIRecordUsageCost(ctx, result, apiKey, models, 1, 1, 1, 1,
-		UsageTokens{InputTokens: 1, OutputTokens: 1}, "", openAILongContextBillingGate(account), time.Now())
+		UsageTokens{InputTokens: 1, OutputTokens: 1}, "", openAILongContextBillingGate(account), openAISubscriptionLongContextExempt(account, result), time.Now())
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrModelPricingUnavailable, err)
 	}
