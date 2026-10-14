@@ -498,6 +498,11 @@ gateway:
   # Stream data interval timeout (seconds), 0=disable
   # 流数据间隔超时（秒），0=禁用
   stream_data_interval_timeout: 180
+  # Grok first text/reasoning/tool output deadline per request or WS turn.
+  # Starts at the first streaming upstream attempt, shared across account retries.
+  # Real text/reasoning/tool output removes this limit; native nonstream is unchanged.
+  # 0 disables; 30-3600 seconds, default 1200. Heartbeats do not reset it.
+  grok_first_semantic_timeout_seconds: 1200
   # Stream keepalive interval (seconds), 0=disable
   # 流式 keepalive 间隔（秒），0=禁用
   stream_keepalive_interval: 10

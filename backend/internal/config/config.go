@@ -992,6 +992,8 @@ type GatewayConfig struct {
 	// JSON may not send headers until generation finishes. Zero selects the
 	// bounded 240s default; it never means unlimited.
 	GrokNonstreamResponseHeaderTimeout int `mapstructure:"grok_nonstream_response_header_timeout"`
+	// GrokFirstSemanticTimeoutSeconds bounds one request across account retries until real SSE output. 0 disables it.
+	GrokFirstSemanticTimeoutSeconds int `mapstructure:"grok_first_semantic_timeout_seconds"`
 	// OpenAIFirstOutputTimeoutSeconds: native HTTP Responses 首个语义输出超时（秒），0表示禁用。
 	OpenAIFirstOutputTimeoutSeconds int `mapstructure:"openai_first_output_timeout_seconds"`
 	// OpenAIHighEffortFirstOutputTimeoutSeconds: high/xhigh/max 推理的首个语义输出超时（秒）。
@@ -2428,6 +2430,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_response_header_timeout", 0)
 	viper.SetDefault("gateway.grok_response_header_timeout", 120)
 	viper.SetDefault("gateway.grok_nonstream_response_header_timeout", 240)
+	viper.SetDefault("gateway.grok_first_semantic_timeout_seconds", 1200)
 	viper.SetDefault("gateway.openai_first_output_timeout_seconds", 0)
 	viper.SetDefault("gateway.openai_high_effort_first_output_timeout_seconds", 0)
 	viper.SetDefault("gateway.log_upstream_error_body", true)
@@ -3375,6 +3378,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.GrokResponseHeaderTimeout < 0 || c.Gateway.GrokResponseHeaderTimeout > 1800 {
 		return fmt.Errorf("gateway.grok_response_header_timeout must be between 0-1800 seconds")
+	}
+	if c.Gateway.GrokFirstSemanticTimeoutSeconds < 0 || c.Gateway.GrokFirstSemanticTimeoutSeconds > 3600 || (c.Gateway.GrokFirstSemanticTimeoutSeconds > 0 && c.Gateway.GrokFirstSemanticTimeoutSeconds < 30) {
+		return fmt.Errorf("gateway.grok_first_semantic_timeout_seconds must be 0 or between 30-3600 seconds")
 	}
 	if c.Gateway.OpenAIFirstOutputTimeoutSeconds < 0 || c.Gateway.OpenAIFirstOutputTimeoutSeconds > 600 ||
 		(c.Gateway.OpenAIFirstOutputTimeoutSeconds > 0 && c.Gateway.OpenAIFirstOutputTimeoutSeconds < 30) {
