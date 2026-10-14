@@ -20,6 +20,7 @@ const (
 	schedulerAccountPrefix         = "sched:acc:"
 	schedulerAccountMetaPrefix     = "sched:meta:"
 	schedulerAccountLastUsedPrefix = "sched:acc:last_used:"
+	schedulerRetiredAccountsKey    = "sched:retired_accounts"
 	schedulerActivePrefix          = "sched:active:"
 	schedulerReadyPrefix           = "sched:ready:"
 	schedulerVersionPrefix         = "sched:ver:"
@@ -41,6 +42,22 @@ const (
 	schedulerGroupLifecycleLockPrefix      = "sched:group:lifecycle-lock:"
 	schedulerGroupLifecycleOwnerTokenBytes = 16
 )
+
+// Account IDs are never reused. A compact persistent set fences every delayed
+// writer; a TTL cannot safely bound work already holding an account snapshot.
+var retireSchedulerAccountScript = redis.NewScript(`
+redis.call('SADD', KEYS[1], ARGV[1])
+return redis.call('DEL', KEYS[2], KEYS[3], KEYS[4])
+`)
+
+var writeSchedulerAccountScript = redis.NewScript(`
+if redis.call('SISMEMBER', KEYS[1], ARGV[1]) == 1 then
+    return 0
+end
+redis.call('SET', KEYS[2], ARGV[2])
+redis.call('SET', KEYS[3], ARGV[3])
+return 1
+`)
 
 var updateSchedulerLastUsedScript = redis.NewScript(`
 local updated = 0
@@ -290,9 +307,18 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 	if err != nil {
 		return nil, false, err
 	}
+	// During a rolling deploy an older process may still write these keys
+	// without the retirement fence. Check every ID, even with valid metadata.
+	retired, err := c.retiredAccountIDs(ctx, ids)
+	if err != nil {
+		return nil, false, err
+	}
 
 	accounts := make([]*service.Account, 0, len(values))
 	for i, val := range values {
+		if retired[ids[i]] {
+			continue
+		}
 		if val == nil {
 			return nil, false, nil
 		}
@@ -575,6 +601,13 @@ func (c *schedulerCache) GetAccount(ctx context.Context, accountID int64) (*serv
 	if len(values) != 2 || values[0] == nil {
 		return nil, nil
 	}
+	retired, err := c.rdb.SIsMember(ctx, schedulerRetiredAccountsKey, id).Result()
+	if err != nil {
+		return nil, err
+	}
+	if retired {
+		return nil, nil
+	}
 	account, err := decodeCachedAccount(values[0])
 	if err != nil {
 		return nil, err
@@ -605,6 +638,16 @@ func (c *schedulerCache) DeleteAccount(ctx context.Context, accountID int64) err
 	}
 	id := strconv.FormatInt(accountID, 10)
 	return c.rdb.Del(ctx, schedulerAccountKey(id), schedulerAccountMetaKey(id), schedulerLastUsedKey(id)).Err()
+}
+
+func (c *schedulerCache) RetireAccount(ctx context.Context, accountID int64) error {
+	if accountID <= 0 {
+		return nil
+	}
+	id := strconv.FormatInt(accountID, 10)
+	return retireSchedulerAccountScript.Run(ctx, c.rdb, []string{
+		schedulerRetiredAccountsKey, schedulerAccountKey(id), schedulerAccountMetaKey(id), schedulerLastUsedKey(id),
+	}, id).Err()
 }
 
 func (c *schedulerCache) UpdateLastUsed(ctx context.Context, updates map[int64]time.Time) error {
@@ -783,16 +826,29 @@ func (c *schedulerCache) writeAccountIDs(ctx context.Context, accounts []service
 
 	pipe := c.rdb.Pipeline()
 	accountIDs := make([]int64, 0, len(accounts))
-	pending := 0
+	type pendingWrite struct {
+		id  int64
+		cmd *redis.Cmd
+	}
+	pending := make([]pendingWrite, 0, c.writeChunkSize)
 	flush := func() error {
-		if pending == 0 {
+		if len(pending) == 0 {
 			return nil
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			return err
 		}
+		for _, write := range pending {
+			accepted, err := write.cmd.Int()
+			if err != nil {
+				return err
+			}
+			if accepted == 1 {
+				accountIDs = append(accountIDs, write.id)
+			}
+		}
 		pipe = c.rdb.Pipeline()
-		pending = 0
+		pending = pending[:0]
 		return nil
 	}
 
@@ -807,13 +863,13 @@ func (c *schedulerCache) writeAccountIDs(ctx context.Context, accounts []service
 		}
 
 		id := strconv.FormatInt(account.ID, 10)
-		pipe.Set(ctx, schedulerAccountKey(id), fullPayload, 0)
-		pipe.Set(ctx, schedulerAccountMetaKey(id), metaPayload, 0)
+		cmd := writeSchedulerAccountScript.Eval(ctx, pipe, []string{
+			schedulerRetiredAccountsKey, schedulerAccountKey(id), schedulerAccountMetaKey(id),
+		}, id, fullPayload, metaPayload)
 		// Keep the hot LastUsedAt side key untouched: a lagging snapshot rebuild
 		// must not overwrite a newer scheduler update.
-		accountIDs = append(accountIDs, account.ID)
-		pending++
-		if pending >= c.writeChunkSize {
+		pending = append(pending, pendingWrite{id: account.ID, cmd: cmd})
+		if len(pending) >= c.writeChunkSize {
 			if err := flush(); err != nil {
 				return nil, err
 			}
@@ -824,6 +880,29 @@ func (c *schedulerCache) writeAccountIDs(ctx context.Context, accounts []service
 		return nil, err
 	}
 	return accountIDs, nil
+}
+
+func (c *schedulerCache) retiredAccountIDs(ctx context.Context, ids []string) (map[string]bool, error) {
+	retired := make(map[string]bool, len(ids))
+	chunkSize := c.mgetChunkSize
+	if chunkSize <= 0 {
+		chunkSize = defaultSchedulerSnapshotMGetChunkSize
+	}
+	for start := 0; start < len(ids); start += chunkSize {
+		end := min(start+chunkSize, len(ids))
+		members := make([]any, end-start)
+		for i, id := range ids[start:end] {
+			members[i] = id
+		}
+		flags, err := c.rdb.SMIsMember(ctx, schedulerRetiredAccountsKey, members...).Result()
+		if err != nil {
+			return nil, err
+		}
+		for i, flag := range flags {
+			retired[ids[start+i]] = flag
+		}
+	}
+	return retired, nil
 }
 
 func marshalSchedulerCacheAccount(account service.Account) ([]byte, []byte, error) {

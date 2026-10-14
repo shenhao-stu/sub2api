@@ -27,6 +27,7 @@ type AccountRepoSuite struct {
 type schedulerCacheRecorder struct {
 	setAccounts []*service.Account
 	deleteIDs   []int64
+	retireIDs   []int64
 	accounts    map[int64]*service.Account
 	setCtxErr   error
 }
@@ -101,6 +102,14 @@ func (e *cancelAfterAtomicMutationSQLExecutor) ExecContext(ctx context.Context, 
 		e.cancel()
 	}
 	return result, err
+}
+
+func (s *schedulerCacheRecorder) RetireAccount(ctx context.Context, accountID int64) error {
+	s.retireIDs = append(s.retireIDs, accountID)
+	if s.accounts != nil {
+		delete(s.accounts, accountID)
+	}
+	return nil
 }
 
 func (s *schedulerCacheRecorder) DeleteAccount(ctx context.Context, accountID int64) error {
@@ -268,7 +277,7 @@ func (s *AccountRepoSuite) TestDelete() {
 	s.Require().Error(err, "expected error after delete")
 }
 
-func (s *AccountRepoSuite) TestDelete_RemovesSchedulerAccountSnapshot() {
+func (s *AccountRepoSuite) TestDelete_ExternalTransactionDefersSchedulerRetirement() {
 	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "to-delete-cache"})
 	cacheRecorder := &schedulerCacheRecorder{
 		accounts: map[int64]*service.Account{
@@ -285,8 +294,9 @@ func (s *AccountRepoSuite) TestDelete_RemovesSchedulerAccountSnapshot() {
 	err := s.repo.Delete(s.ctx, account.ID)
 	s.Require().NoError(err, "Delete")
 
-	s.Require().Equal([]int64{account.ID}, cacheRecorder.deleteIDs)
-	s.Require().NotContains(cacheRecorder.accounts, account.ID)
+	s.Require().Empty(cacheRecorder.deleteIDs)
+	s.Require().Empty(cacheRecorder.retireIDs, "external transaction has not committed")
+	s.Require().Contains(cacheRecorder.accounts, account.ID)
 }
 
 func (s *AccountRepoSuite) TestDelete_WithGroupBindings() {

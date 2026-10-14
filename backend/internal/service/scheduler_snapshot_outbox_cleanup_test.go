@@ -56,6 +56,10 @@ func (c *outboxCleanupCache) SetAccount(ctx context.Context, account *Account) e
 	return nil
 }
 
+func (c *outboxCleanupCache) RetireAccount(ctx context.Context, accountID int64) error {
+	return c.DeleteAccount(ctx, accountID)
+}
+
 func (c *outboxCleanupCache) DeleteAccount(ctx context.Context, accountID int64) error {
 	return nil
 }

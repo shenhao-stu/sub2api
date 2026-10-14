@@ -577,7 +577,7 @@ func (s *SchedulerSnapshotService) handleBulkAccountEvent(ctx context.Context, p
 		}
 		allAccountsFound = false
 		if s.cache != nil {
-			if err := s.cache.DeleteAccount(ctx, id); err != nil {
+			if err := s.cache.RetireAccount(ctx, id); err != nil {
 				return err
 			}
 		}
@@ -667,7 +667,7 @@ func (s *SchedulerSnapshotService) handleAccountEvent(ctx context.Context, accou
 	if err != nil {
 		if errors.Is(err, ErrAccountNotFound) {
 			if s.cache != nil {
-				if err := s.cache.DeleteAccount(ctx, *accountID); err != nil {
+				if err := s.cache.RetireAccount(ctx, *accountID); err != nil {
 					return err
 				}
 			}

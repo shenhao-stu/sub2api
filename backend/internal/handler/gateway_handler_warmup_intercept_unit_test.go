@@ -59,7 +59,11 @@ func (f *fakeSchedulerCache) GetAccount(_ context.Context, id int64) (*service.A
 	return nil, nil
 }
 func (f *fakeSchedulerCache) SetAccount(_ context.Context, _ *service.Account) error { return nil }
-func (f *fakeSchedulerCache) DeleteAccount(_ context.Context, _ int64) error         { return nil }
+func (f *fakeSchedulerCache) RetireAccount(ctx context.Context, accountID int64) error {
+	return f.DeleteAccount(ctx, accountID)
+}
+
+func (f *fakeSchedulerCache) DeleteAccount(_ context.Context, _ int64) error { return nil }
 func (f *fakeSchedulerCache) UpdateLastUsed(_ context.Context, _ map[int64]time.Time) error {
 	return nil
 }

@@ -104,8 +104,10 @@ type SchedulerCache interface {
 	GetAccount(ctx context.Context, accountID int64) (*Account, error)
 	// SetAccount 写入单账号快照（包含不可调度状态）。
 	SetAccount(ctx context.Context, account *Account) error
-	// DeleteAccount 删除单账号快照。
+	// DeleteAccount clears a reloadable account cache without retiring its ID.
 	DeleteAccount(ctx context.Context, accountID int64) error
+	// RetireAccount permanently fences writes for a deleted, never-reused account ID.
+	RetireAccount(ctx context.Context, accountID int64) error
 	// UpdateLastUsed 批量更新账号的最后使用时间。
 	UpdateLastUsed(ctx context.Context, updates map[int64]time.Time) error
 	// TryLockBucket 尝试获取分桶重建锁。

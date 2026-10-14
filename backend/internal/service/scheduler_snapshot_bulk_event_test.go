@@ -33,6 +33,7 @@ type bulkEventSnapshotCache struct {
 	accountMu        sync.Mutex
 	setAccountIDs    []int64
 	deleteAccountIDs []int64
+	retireAccountIDs []int64
 }
 
 func newBulkEventSnapshotCache() *bulkEventSnapshotCache {
@@ -46,6 +47,13 @@ func (c *bulkEventSnapshotCache) SetAccount(_ context.Context, account *Account)
 	return nil
 }
 
+func (c *bulkEventSnapshotCache) RetireAccount(_ context.Context, accountID int64) error {
+	c.accountMu.Lock()
+	defer c.accountMu.Unlock()
+	c.retireAccountIDs = append(c.retireAccountIDs, accountID)
+	return nil
+}
+
 func (c *bulkEventSnapshotCache) DeleteAccount(_ context.Context, accountID int64) error {
 	c.accountMu.Lock()
 	defer c.accountMu.Unlock()
@@ -56,7 +64,7 @@ func (c *bulkEventSnapshotCache) DeleteAccount(_ context.Context, accountID int6
 func (c *bulkEventSnapshotCache) accountWrites() (set []int64, deleted []int64) {
 	c.accountMu.Lock()
 	defer c.accountMu.Unlock()
-	return append([]int64(nil), c.setAccountIDs...), append([]int64(nil), c.deleteAccountIDs...)
+	return append([]int64(nil), c.setAccountIDs...), append([]int64(nil), c.retireAccountIDs...)
 }
 
 func (c *bulkEventSnapshotCache) capturedBuckets() []SchedulerBucket {
@@ -211,6 +219,7 @@ func TestSchedulerBulkAccountEventMissingAccountFallsBackToAllPlatforms(t *testi
 	set, deleted := cache.accountWrites()
 	require.Equal(t, []int64{3}, set)
 	require.Equal(t, []int64{4}, deleted)
+	require.Empty(t, cache.deleteAccountIDs, "confirmed DB absence must retire, not just clear")
 }
 
 func TestSchedulerBulkAccountEventUnknownPlatformFallsBackToAllPlatforms(t *testing.T) {

@@ -54,6 +54,10 @@ func (c *snapshotHydrationCache) SetAccount(ctx context.Context, account *Accoun
 	return nil
 }
 
+func (c *snapshotHydrationCache) RetireAccount(ctx context.Context, accountID int64) error {
+	return c.DeleteAccount(ctx, accountID)
+}
+
 func (c *snapshotHydrationCache) DeleteAccount(ctx context.Context, accountID int64) error {
 	return nil
 }
