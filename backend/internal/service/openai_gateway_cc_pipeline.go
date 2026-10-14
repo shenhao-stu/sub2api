@@ -116,8 +116,15 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 	if !shouldFailover {
 		return nil
 	}
+	diagnosticMessage := upstreamMsg
 	upstreamDetail := ""
-	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+	if account != nil && account.Platform == PlatformGrok {
+		if message := extractGrokUpstreamErrorMessage(respBody); message != "" {
+			diagnosticMessage = message
+		}
+		upstreamDetail = s.grokUpstreamErrorDetail(respBody)
+		setOpsUpstreamError(c, resp.StatusCode, diagnosticMessage, upstreamDetail)
+	} else if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 		maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
 		if maxBytes <= 0 {
 			maxBytes = 2048
@@ -133,7 +140,7 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 		UpstreamStatusCode: resp.StatusCode,
 		UpstreamRequestID:  resp.Header.Get("x-request-id"),
 		Kind:               "failover",
-		Message:            upstreamMsg,
+		Message:            diagnosticMessage,
 		Detail:             upstreamDetail,
 	})
 	shouldDisable := tempUnscheduled
