@@ -187,18 +187,18 @@ func extractGrokMediaImageURL(value gjson.Result) string {
 	if value.Type == gjson.String {
 		return strings.TrimSpace(value.String())
 	}
-	if imageURL := strings.TrimSpace(value.Get("url").String()); imageURL != "" {
-		return imageURL
+	if imageURL := value.Get("url"); imageURL.Type == gjson.String && strings.TrimSpace(imageURL.String()) != "" {
+		return strings.TrimSpace(imageURL.String())
 	}
 	if nested := value.Get("image_url"); nested.Exists() {
 		if nested.Type == gjson.String {
 			return strings.TrimSpace(nested.String())
 		}
-		if imageURL := strings.TrimSpace(nested.Get("url").String()); imageURL != "" {
-			return imageURL
+		if imageURL := nested.Get("url"); imageURL.Type == gjson.String {
+			return strings.TrimSpace(imageURL.String())
 		}
 	}
-	return strings.TrimSpace(value.Get("image_url").String())
+	return ""
 }
 
 func grokMediaImageObject(imageURL string) map[string]string {
@@ -732,6 +732,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 	}
 	body, contentType, err = normalizeGrokMediaForwardBody(endpoint, body, contentType)
 	if err != nil {
+		writeGrokMediaErrorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, err
 	}
 	requestInfo := ParseGrokMediaRequest(contentType, body)
@@ -1139,6 +1140,11 @@ func rewriteGrokMediaJSONImageField(body []byte, path string) ([]byte, error) {
 	return out, nil
 }
 
+// NormalizeGrokVideoGenerationRequest validates known image fields before admission.
+func NormalizeGrokVideoGenerationRequest(body []byte, contentType string) ([]byte, string, error) {
+	return normalizeGrokMediaForwardBody(GrokMediaEndpointVideosGenerations, body, contentType)
+}
+
 func normalizeGrokMediaForwardBody(endpoint GrokMediaEndpoint, body []byte, contentType string) ([]byte, string, error) {
 	if !endpoint.RequiresRequestBody() || !gjson.ValidBytes(body) {
 		return body, contentType, nil
@@ -1148,7 +1154,20 @@ func normalizeGrokMediaForwardBody(endpoint GrokMediaEndpoint, body []byte, cont
 	case GrokMediaEndpointImagesEdits:
 		imageFields = []string{"image", "images", "mask"}
 	case GrokMediaEndpointVideosGenerations:
-		imageFields = []string{"image", "images", "reference_images"}
+		// These names belong to other media/SDK contracts. Silently forwarding
+		// them could generate a text-only video while ignoring the user's image.
+		for _, field := range []string{"image_url", "images"} {
+			if gjson.GetBytes(body, field).Exists() {
+				return nil, "", fmt.Errorf("%s is not a video generation field; use image.url for a first frame or reference_images for references", field)
+			}
+		}
+		if image := gjson.GetBytes(body, "image"); image.IsArray() {
+			return nil, "", fmt.Errorf("image must contain one first frame; use reference_images for references")
+		}
+		if references := gjson.GetBytes(body, "reference_images"); references.Exists() && !references.IsArray() {
+			return nil, "", fmt.Errorf("reference_images must be an array")
+		}
+		imageFields = []string{"image", "reference_images"}
 	}
 	var err error
 	body, err = canonicalizeGrokMediaImageURLFields(body, imageFields...)
@@ -1194,16 +1213,37 @@ func canonicalizeGrokMediaImageURLFields(body []byte, fields ...string) ([]byte,
 }
 
 func canonicalizeGrokMediaImageURLObject(body []byte, path string) ([]byte, error) {
+	value := gjson.GetBytes(body, path)
+	if value.Type == gjson.String {
+		imageURL := strings.TrimSpace(value.String())
+		if imageURL == "" {
+			return nil, fmt.Errorf("%s must contain a non-empty image URL", path)
+		}
+		return sjson.SetBytes(body, path, map[string]string{"url": imageURL})
+	}
+	if !value.IsObject() {
+		return nil, fmt.Errorf("%s must be an image object or URL string", path)
+	}
+	if imageURL := value.Get("url"); imageURL.Exists() && imageURL.Type != gjson.String {
+		return nil, fmt.Errorf("%s.url must be a string", path)
+	}
 	legacyPath := path + ".image_url"
 	legacy := gjson.GetBytes(body, legacyPath)
 	if !legacy.Exists() {
+		if imageURL := value.Get("url"); imageURL.Exists() && strings.TrimSpace(imageURL.String()) == "" {
+			return nil, fmt.Errorf("%s.url must be a non-empty string", path)
+		}
 		return body, nil
 	}
 
 	out := body
 	if strings.TrimSpace(gjson.GetBytes(out, path+".url").String()) == "" {
+		imageURL := extractGrokMediaImageURL(value)
+		if imageURL == "" {
+			return nil, fmt.Errorf("%s.image_url must contain a non-empty image URL", path)
+		}
 		var err error
-		out, err = sjson.SetBytes(out, path+".url", legacy.Value())
+		out, err = sjson.SetBytes(out, path+".url", imageURL)
 		if err != nil {
 			return nil, fmt.Errorf("normalize grok media image url: %w", err)
 		}
