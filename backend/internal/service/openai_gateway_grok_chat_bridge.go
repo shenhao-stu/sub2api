@@ -627,6 +627,8 @@ func (s *OpenAIGatewayService) forwardGrokChatCompletionsViaResponses(
 		if upstreamMsg == "" {
 			upstreamMsg = fmt.Sprintf("xAI upstream returned status %d", resp.StatusCode)
 		}
+		upstreamDetail := s.grokUpstreamErrorDetail(respBody)
+		setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 		kind := "http_error"
 		if s.shouldFailoverGrokUpstreamError(resp.StatusCode, respBody) {
 			kind = "failover"
@@ -641,6 +643,7 @@ func (s *OpenAIGatewayService) forwardGrokChatCompletionsViaResponses(
 			UpstreamRequestID:  firstNonEmpty(resp.Header.Get("x-request-id"), resp.Header.Get("xai-request-id")),
 			Kind:               kind,
 			Message:            upstreamMsg,
+			Detail:             upstreamDetail,
 		})
 		s.handleGrokAccountUpstreamError(withGrokTeamRateLimitModel(ctx, upstreamModel), account, resp.StatusCode, resp.Header, respBody)
 		if s.shouldFailoverGrokUpstreamError(resp.StatusCode, respBody) {

@@ -57,6 +57,9 @@ func applyErrorPassthroughRule(
 	}
 
 	errMsg = ExtractUpstreamErrorMessage(responseBody)
+	if platform == PlatformGrok {
+		errMsg = extractGrokUpstreamErrorMessage(responseBody)
+	}
 	if !rule.PassthroughBody && rule.CustomMessage != nil {
 		errMsg = *rule.CustomMessage
 	}

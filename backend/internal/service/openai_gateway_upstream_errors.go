@@ -816,9 +816,16 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 		upstreamMsg = fmt.Sprintf("Upstream error: %d", resp.StatusCode)
 	}
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+	// Enrich diagnostics without changing the existing fallback client message.
+	clientMsg := upstreamMsg
 
 	upstreamDetail := ""
-	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+	if account != nil && account.Platform == PlatformGrok {
+		if message := extractGrokUpstreamErrorMessage(body); message != "" {
+			upstreamMsg = message
+		}
+		upstreamDetail = s.grokUpstreamErrorDetail(body)
+	} else if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 		maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
 		if maxBytes <= 0 {
 			maxBytes = 2048
@@ -913,7 +920,6 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 		errType = "api_error"
 	}
 
-	clientMsg := upstreamMsg
 	if IsUpstreamQuotaExhausted(resp.StatusCode, body) {
 		clientMsg = UpstreamQuotaExhaustedMessage
 	}
