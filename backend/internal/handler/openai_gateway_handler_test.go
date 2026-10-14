@@ -2906,12 +2906,17 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 			upstreamPayloadCh <- payload
 			w.Header().Set("Content-Type", "text/event-stream")
 			if tc.grokSemanticTimeout {
+				flusher, ok := w.(http.Flusher)
+				if !ok {
+					upstreamErrCh <- errors.New("synthetic Grok upstream cannot flush SSE")
+					return
+				}
 				inputTokens := 7
 				if tc.grokNoUsage {
 					inputTokens = 0
 				}
 				_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_timeout\",\"usage\":{\"input_tokens\":%d,\"output_tokens\":0}}}\n\n", inputTokens)
-				w.(http.Flusher).Flush()
+				flusher.Flush()
 				ticker := time.NewTicker(20 * time.Millisecond)
 				defer ticker.Stop()
 				for {
@@ -2922,7 +2927,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 						if _, err := io.WriteString(w, ": heartbeat\n\n"); err != nil {
 							return
 						}
-						w.(http.Flusher).Flush()
+						flusher.Flush()
 					}
 				}
 			}
