@@ -1937,6 +1937,8 @@ func newOpenAIWSHandlerTestServer(t *testing.T, h *OpenAIGatewayHandler, subject
 }
 
 type openAIResponsesWSUsageLogCase struct {
+	grokSemanticTimeout    bool
+	grokNoUsage            bool
 	keyChangeAfterFirst    string
 	simpleModeRejectAtRead int64
 	compositeResolver      *service.CompositeRouteResolver
@@ -2903,6 +2905,32 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 			}
 			upstreamPayloadCh <- payload
 			w.Header().Set("Content-Type", "text/event-stream")
+			if tc.grokSemanticTimeout {
+				flusher, ok := w.(http.Flusher)
+				if !ok {
+					upstreamErrCh <- errors.New("synthetic Grok upstream cannot flush SSE")
+					return
+				}
+				inputTokens := 7
+				if tc.grokNoUsage {
+					inputTokens = 0
+				}
+				_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_timeout\",\"usage\":{\"input_tokens\":%d,\"output_tokens\":0}}}\n\n", inputTokens)
+				flusher.Flush()
+				ticker := time.NewTicker(20 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-r.Context().Done():
+						return
+					case <-ticker.C:
+						if _, err := io.WriteString(w, ": heartbeat\n\n"); err != nil {
+							return
+						}
+						flusher.Flush()
+					}
+				}
+			}
 			_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_grok_test\",\"model\":%q,\"usage\":{\"input_tokens\":2,\"output_tokens\":1}}}\n\n", gjson.GetBytes(payload, "model").String())
 			return
 		}
@@ -2982,6 +3010,10 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	}
 
 	cfg := &config.Config{}
+	if tc.grokSemanticTimeout {
+		cfg.Gateway.GrokFirstSemanticTimeoutSeconds = 1
+	} // Short synthetic budget; config validation remains 30s minimum.
+
 	cfg.RunMode = config.RunModeSimple
 	cfg.Default.RateMultiplier = 1
 	cfg.Security.URLAllowlist.Enabled = false
@@ -3155,9 +3187,18 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	readCompleted := func() {
 		readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
 		_, event, readErr := clientConn.Read(readCtx)
+		for tc.grokSemanticTimeout && readErr == nil && gjson.GetBytes(event, "type").String() != "error" {
+			_, event, readErr = clientConn.Read(readCtx)
+		}
 		cancelRead()
 		require.NoError(t, readErr)
-		require.Equal(t, "response.completed", gjson.GetBytes(event, "type").String())
+		if tc.grokSemanticTimeout {
+			require.Equal(t, "error", gjson.GetBytes(event, "type").String())
+			require.Equal(t, "grok_first_semantic_timeout", gjson.GetBytes(event, "error.code").String())
+			require.EqualValues(t, 504, gjson.GetBytes(event, "status").Int())
+		} else {
+			require.Equal(t, "response.completed", gjson.GetBytes(event, "type").String())
+		}
 		clientEvents = append(clientEvents, append([]byte(nil), event...))
 	}
 	readCompleted()
@@ -3200,7 +3241,14 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	_ = clientConn.Close(coderws.StatusNormalClosure, "done")
 
 	usageLogs := make([]*service.UsageLog, 0, turnCount)
-	for len(usageLogs) < turnCount {
+	if tc.grokNoUsage {
+		select {
+		case <-usageRepo.created:
+			t.Fatal("heartbeat-only timeout must not create usage")
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	for !tc.grokNoUsage && len(usageLogs) < turnCount {
 		select {
 		case usageLog := <-usageRepo.created:
 			require.NotNil(t, usageLog)
@@ -3230,8 +3278,12 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		t.Fatal("等待上游 WebSocket 结束超时")
 	}
 
+	var firstLog *service.UsageLog
+	if len(usageLogs) > 0 {
+		firstLog = usageLogs[0]
+	}
 	return openAIResponsesWSUsageLogResult{
-		log:                  usageLogs[0],
+		log:                  firstLog,
 		logs:                 usageLogs,
 		upstreamFirstPayload: upstreamPayloads[0],
 		upstreamPayloads:     upstreamPayloads,
@@ -3338,6 +3390,28 @@ func TestOpenAIResponsesWebSocketSimpleModeRechecksKeyWindows(t *testing.T) {
 				secondPayload: `{"type":"response.create","model":"gpt-5.1"}`,
 				ingressMode:   mode, simpleModeRejectAtRead: 3, secondTurnCloseExpected: true, closeReason: "billing check failed",
 			})
+		})
+	}
+}
+
+func TestGrokSemanticWebSocketHandlerSettlesOnlyKnownUsage(t *testing.T) {
+	for _, noUsage := range []bool{false, true} {
+		t.Run(fmt.Sprintf("no_usage_%v", noUsage), func(t *testing.T) {
+			got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
+				accountPlatform: service.PlatformGrok, group: &service.Group{ID: 4201, Platform: service.PlatformGrok},
+				firstPayload:        `{"type":"response.create","model":"grok-4.6","input":"test"}`,
+				grokSemanticTimeout: true, grokNoUsage: noUsage,
+			})
+			require.Len(t, got.upstreamPayloads, 1, "timeout must not retry")
+			if noUsage {
+				require.Nil(t, got.log)
+				require.Empty(t, got.logs)
+				return
+			}
+			require.Len(t, got.logs, 1)
+			require.Equal(t, 7, got.log.InputTokens)
+			require.Zero(t, got.log.OutputTokens)
+			require.True(t, got.log.OpenAIWSMode)
 		})
 	}
 }

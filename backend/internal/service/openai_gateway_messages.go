@@ -618,6 +618,9 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 		return openAICompatMeteredResult(c, resp, usage, originalModel, billingModel, upstreamModel, startTime)
 	}
 	if err != nil {
+		if handleGrokFirstSemanticTimeout(c, account, err, &usage) {
+			return partialResult(), err
+		}
 		if openAIUsageHasTokens(&usage) {
 			writeAnthropicErrorWithUsage(c, http.StatusBadGateway, "api_error", "Failed to read upstream response", &usage)
 		}
@@ -1195,6 +1198,9 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 
 	// handleScanErr logs scanner errors if meaningful.
 	handleScanErr := func(err error) {
+		if handleGrokFirstSemanticTimeout(c, account, err, &usage) {
+			return
+		}
 		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			logger.L().Warn("openai messages stream: read error",
 				zap.Error(err),

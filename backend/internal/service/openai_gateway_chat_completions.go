@@ -698,6 +698,9 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 		return openAICompatMeteredResult(c, resp, usage, originalModel, billingModel, upstreamModel, startTime)
 	}
 	if err != nil {
+		if handleGrokFirstSemanticTimeout(c, account, err, &usage) {
+			return partialResult(), err
+		}
 		if openAIUsageHasTokens(&usage) {
 			writeChatCompletionsErrorWithUsage(c, http.StatusBadGateway, "upstream_error", "Failed to read upstream response", &usage)
 			return partialResult(), err
@@ -1186,6 +1189,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	}
 
 	handleScanErr := func(err error) {
+		if handleGrokFirstSemanticTimeout(c, account, err, &usage) {
+			return
+		}
 		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			logger.FromContext(c.Request.Context()).Warn("openai chat_completions stream: read error",
 				zap.Error(err),

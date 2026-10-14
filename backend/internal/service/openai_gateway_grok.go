@@ -1654,6 +1654,7 @@ func buildGrokResponsesRequest(ctx context.Context, c *gin.Context, account *Acc
 		return nil, err
 	}
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), grokHTTPProfile(gjson.GetBytes(body, "stream").Bool())))
+	req = withGrokFirstSemanticBudget(req, c, account, cfg, gjson.GetBytes(body, "stream").Bool())
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")

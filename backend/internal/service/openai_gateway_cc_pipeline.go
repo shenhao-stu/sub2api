@@ -225,6 +225,7 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 		profile = grokHTTPProfile(stream)
 	}
 	upstreamReq = upstreamReq.WithContext(WithHTTPUpstreamProfile(upstreamReq.Context(), profile))
+	upstreamReq = withGrokFirstSemanticBudget(upstreamReq, c, account, s.cfg, stream)
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("Authorization", "Bearer "+bearerToken)
 	if stream {

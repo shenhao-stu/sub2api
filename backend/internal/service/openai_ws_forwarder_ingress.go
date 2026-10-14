@@ -772,6 +772,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if parseErr != nil {
 				return parseErr
 			}
+			resetGrokFirstSemanticBudget(c)
 			currentBridgePayload = nextPayload
 		}
 	}

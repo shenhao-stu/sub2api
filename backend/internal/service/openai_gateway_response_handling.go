@@ -430,6 +430,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		return resultWithUsage(), nil
 	}
 	handleScanErr := func(scanErr error) (*openaiStreamingResult, error, bool) {
+		if handleGrokFirstSemanticTimeout(c, account, scanErr, usage) {
+			return resultWithUsage(), scanErr, true
+		}
 		if scanErr == nil {
 			return nil, nil, false
 		}
