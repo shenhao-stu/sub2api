@@ -1334,6 +1334,9 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 
 	upstreamDetail := s.grokUpstreamErrorDetail(body)
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
+	if resp.StatusCode == http.StatusRequestEntityTooLarge {
+		return nil, writeGrokRequestBodyTooLargeError(c)
+	}
 	if imageContentRejection || isGrokContentPolicyRejection(resp.StatusCode, body) {
 		clientMsg := grokContentPolicyClientMessage(body)
 		if imageContentRejection {

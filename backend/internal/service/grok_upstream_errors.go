@@ -273,6 +273,13 @@ func grokContentPolicyClientMessage(responseBody []byte) string {
 	return message
 }
 
+// The same payload reaches the shared xAI ingress through every Grok account.
+// Stop on its size rejection without discarding history or masking it with a retry.
+func writeGrokRequestBodyTooLargeError(c *gin.Context) error {
+	writeRequestAdmissionError(c, http.StatusRequestEntityTooLarge, "invalid_request_error", "request_too_large", OpenAIRequestBodyTooLargeClientMessage)
+	return fmt.Errorf("grok request payload too large")
+}
+
 // Preserve the request-scoped verdict through every client protocol, including
 // a heartbeat that has already committed HTTP 200. No usage is invented here.
 func writeGrokContentPolicyError(c *gin.Context, message string) {
@@ -314,6 +321,9 @@ func writeRequestAdmissionError(c *gin.Context, status int, errorType, code, mes
 // Free-usage / empty-output / billing bodies also failover even when the HTTP
 // status alone would not (e.g. 400 with free-usage-exhausted).
 func (s *OpenAIGatewayService) shouldFailoverGrokUpstreamError(statusCode int, responseBody []byte) bool {
+	if statusCode == http.StatusRequestEntityTooLarge {
+		return false
+	}
 	if isGrokContentPolicyRejection(statusCode, responseBody) || isGrokOpaqueForbidden(statusCode, responseBody) || isGrokUnknownInputItemTypeError(statusCode, responseBody) {
 		return false
 	}
