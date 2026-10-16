@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requestmodel"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -171,6 +172,9 @@ func (s *OpenAIGatewayService) OpenGrokRealtime(ctx context.Context, account *Ac
 	}
 	u.Scheme = "wss"
 	q := u.Query()
+	if err := RequireEnabledModels(s.cfg, firstNonEmpty(model, "grok-voice-latest")); err != nil {
+		return nil, err
+	}
 	q.Set("model", firstNonEmpty(model, "grok-voice-latest"))
 	u.RawQuery = q.Encode()
 	headers := http.Header{"Authorization": []string{"Bearer " + token}}
@@ -238,6 +242,10 @@ func (s *OpenAIGatewayService) ProxyGrokRealtimeConn(ctx context.Context, c *gin
 			if kind != coderws.MessageText && kind != coderws.MessageBinary {
 				continue
 			}
+			if err := RequireEnabledModels(s.cfg, requestmodel.FromBodyCandidates("", "application/json", msg)...); err != nil {
+				errCh <- err
+				return
+			}
 			if grokRealtimeEventHasAudio(msg) {
 				audioObserved.Store(true)
 			}
@@ -276,6 +284,9 @@ func (s *OpenAIGatewayService) ProbeGrokRealtime(ctx context.Context, account *A
 	}
 	u.Scheme = "wss"
 	q := u.Query()
+	if err := RequireEnabledModels(s.cfg, firstNonEmpty(model, "grok-voice-latest")); err != nil {
+		return err
+	}
 	q.Set("model", firstNonEmpty(model, "grok-voice-latest"))
 	u.RawQuery = q.Encode()
 	headers := http.Header{"Authorization": []string{"Bearer " + token}}

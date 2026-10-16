@@ -748,6 +748,9 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 			}
 		}
 	}
+	if err := rejectDisabledModels(c, s.cfg, requestInfo.Model, upstreamModel); err != nil {
+		return nil, err
+	}
 	body, contentType, err = sanitizeGrokMediaForwardBody(endpoint, body, contentType)
 	if err != nil {
 		return nil, err

@@ -14,6 +14,10 @@ import (
 // RequireForwardPricing is the common admission boundary for Anthropic,
 // Gemini and Antigravity traffic that settles through GatewayService.
 func (s *GatewayService) RequireForwardPricing(ctx context.Context, c *gin.Context, account *Account, forwarded string) error {
+	publicModel, _ := RequestedPublicModelFromContext(ctx)
+	if err := rejectDisabledModels(c, s.cfg, publicModel, forwarded, gatewayForwardPolicyModel(account, forwarded)); err != nil {
+		return err
+	}
 	key := getAPIKeyFromContext(c)
 	if key == nil || strings.TrimSpace(forwarded) == "" {
 		return nil // Internal diagnostics have no customer billing identity.

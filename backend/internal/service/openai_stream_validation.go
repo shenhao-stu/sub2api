@@ -54,7 +54,7 @@ func writeOpenAIStreamValidation(c *gin.Context, payload []byte, message string,
 	MarkResponseCommitted(c)
 	if committed || c.Writer.Written() {
 		source, _ := marshalOpenAIUpstreamJSON(gin.H{"error": errorBody})
-		_, _ = c.Writer.WriteString(buildOpenAIResponseFailedSSE("", observedUpstreamResponseModel(c), source, message, usage...))
+		_, _ = c.Writer.WriteString(buildOpenAIResponseFailedSSE("", observedUpstreamResponseModel(c), 0, source, message, usage...))
 		c.Writer.Flush()
 	} else {
 		c.Header("Content-Type", "application/json; charset=utf-8")

@@ -23,7 +23,7 @@ func (s *AccountTestService) FetchCommandCodeAccountModels(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
-	projected, err := projectAccountModelsBody(body, account, nil, false)
+	projected, err := projectAccountModelsBody(body, account, nil, false, s.cfg)
 	if err != nil {
 		return nil, fmt.Errorf("project Command Code account models: %w", err)
 	}

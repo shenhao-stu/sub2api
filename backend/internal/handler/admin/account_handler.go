@@ -2803,13 +2803,21 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		response.NotFound(c, "Account not found")
 		return
 	}
+	writeModels := func(models any) {
+		filtered, filterErr := h.accountTestService.FilterAvailableModels(account, models)
+		if filterErr != nil {
+			response.Error(c, http.StatusInternalServerError, "Failed to filter model catalogue")
+			return
+		}
+		response.Success(c, filtered)
+	}
 	if account.IsCommandCodeGo() {
 		models, err := h.accountTestService.FetchCommandCodeAccountModels(c.Request.Context(), account)
 		if err != nil {
 			response.Error(c, http.StatusBadGateway, err.Error())
 			return
 		}
-		response.Success(c, models)
+		writeModels(models)
 		return
 	}
 
@@ -2819,19 +2827,19 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		// retain the legacy local catalog below so the test dialog remains usable.
 		if h.accountTestService != nil {
 			if models, fetchErr := h.accountTestService.FetchOpenAIAccountModels(c.Request.Context(), account); fetchErr == nil {
-				response.Success(c, models)
+				writeModels(models)
 				return
 			}
 		}
 		// OpenAI 自动透传会绕过常规模型改写，测试/模型列表也应回落到默认模型集。
 		if account.IsOpenAIPassthroughEnabled() {
-			response.Success(c, openai.DefaultModels)
+			writeModels(openai.DefaultModels)
 			return
 		}
 
 		mapping := account.GetModelMapping()
 		if len(mapping) == 0 {
-			response.Success(c, openai.DefaultModels)
+			writeModels(openai.DefaultModels)
 			return
 		}
 
@@ -2855,7 +2863,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 				})
 			}
 		}
-		response.Success(c, models)
+		writeModels(models)
 		return
 	}
 
@@ -2866,17 +2874,17 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		// channel cannot serve.
 		if account.IsOAuth() {
 			if account.IsGeminiGoogleOne() {
-				response.Success(c, geminicli.GoogleOneModels)
+				writeModels(geminicli.GoogleOneModels)
 				return
 			}
-			response.Success(c, geminicli.DefaultModels)
+			writeModels(geminicli.DefaultModels)
 			return
 		}
 
 		// For API Key accounts: return models based on model_mapping
 		mapping := account.GetModelMapping()
 		if len(mapping) == 0 {
-			response.Success(c, geminicli.DefaultModels)
+			writeModels(geminicli.DefaultModels)
 			return
 		}
 
@@ -2899,13 +2907,13 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 				})
 			}
 		}
-		response.Success(c, models)
+		writeModels(models)
 		return
 	}
 
 	// Explicit account mappings expose their request-side names to connectivity tests.
 	if account.Platform == service.PlatformAntigravity {
-		response.Success(c, antigravityAccountTestModels(account.Credentials["model_mapping"]))
+		writeModels(antigravityAccountTestModels(account.Credentials["model_mapping"]))
 		return
 	}
 
@@ -2921,13 +2929,13 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 			hasExplicitMapping = len(rawMapping) > 0
 		}
 		if !hasExplicitMapping {
-			response.Success(c, defaultModels)
+			writeModels(defaultModels)
 			return
 		}
 
 		mapping := account.GetModelMapping()
 		if len(mapping) == 0 {
-			response.Success(c, defaultModels)
+			writeModels(defaultModels)
 			return
 		}
 
@@ -2955,20 +2963,20 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 				DisplayName: requestedModel,
 			})
 		}
-		response.Success(c, models)
+		writeModels(models)
 		return
 	}
 
 	// TypeSafe accounts serve only the native System One model.
 	if account.IsTypeSafe() {
-		response.Success(c, []claude.Model{{ID: typesafe.JevLatestModel, Type: "model", DisplayName: typesafe.JevLatestModel}})
+		writeModels([]claude.Model{{ID: typesafe.JevLatestModel, Type: "model", DisplayName: typesafe.JevLatestModel}})
 		return
 	}
 
 	// Handle Claude/Anthropic accounts
 	// For OAuth and Setup-Token accounts: return default models
 	if account.IsOAuth() {
-		response.Success(c, claude.DefaultModels)
+		writeModels(claude.DefaultModels)
 		return
 	}
 
@@ -2976,7 +2984,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	mapping := account.GetModelMapping()
 	if len(mapping) == 0 {
 		// No mapping configured, return default models
-		response.Success(c, claude.DefaultModels)
+		writeModels(claude.DefaultModels)
 		return
 	}
 
@@ -3003,7 +3011,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		}
 	}
 
-	response.Success(c, models)
+	writeModels(models)
 }
 
 // antigravityAccountTestModels uses the stored mapping rather than GetModelMapping,
@@ -3013,13 +3021,13 @@ func antigravityAccountTestModels(rawMapping any) []antigravity.ClaudeModel {
 	switch mapping := rawMapping.(type) {
 	case map[string]any:
 		for id := range mapping {
-			if strings.TrimSpace(id) != "" {
+			if strings.TrimSpace(id) != "" && !strings.Contains(id, "*") {
 				mappedIDs = append(mappedIDs, id)
 			}
 		}
 	case map[string]string:
 		for id := range mapping {
-			if strings.TrimSpace(id) != "" {
+			if strings.TrimSpace(id) != "" && !strings.Contains(id, "*") {
 				mappedIDs = append(mappedIDs, id)
 			}
 		}

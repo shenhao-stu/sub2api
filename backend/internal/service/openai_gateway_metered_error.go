@@ -141,9 +141,10 @@ func (s *OpenAIGatewayService) handleMeteredOpenAIHTTPError(ctx context.Context,
 			event = "event: response.failed\n"
 			clientBody["id"] = "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 			clientBody["object"] = "response"
+			clientBody["created_at"] = time.Now().Unix()
 			clientBody["status"] = "failed"
 			clientBody["output"] = []any{}
-			clientBody = gin.H{"type": "response.failed", "response": clientBody}
+			clientBody = gin.H{"type": "response.failed", "sequence_number": 0, "response": clientBody}
 		}
 		payload, _ := marshalOpenAIUpstreamJSON(clientBody)
 		_, _ = fmt.Fprintf(c.Writer, "%sdata: %s\n\n", event, payload)

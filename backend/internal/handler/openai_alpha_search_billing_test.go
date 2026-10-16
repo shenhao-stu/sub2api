@@ -47,7 +47,7 @@ func TestAlphaSearchBillsCompletedCallBeforeResponseError(t *testing.T) {
 					"data: {\"type\":\"response.web_search_call.completed\",\"item_id\":\"search-1\"}\n\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\"}}\n\n"))}, nil
 			}
 			c, recorder := grokMediaSlotContext(ctx, true)
-			c.Request = httptest.NewRequest(http.MethodPost, "/v1/alpha/search", strings.NewReader(`{"model":"gpt-5.5","commands":{"search_query":[{"q":"fixture"}]}}`)).WithContext(ctx)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/alpha/search", strings.NewReader(`{"model":"gpt-6.1-sol","commands":{"search_query":[{"q":"fixture"}]}}`)).WithContext(ctx)
 			key, _ := middleware2.GetAPIKeyFromContext(c)
 			key.Group.Platform, key.Group.RateMultiplier = service.PlatformOpenAI, 1
 			h.AlphaSearch(c)

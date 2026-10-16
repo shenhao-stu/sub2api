@@ -635,6 +635,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		return nil, err
 	}
 	upstreamModel := account.GetMappedModel(requestModel)
+	if err := rejectDisabledModels(c, s.cfg, parsed.Model, requestModel, upstreamModel); err != nil {
+		return nil, err
+	}
 	if err := validateCompatibleImagesModel(upstreamModel); err != nil {
 		return nil, err
 	}
