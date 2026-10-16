@@ -47,7 +47,7 @@ type TooLargeWriter func(c *gin.Context)
 // callers must still treat the response as unsuccessful.
 func ReadUpstreamResponseBody(reader io.Reader, cfg *config.Config, c *gin.Context, onTooLarge TooLargeWriter) ([]byte, error) {
 	maxBytes := resolveUpstreamResponseReadLimit(cfg)
-	body, err := readUpstreamResponseBodyLimited(reader, maxBytes)
+	body, err := awaitAnthropicBody(c, reader, func() ([]byte, error) { return readUpstreamResponseBodyLimited(reader, maxBytes) })
 	if err != nil {
 		if errors.Is(err, ErrUpstreamResponseBodyTooLarge) {
 			setOpsUpstreamError(c, http.StatusBadGateway, "upstream response too large", "")
@@ -62,7 +62,7 @@ func ReadUpstreamResponseBody(reader io.Reader, cfg *config.Config, c *gin.Conte
 
 // anthropicTooLargeError 以 Anthropic Messages API 格式写入超限错误。
 func anthropicTooLargeError(c *gin.Context) {
-	c.JSON(http.StatusBadGateway, gin.H{
+	WriteAnthropicErrorResponse(c, http.StatusBadGateway, gin.H{
 		"type": "error",
 		"error": gin.H{
 			"type":    "upstream_error",

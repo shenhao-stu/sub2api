@@ -350,7 +350,7 @@ func isCountTokensUnsupported404(statusCode int, body []byte) bool {
 	return strings.Contains(msg, "count_tokens") && strings.Contains(msg, "not found")
 }
 
-func (s *GatewayService) readUpstreamErrorBody(resp *http.Response) ([]byte, error) {
+func (s *GatewayService) readUpstreamErrorBody(resp *http.Response, contexts ...*gin.Context) ([]byte, error) {
 	if resp == nil || resp.Body == nil {
 		return nil, nil
 	}
@@ -358,14 +358,18 @@ func (s *GatewayService) readUpstreamErrorBody(resp *http.Response) ([]byte, err
 	if s != nil && s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody && s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes > int(limit) {
 		limit = int64(s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, limit))
+	var c *gin.Context
+	if len(contexts) > 0 {
+		c = contexts[0]
+	}
+	return awaitAnthropicBody(c, resp.Body, func() ([]byte, error) { return io.ReadAll(io.LimitReader(resp.Body, limit)) })
 }
 
 func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, requestedModel ...string) (*ForwardResult, error) {
 	// Upstream returned a non-success HTTP status; count Ollama Cloud / OpenCode Go activity.
 	scheduleOllamaCloudUsageActivity(s.deferredService, account)
 	scheduleOpenCodeGoUsageActivity(s.deferredService, account)
-	body, readErr := s.readUpstreamErrorBody(resp)
+	body, readErr := s.readUpstreamErrorBody(resp, c)
 	if readErr != nil {
 		// 读取失败时 body 可能被截断，错误分类会基于不完整数据；记录日志以便排查，
 		// 避免静默吞掉导致误判。
@@ -453,7 +457,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 		"upstream_error",
 		"Upstream request failed",
 	); matched {
-		c.JSON(status, gin.H{
+		WriteAnthropicErrorResponse(c, status, gin.H{
 			"type": "error",
 			"error": gin.H{
 				"type":    errType,
@@ -477,7 +481,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 
 	switch resp.StatusCode {
 	case 400:
-		c.Data(http.StatusBadRequest, "application/json", body)
+		writeAnthropicErrorBody(c, http.StatusBadRequest, body)
 		summary := upstreamMsg
 		if summary == "" {
 			summary = truncateForLog(body, 512)
@@ -518,7 +522,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 		errorBody["code"] = "insufficient_quota"
 		errorBody["message"] = UpstreamQuotaExhaustedMessage
 	}
-	c.JSON(statusCode, gin.H{
+	WriteAnthropicErrorResponse(c, statusCode, gin.H{
 		"type":  "error",
 		"error": errorBody,
 	})
@@ -564,7 +568,7 @@ func (s *GatewayService) handleFailoverSideEffects(ctx context.Context, resp *ht
 func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, requestedModel ...string) (*ForwardResult, error) {
 	MarkResponseCommitted(c)
 	// Capture upstream error body before side-effects consume the stream.
-	respBody, _ := s.readUpstreamErrorBody(resp)
+	respBody, _ := s.readUpstreamErrorBody(resp, c)
 	_ = resp.Body.Close()
 	resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
@@ -626,7 +630,7 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 		"upstream_error",
 		"Upstream request failed after retries",
 	); matched {
-		c.JSON(status, gin.H{
+		WriteAnthropicErrorResponse(c, status, gin.H{
 			"type": "error",
 			"error": gin.H{
 				"type":    errType,
@@ -645,7 +649,7 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 	}
 
 	// 返回统一的重试耗尽错误响应
-	c.JSON(http.StatusBadGateway, gin.H{
+	WriteAnthropicErrorResponse(c, http.StatusBadGateway, gin.H{
 		"type": "error",
 		"error": gin.H{
 			"type":    "upstream_error",
@@ -1056,7 +1060,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				// 默认 *net.OpError 的 Error() 会泄露内部 IP/端口和上游地址。完整 ev.err
 				// 仅在下方 LegacyPrintf 内部日志中保留供运维诊断。
 				disconnectMsg := "upstream stream disconnected: " + sanitizeStreamError(ev.err)
-				if !c.Writer.Written() {
+				if AnthropicKeepaliveAdjustedWrittenSize(c) < 0 {
 					logger.LegacyPrintf("service.gateway", "Upstream stream read error before any client output (account=%d), failing over: %v", account.ID, ev.err)
 					body, _ := json.Marshal(map[string]any{
 						"type": "error",
@@ -1114,7 +1118,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 						}
 					}
 					if data != "" {
-						if firstTokenMs == nil && data != "[DONE]" {
+						if firstTokenMs == nil && data != "[DONE]" && !anthropicDataIsHeartbeat(data) {
 							ms := int(time.Since(startTime).Milliseconds())
 							firstTokenMs = &ms
 						}
@@ -1158,7 +1162,9 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 					keepaliveBlock = block
 				}
 			}
-			if _, werr := fmt.Fprint(w, keepaliveBlock); werr != nil {
+			written, werr := fmt.Fprint(w, keepaliveBlock)
+			recordAnthropicKeepalive(c, written)
+			if werr != nil {
 				clientDisconnected = true
 				logger.LegacyPrintf("service.gateway", "Client disconnected during keepalive ping, continuing to drain upstream for billing")
 				continue
