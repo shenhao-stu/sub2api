@@ -514,6 +514,11 @@ gateway:
   # Stream keepalive interval (seconds), 0=disable
   # 流式 keepalive 间隔（秒），0=禁用
   stream_keepalive_interval: 10
+  # Native Anthropic /messages nonstream JSON whitespace keepalive. 0 disables; 5-30 seconds.
+  # Opt-in requests have a shared 20-minute forwarding deadline across account retries.
+  # First whitespace commits HTTP 200; clients must inspect the final typed JSON error/success.
+  # Environment: GATEWAY_ANTHROPIC_NONSTREAM_KEEPALIVE_INTERVAL (overrides this file).
+  anthropic_nonstream_keepalive_interval: 0
   # Image stream data interval timeout (seconds), 0=disable; independent from ordinary text streams
   # 图片流数据间隔超时（秒），0=禁用；独立于普通文本流式
   image_stream_data_interval_timeout: 900

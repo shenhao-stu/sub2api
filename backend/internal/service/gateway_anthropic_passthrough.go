@@ -59,6 +59,11 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	account *Account,
 	input anthropicPassthroughForwardInput,
 ) (*ForwardResult, error) {
+	if s.initAnthropicKeepalive(c, account, input.RequestStream) {
+		var releaseKeepalive context.CancelFunc
+		ctx, releaseKeepalive = anthropicKeepaliveForwardContext(ctx, c)
+		defer releaseKeepalive()
+	}
 	token, tokenType, err := s.GetAccessToken(ctx, account)
 	if err != nil {
 		return nil, err
@@ -109,7 +114,9 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			input.Body = input.Parsed.Body.Bytes()
 		}
 
-		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+		resp, err = awaitAnthropicUpstream(c, func() (*http.Response, error) {
+			return s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+		})
 		if err != nil {
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
@@ -137,7 +144,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 					break
 				}
 
-				respBody, _ := s.readUpstreamErrorBody(resp)
+				respBody, _ := s.readUpstreamErrorBody(resp, c)
 				_ = resp.Body.Close()
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					ProxyID:            opsUpstreamProxyID(account),
@@ -177,7 +184,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 
 	if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {
-			respBody, _ := s.readUpstreamErrorBody(resp)
+			respBody, _ := s.readUpstreamErrorBody(resp, c)
 			_ = resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
@@ -213,7 +220,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	}
 
 	if resp.StatusCode >= 400 && s.shouldFailoverUpstreamError(resp.StatusCode) {
-		respBody, _ := s.readUpstreamErrorBody(resp)
+		respBody, _ := s.readUpstreamErrorBody(resp, c)
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
@@ -541,7 +548,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 				if anthropicStreamEventIsTerminal("", trimmed) {
 					sawTerminalEvent = true
 				}
-				if firstTokenMs == nil && trimmed != "" && trimmed != "[DONE]" {
+				if firstTokenMs == nil && trimmed != "" && trimmed != "[DONE]" && !anthropicDataIsHeartbeat(trimmed) {
 					ms := int(time.Since(startTime).Milliseconds())
 					firstTokenMs = &ms
 				}
@@ -605,7 +612,9 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 				resetKeepaliveTimer()
 				continue
 			}
-			if _, err := fmt.Fprint(w, "event: ping\ndata: {\"type\": \"ping\"}\n\n"); err != nil {
+			written, err := fmt.Fprint(w, anthropicPingFrame)
+			recordAnthropicKeepalive(c, written)
+			if err != nil {
 				clientDisconnected = true
 				logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during keepalive ping, continue draining upstream for usage: account=%d", account.ID)
 				continue
