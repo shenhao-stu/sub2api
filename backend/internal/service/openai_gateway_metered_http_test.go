@@ -103,6 +103,7 @@ func TestOpenAIMeteredHTTPCompactHeartbeatEndsWithFailedSSE(t *testing.T) {
 	terminal := stripKeepaliveComments(rec.Body.String())
 	require.Contains(t, terminal, "event: response.failed")
 	require.Equal(t, 1, strings.Count(terminal, "data: "))
+	assertMeteredFailedResponseMetadata(t, terminal)
 	usage := svc.parseSSEUsageFromBody(terminal)
 	require.Equal(t, 37, usage.InputTokens)
 	require.Equal(t, 2, usage.OutputTokens)
@@ -196,6 +197,7 @@ func TestOpenAIMeteredHTTPQueuedHeartbeatRetainsProtocol(t *testing.T) {
 			require.Equal(t, 1, strings.Count(rec.Body.String(), "data: "))
 			if path == "/v1/responses" {
 				require.Contains(t, rec.Body.String(), "event: response.failed")
+				assertMeteredFailedResponseMetadata(t, rec.Body.String())
 			}
 			if path == "/v1/messages" {
 				require.Contains(t, rec.Body.String(), "event: error")
@@ -233,4 +235,16 @@ func TestOpenAIMeteredHTTPGrokPreservesTeamCooldown(t *testing.T) {
 			require.False(t, isGrokTeamModelRateLimited(account, "other-model", time.Now()))
 		})
 	}
+}
+
+func assertMeteredFailedResponseMetadata(t *testing.T, body string) {
+	t.Helper()
+	payloads := sseDataPayloads(body)
+	require.Len(t, payloads, 1)
+	payload := payloads[0]
+	require.Equal(t, "response.failed", gjson.Get(payload, "type").String())
+	require.Equal(t, gjson.Number, gjson.Get(payload, "sequence_number").Type)
+	require.Zero(t, gjson.Get(payload, "sequence_number").Int())
+	require.Positive(t, gjson.Get(payload, "response.created_at").Int())
+	require.Equal(t, "failed", gjson.Get(payload, "response.status").String())
 }
