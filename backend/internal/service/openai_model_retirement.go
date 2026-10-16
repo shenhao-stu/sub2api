@@ -3,6 +3,8 @@ package service
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
 )
 
 // GPT-5.5 retired from Codex with ChatGPT sign-in on 2026-10-14 at
@@ -37,10 +39,10 @@ func openAIModelRetiredForAccounts(accounts []Account, modelID string) bool {
 	return retired
 }
 
-func filterRetiredOpenAIModelIDs(accounts []Account, models []string) []string {
+func filterRetiredOpenAIModelIDs(accounts []Account, models []string, configs ...*config.Config) []string {
 	filtered := make([]string, 0, len(models))
 	for _, model := range models {
-		if !openAIModelRetiredForAccounts(accounts, model) {
+		if !openAIModelRetiredForAccounts(accounts, model) && !modelDisabledForAccounts(firstPolicyConfig(configs), accounts, model) {
 			filtered = append(filtered, model)
 		}
 	}
@@ -50,7 +52,7 @@ func filterRetiredOpenAIModelIDs(accounts []Account, models []string) []string {
 // Entries must already use client-visible names, not raw upstream IDs. Resolve
 // each public name exactly as routing does, after projection and before the
 // final client ETag is calculated. Preserve unknown fields.
-func filterRetiredOpenAIPublicModelsBody(body []byte, accounts []Account, codex bool) ([]byte, bool, error) {
+func filterRetiredOpenAIPublicModelsBody(body []byte, accounts []Account, codex bool, configs ...*config.Config) ([]byte, bool, error) {
 	field, idField := "data", "id"
 	if codex {
 		field, idField = "models", "slug"
@@ -66,7 +68,7 @@ func filterRetiredOpenAIPublicModelsBody(body []byte, accounts []Account, codex 
 		if json.Unmarshal(raw, &entry) == nil {
 			_ = json.Unmarshal(entry[idField], &id)
 		}
-		if !openAIModelRetiredForAccounts(accounts, id) {
+		if !openAIModelRetiredForAccounts(accounts, id) && !modelDisabledForAccounts(firstPolicyConfig(configs), accounts, id) {
 			filtered = append(filtered, raw)
 		}
 	}

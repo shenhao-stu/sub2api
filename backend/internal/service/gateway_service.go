@@ -1344,6 +1344,9 @@ func (s *GatewayService) DoGrokNativeResponsesJSON(ctx context.Context, account 
 			}
 		}
 	}
+	if err := RequireEnabledModels(s.cfg, gjson.GetBytes(body, "model").String()); err != nil {
+		return nil, err
+	}
 	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build grok responses request: %w", err)
@@ -1402,7 +1405,7 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		if cached, found := s.modelsListCache.Get(cacheKey); found {
 			if models, ok := cached.([]string); ok {
 				modelsListCacheHitTotal.Add(1)
-				return cloneStringSlice(models)
+				return s.FilterDisabledModelIDs(ctx, groupID, cloneStringSlice(models))
 			}
 		}
 	}
@@ -1463,7 +1466,7 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 
 	// If no account has model_mapping, return nil (use default)
 	if !hasAnyMapping && platform == PlatformOpenAI {
-		models := filterRetiredOpenAIModelIDs(accounts, openai.DefaultModelIDs())
+		models := s.FilterDisabledModelIDs(ctx, groupID, filterRetiredOpenAIModelIDs(accounts, openai.DefaultModelIDs()))
 		if len(models) != len(openai.DefaultModels) {
 			return models
 		}
@@ -1497,7 +1500,7 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		s.modelsListCache.Set(cacheKey, cloneStringSlice(models), s.modelsListCacheTTL)
 		modelsListCacheStoreTotal.Add(1)
 	}
-	return cloneStringSlice(models)
+	return s.FilterDisabledModelIDs(ctx, groupID, cloneStringSlice(models))
 }
 
 func (s *GatewayService) resolveCompositeModelOwnership(ctx context.Context, groupID int64, model string) (CompositeModelOwnership, error) {
@@ -1560,14 +1563,16 @@ func (s *GatewayService) GetCompositeRouteModels(ctx context.Context, groupID *i
 	if s == nil || s.compositeResolver == nil || groupID == nil {
 		return nil, nil
 	}
-	return s.compositeResolver.ListExactPublicModels(ctx, *groupID, endpoint, includeSystemOne)
+	models, err := s.compositeResolver.ListExactPublicModels(ctx, *groupID, endpoint, includeSystemOne)
+	return s.FilterDisabledModelIDs(ctx, groupID, models, endpoint), err
 }
 
 func (s *GatewayService) FilterCompositeCodexModels(ctx context.Context, groupID int64, models []string) ([]string, error) {
 	if s == nil || s.compositeResolver == nil {
 		return models, nil
 	}
-	return s.compositeResolver.FilterCodexModels(ctx, groupID, models)
+	filtered, err := s.compositeResolver.FilterCodexModels(ctx, groupID, models)
+	return s.FilterDisabledModelIDs(ctx, &groupID, filtered, CompositeRouteEndpointResponses), err
 }
 
 // GetSchedulablePlatforms returns the concrete platforms that currently have

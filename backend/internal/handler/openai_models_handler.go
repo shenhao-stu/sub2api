@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -63,15 +64,28 @@ func writeOpenAIModelsResponse(c *gin.Context, manifest *service.OpenAIModelsRes
 
 // Both discovery endpoints consume the same final catalogue, after group/platform
 // selection and allowlist filtering. Preserve every field on the selected entry.
-func writeModelsListResponse(c *gin.Context, models any) {
+func writeModelsListResponse(c *gin.Context, models any, configs ...*config.Config) {
 	response := gin.H{"object": "list", "data": models}
-	if c.Param("model") == "" {
+	var cfg *config.Config
+	if len(configs) > 0 {
+		cfg = configs[0]
+	}
+	if c.Param("model") == "" && (cfg == nil || len(cfg.Gateway.DisabledModels) == 0) {
 		c.JSON(http.StatusOK, response)
 		return
 	}
 	body, err := json.Marshal(response)
 	if err != nil {
 		writeOpenAIModelsError(c, http.StatusInternalServerError, "api_error", "Failed to encode model catalogue")
+		return
+	}
+	body, err = service.FilterDisabledModelsBody(cfg, body, nil, false)
+	if err != nil {
+		writeOpenAIModelsError(c, http.StatusInternalServerError, "api_error", "Failed to filter model catalogue")
+		return
+	}
+	if c.Param("model") == "" {
+		c.Data(http.StatusOK, "application/json", body)
 		return
 	}
 	writeRetrievedModel(c, body)
@@ -106,4 +120,41 @@ func writeRetrievedModel(c *gin.Context, body []byte) {
 		"type": "invalid_request_error", "code": "model_not_found", "param": "model",
 		"message": fmt.Sprintf("Model %q does not exist or is not available for this group", modelID),
 	}})
+}
+
+func (h *GatewayHandler) writeFallbackModelsList(c *gin.Context, groupID *int64, models any) {
+	if h.cfg == nil || len(h.cfg.Gateway.DisabledModels) == 0 {
+		writeModelsListResponse(c, models, h.cfg)
+		return
+	}
+	raw, err := json.Marshal(models)
+	if err != nil {
+		writeOpenAIModelsError(c, 500, "api_error", "Failed to encode model catalogue")
+		return
+	}
+	var entries []json.RawMessage
+	if json.Unmarshal(raw, &entries) != nil {
+		writeOpenAIModelsError(c, 500, "api_error", "Failed to encode model catalogue")
+		return
+	}
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		var model struct {
+			ID string `json:"id"`
+		}
+		_ = json.Unmarshal(entry, &model)
+		ids = append(ids, model.ID)
+	}
+	allowed := h.gatewayService.FilterDisabledModelIDs(c.Request.Context(), groupID, ids)
+	keep := make(map[string]bool, len(allowed))
+	for _, id := range allowed {
+		keep[id] = true
+	}
+	filtered := make([]json.RawMessage, 0, len(entries))
+	for i, entry := range entries {
+		if keep[ids[i]] {
+			filtered = append(filtered, entry)
+		}
+	}
+	writeModelsListResponse(c, filtered, h.cfg)
 }

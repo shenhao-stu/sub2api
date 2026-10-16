@@ -194,7 +194,7 @@ func (s *AccountTestService) FetchOpenAIAccountModels(ctx context.Context, accou
 	// The shared discovery response is the raw upstream catalog. Project it
 	// through the account mapping before exposing it in the admin picker so
 	// configured aliases remain public names and unconfigured models stay out.
-	projectedBody, err := projectAccountModelsBody(response.Body, account, nil, false)
+	projectedBody, err := projectAccountModelsBody(response.Body, account, nil, false, s.cfg)
 	if err != nil {
 		return nil, fmt.Errorf("project OpenAI account models: %w", err)
 	}
@@ -372,6 +372,13 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 		return s.sendErrorAndEnd(c, "Account not found")
 	}
 	bindAccountTestPlatform(c, account)
+	policyTarget := gatewayForwardPolicyModel(account, modelID)
+	if account.IsOpenAI() {
+		policyTarget = resolveOpenAIAccountUpstreamModelForRequest(account, modelID, normalizeAccountTestMode(mode) == "compact")
+	}
+	if err := RequireEnabledModels(s.cfg, modelID, policyTarget); err != nil {
+		return s.sendErrorAndEnd(c, "Model is not available")
+	}
 	if account.IsCommandCodeGo() {
 		return s.testCommandCodeAccountConnection(c, account, modelID, prompt, mode, testOpts)
 	}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -539,6 +540,12 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	actualModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	if actualModel == "" {
 		actualModel = canonicalOpenAIAccountSchedulingModel(account, originalModel)
+	}
+	if err := RequireEnabledModels(s.cfg, originalModel, actualModel); err != nil {
+		return nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "model is not available", err)
+	}
+	if err := RequireEnabledWireModels(s.cfg, body); err != nil {
+		return nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "model is not available", err)
 	}
 	SetOpsUpstreamModel(c, actualModel)
 

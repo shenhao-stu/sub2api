@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
@@ -165,12 +166,12 @@ func standardOpenAIModelsBody(body []byte, fromManifest bool) ([]byte, error) {
 // checking their routing eligibility. Applying account mappings to source IDs
 // would interpret upstream names as aliases and can retain retired targets or
 // discard metadata needed by a valid replacement alias.
-func projectAccountModelsBody(body []byte, account *Account, group *Group, codex bool) ([]byte, error) {
+func projectAccountModelsBody(body []byte, account *Account, group *Group, codex bool, configs ...*config.Config) ([]byte, error) {
 	projected, err := projectAccountModelAliases(body, account, group, codex)
 	if err != nil {
 		return nil, err
 	}
-	filtered, _, err := filterRetiredOpenAIPublicModelsBody(projected, []Account{*account}, codex)
+	filtered, _, err := filterRetiredOpenAIPublicModelsBody(projected, []Account{*account}, codex, configs...)
 	return filtered, err
 }
 
@@ -273,11 +274,11 @@ func projectAccountModelAliases(body []byte, account *Account, group *Group, cod
 // ApplyPinnedCodexModelsMapping projects all remotely discovered Codex catalogs,
 // including ordinary discovery and pinned scheduler fallback. Locally generated
 // catalogs retain their existing policy and do not pass through this function.
-func ApplyPinnedCodexModelsMapping(response *OpenAIModelsResponse, account *Account, group *Group) error {
+func ApplyPinnedCodexModelsMapping(response *OpenAIModelsResponse, account *Account, group *Group, configs ...*config.Config) error {
 	if group == nil || group.Platform != PlatformOpenAI {
 		return nil
 	}
-	body, err := projectAccountModelsBody(response.Body, account, group, true)
+	body, err := projectAccountModelsBody(response.Body, account, group, true, configs...)
 	if err != nil {
 		return err
 	}
@@ -297,6 +298,10 @@ func (s *OpenAIGatewayService) FetchPinnedOpenAIModelsList(ctx context.Context, 
 			return nil, err
 		}
 		response.Body, err = projectAccountModelsBody(response.Body, account, group, false)
+		if err != nil {
+			return nil, err
+		}
+		response.Body, err = s.filterDisabledChannelModelsBody(ctx, group, []Account{*account}, response.Body, false)
 		return response, err
 	}
 	results, err := s.fetchPinnedOpenAIModels(ctx, group, fetch)

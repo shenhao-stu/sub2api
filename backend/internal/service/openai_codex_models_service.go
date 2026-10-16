@@ -159,6 +159,10 @@ func (s *OpenAIGatewayService) BuildGroupConfiguredCodexModelsManifest(
 	if err != nil {
 		return nil, false, fmt.Errorf("build group configured Codex models: %w", err)
 	}
+	body, err = s.filterDisabledChannelModelsBody(ctx, group, catalog, body, true)
+	if err != nil {
+		return nil, false, err
+	}
 	manifest := &OpenAIModelsResponse{
 		Body: body,
 		ETag: codexModelsManifestBodyETag(body),
@@ -215,8 +219,11 @@ func (s *OpenAIGatewayService) MergeGroupConfiguredCodexModels(
 	if err != nil {
 		return fmt.Errorf("filter retired Codex models: %w", err)
 	}
-	body = filtered
-	if changed || retired {
+	body, err = s.filterDisabledChannelModelsBody(ctx, group, accounts, filtered, true)
+	if err != nil {
+		return err
+	}
+	if changed || retired || !bytes.Equal(body, filtered) {
 		manifest.Body = body
 		manifest.ETag = codexModelsManifestBodyETag(body)
 	}
@@ -861,6 +868,12 @@ func (s *GatewayService) BuildCodexModelsManifestForGroup(
 	platformOverride string,
 	modelIDs []string,
 ) ([]byte, error) {
+	if s != nil {
+		modelIDs = FilterEnabledModels(s.cfg, modelIDs)
+		if group != nil {
+			modelIDs = s.FilterDisabledModelIDs(ctx, &group.ID, modelIDs, CompositeRouteEndpointResponses)
+		}
+	}
 	if s == nil || s.accountRepo == nil || group == nil {
 		return BuildCodexModelsManifest(modelIDs)
 	}

@@ -22,6 +22,9 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		s.countTokensError(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return fmt.Errorf("parse request: empty request")
 	}
+	if err := rejectDisabledModels(c, s.cfg, parsed.Model, gatewayForwardPolicyModel(account, parsed.Model)); err != nil {
+		return err
+	}
 	// Antigravity 账户不支持 count_tokens，返回 404 让客户端 fallback 到本地估算。
 	// 返回 nil 避免 handler 层记录为错误，也不设置 ops 上游错误上下文。
 	// 凭据只能走其他协议的 OAuth 账号同理，且必须在取 token、建请求之前拦下。

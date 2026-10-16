@@ -41,6 +41,9 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 		return nil, fmt.Errorf("missing model")
 	}
 	originalModel := claudeReq.Model
+	if err := rejectDisabledModels(c, s.disabledModelsConfig(), originalModel); err != nil {
+		return nil, err
+	}
 
 	// 构建上游请求 URL
 	upstreamURL := baseURL + "/v1/messages"

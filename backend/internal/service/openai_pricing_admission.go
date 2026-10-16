@@ -37,6 +37,11 @@ func (s *OpenAIGatewayService) requireOpenAIRequestPricing(ctx context.Context, 
 // RequireOpenAIResolvedRequestPricing checks the models selected by the actual
 // forwarding path. WS callers must not reapply HTTP or account mappings here.
 func (s *OpenAIGatewayService) RequireOpenAIResolvedRequestPricing(ctx context.Context, apiKey *APIKey, account *Account, requested, forwarded, model, upstreamModel string) error {
+	if s != nil {
+		if err := RequireEnabledModels(s.cfg, requested, forwarded, model, upstreamModel); err != nil {
+			return err
+		}
+	}
 	if s == nil || s.billingService == nil || apiKey == nil {
 		return fmt.Errorf("%w: billing context unavailable", ErrModelPricingUnavailable)
 	}
@@ -57,6 +62,16 @@ func (s *OpenAIGatewayService) RequireOpenAIResolvedRequestPricing(ctx context.C
 }
 
 func (s *OpenAIGatewayService) requireOpenAIForwardPricing(ctx context.Context, c *gin.Context, account *Account, body []byte, dispatched string) error {
+	forwardModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	policyModel := resolveOpenAIForwardModel(account, forwardModel, dispatched)
+	policyTarget := normalizeOpenAIModelForUpstream(account, policyModel)
+	if account != nil && account.IsOpenAIPassthroughEnabled() || isOpenAIResponsesCompactPath(c) {
+		policyModel, policyTarget = resolveOpenAIForwardMappedModels(account, forwardModel, isOpenAIResponsesCompactPath(c))
+	}
+	publicModel, _ := RequestedPublicModelFromContext(ctx)
+	if err := rejectDisabledModels(c, s.cfg, publicModel, forwardModel, policyModel, policyTarget); err != nil {
+		return err
+	}
 	key := getAPIKeyFromContext(c)
 	if key == nil {
 		// Internal adapters and account diagnostics have no customer billing

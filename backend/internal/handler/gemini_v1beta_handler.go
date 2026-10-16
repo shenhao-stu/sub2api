@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/gemini"
@@ -50,12 +51,12 @@ func (h *GatewayHandler) GeminiV1BetaListModels(c *gin.Context) {
 
 	// 分组级模型白名单开启时过滤 models[].name（名字形如 models/xxx）。
 	filterGeminiModels := func(models []gemini.Model) []gemini.Model {
-		if apiKey.Group == nil || !apiKey.Group.ModelAllowlistEnabled() {
+		if (apiKey.Group == nil || !apiKey.Group.ModelAllowlistEnabled()) && (h.cfg == nil || len(h.cfg.Gateway.DisabledModels) == 0) {
 			return models
 		}
 		filtered := make([]gemini.Model, 0, len(models))
 		for _, model := range models {
-			if apiKey.Group.ModelAllowlist.Allows(model.Name) {
+			if service.DisabledModel(h.cfg, model.Name) == "" && (apiKey.Group == nil || apiKey.Group.ModelAllowlist.Allows(model.Name)) {
 				filtered = append(filtered, model)
 			}
 		}
@@ -102,8 +103,12 @@ func (h *GatewayHandler) GeminiV1BetaListModels(c *gin.Context) {
 		}
 	}
 
-	if apiKey.Group != nil && apiKey.Group.ModelAllowlistEnabled() {
-		if filtered, dropped, ok := filterUpstreamGeminiModelsBody(res.Body, apiKey.Group.ModelAllowlist); ok && dropped {
+	if (apiKey.Group != nil && apiKey.Group.ModelAllowlistEnabled()) || (h.cfg != nil && len(h.cfg.Gateway.DisabledModels) > 0) {
+		var allowlist service.GroupModelAllowlist
+		if apiKey.Group != nil {
+			allowlist = apiKey.Group.ModelAllowlist
+		}
+		if filtered, dropped, ok := filterUpstreamGeminiModelsBody(res.Body, allowlist, h.cfg); ok && dropped {
 			// 只在确有条目被过滤时替换响应体；全命中或解析失败时保持原始响应，
 			// 统一经 writeUpstreamResponse 写出（保留全部上游响应头）。
 			res.Body = filtered
@@ -175,7 +180,7 @@ func appendUpstreamGeminiModels(body []byte, extra []gemini.Model) ([]byte, bool
 // 返回值：filtered 为过滤后的响应体；dropped 表示是否有条目被移除（全命中时
 // 为 false，调用方应保持原始响应以完整透传上游头）；ok=false 表示解析失败，
 // 调用方同样应透传原始响应。
-func filterUpstreamGeminiModelsBody(body []byte, allowlist service.GroupModelAllowlist) (filtered []byte, dropped bool, ok bool) {
+func filterUpstreamGeminiModelsBody(body []byte, allowlist service.GroupModelAllowlist, configs ...*config.Config) (filtered []byte, dropped bool, ok bool) {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return nil, false, false
@@ -197,7 +202,11 @@ func filterUpstreamGeminiModelsBody(body []byte, allowlist service.GroupModelAll
 		if err := json.Unmarshal(raw, &model); err != nil {
 			return nil, false, false
 		}
-		if allowlist.Allows(model.Name) {
+		var cfg *config.Config
+		if len(configs) > 0 {
+			cfg = configs[0]
+		}
+		if service.DisabledModel(cfg, model.Name) == "" && allowlist.Allows(model.Name) {
 			kept = append(kept, raw)
 		}
 	}
