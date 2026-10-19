@@ -10,8 +10,13 @@ import (
 // A gateway pool can rotate its internal accounts, but cannot replenish the
 // credential's wallet. Only an explicit billing rejection overrides pool mode.
 func isAPIKeyWalletExhausted(account *Account, status int, body []byte) bool {
-	if account == nil || account.Type != AccountTypeAPIKey ||
-		(status != http.StatusPaymentRequired && status != http.StatusForbidden && status != http.StatusTooManyRequests) ||
+	return account != nil && account.Type == AccountTypeAPIKey && IsUpstreamWalletExhausted(status, body)
+}
+
+// IsUpstreamWalletExhausted recognizes structured wallet rejections, excluding
+// ordinary authorization failures and request-specific quota guards.
+func IsUpstreamWalletExhausted(status int, body []byte) bool {
+	if (status != http.StatusPaymentRequired && status != http.StatusForbidden && status != http.StatusTooManyRequests) ||
 		!gjson.ValidBytes(body) {
 		return false
 	}

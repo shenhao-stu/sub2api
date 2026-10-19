@@ -152,6 +152,12 @@ func NewFailoverState(maxSwitches int, hasBoundSession bool) *FailoverState {
 	}
 }
 
+// isInitialSelection distinguishes an empty initial pool from a failed upstream
+// attempt followed by reselection. Same-account retries leave exclusions empty.
+func (s *FailoverState) isInitialSelection() bool {
+	return len(s.FailedAccountIDs) == 0 && s.LastFailoverErr == nil
+}
+
 // RecordProfitVeto 记录一次分组利润门终检否决：把账号加入排除列表（同时登记到
 // 利润否决集，使其不被 503 退避分支清掉）并递增否决计数。
 //

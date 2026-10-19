@@ -3648,7 +3648,7 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 	// 记录原始上游状态码，以便 ops 错误日志捕获真实的上游错误
 	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
 	service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
-	if service.IsUpstreamQuotaExhausted(statusCode, responseBody) {
+	if service.IsUpstreamQuotaExhausted(statusCode, responseBody) || service.IsUpstreamWalletExhausted(statusCode, responseBody) {
 		h.handleStreamingAwareErrorWithCode(c, http.StatusTooManyRequests, "rate_limit_error", "insufficient_quota", service.UpstreamQuotaExhaustedMessage, streamStarted, false)
 		return
 	}

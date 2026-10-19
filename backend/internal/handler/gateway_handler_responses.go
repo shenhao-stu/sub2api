@@ -193,7 +193,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				reqLog.Info("gateway.responses.account_select_aborted_client_disconnected", zap.Error(err))
 				return
 			}
-			if len(fs.FailedAccountIDs) == 0 {
+			if fs.isInitialSelection() {
 				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, effectiveAPIKeyPlatform(c, apiKey))
 				cls = classifySelectionFailureError(err, cls)
 				if !cls.ModelNotFound {
@@ -405,6 +405,7 @@ func (h *GatewayHandler) handleResponsesFailoverExhausted(c *gin.Context, lastEr
 		statusCode = lastErr.StatusCode
 	}
 	status, code, message := statusCode, "server_error", "All available accounts exhausted"
+	errorCode := ""
 	if lastErr != nil && lastErr.IsCredentialFailure() {
 		status, message = credentialFailoverClientResponse(lastErr)
 	} else if lastErr != nil && lastErr.IsOpenAICapacityShed() && strings.TrimSpace(lastErr.ClientMessage) != "" {
@@ -416,6 +417,10 @@ func (h *GatewayHandler) handleResponsesFailoverExhausted(c *gin.Context, lastEr
 	} else if lastErr != nil && service.IsOpenAISilentRefusalErrorBody(lastErr.ResponseBody) {
 		service.SetOpsUpstreamError(c, statusCode, service.OpenAISilentRefusalClientMessage(), "")
 		status, code, message = http.StatusBadGateway, "upstream_error", service.OpenAISilentRefusalClientMessage()
+	} else if lastErr != nil && (service.IsUpstreamQuotaExhausted(statusCode, lastErr.ResponseBody) || service.IsUpstreamWalletExhausted(statusCode, lastErr.ResponseBody)) {
+		service.SetOpsUpstreamError(c, statusCode, service.ExtractUpstreamErrorMessage(lastErr.ResponseBody), "")
+		status, code, message = http.StatusTooManyRequests, "rate_limit_error", service.UpstreamQuotaExhaustedMessage
+		errorCode = "insufficient_quota"
 	} else if lastErr != nil && statusCode == http.StatusTooManyRequests {
 		status, code, message = http.StatusTooManyRequests, "rate_limit_error", "All available accounts are currently rate-limited. Please retry later."
 	}
@@ -426,9 +431,12 @@ func (h *GatewayHandler) handleResponsesFailoverExhausted(c *gin.Context, lastEr
 		// generic response.failed.
 		service.MarkOpsStreamError(c, code, message, status)
 		if c != nil && c.Writer != nil && (c.Writer.Size() <= 0 || gatewayStreamHasOnlyHeartbeats(c)) {
-			writeResponsesFailedSSE(c, code, "", message)
+			writeResponsesFailedSSE(c, code, errorCode, message)
 		}
 		return
 	}
-	h.responsesErrorResponse(c, status, code, message)
+	if errorCode == "" {
+		errorCode = code
+	}
+	h.responsesErrorResponse(c, status, errorCode, message)
 }

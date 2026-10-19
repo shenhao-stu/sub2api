@@ -31,6 +31,41 @@ func (m *mockTempUnscheduler) TempUnscheduleRetryableError(_ context.Context, ac
 	m.calls = append(m.calls, tempUnscheduleCall{accountID: accountID, failoverErr: failoverErr})
 }
 
+func TestSelectionAfterPoolRetryKeepsUpstreamFailure(t *testing.T) {
+	fs := NewFailoverState(3, false)
+	require.True(t, fs.isInitialSelection())
+	upstream := &service.UpstreamFailoverError{
+		StatusCode: http.StatusTooManyRequests, ResponseBody: []byte(`{"error":{"code":"rate_limit_exceeded"}}`),
+		RetryableOnSameAccount: true, SameAccountRetryDelay: time.Nanosecond,
+	}
+	unscheduler := &mockTempUnscheduler{}
+	require.Equal(t, FailoverContinue, fs.HandleFailoverError(context.Background(), unscheduler, 335, service.PlatformAnthropic, 3, upstream))
+	require.Empty(t, fs.FailedAccountIDs, "same-account retries have not excluded the account")
+	require.False(t, fs.isInitialSelection(), "a concurrent cooldown must not hide the last upstream error behind an initial empty-pool 503")
+	require.Equal(t, FailoverExhausted, fs.HandleSelectionExhausted(context.Background()))
+	require.Same(t, upstream, fs.LastFailoverErr)
+	require.Zero(t, fs.SwitchCount)
+	require.False(t, fs.ForceCacheBilling)
+	require.Empty(t, unscheduler.calls)
+}
+
+func TestWalletFailureExcludesOnlyFailedAccount(t *testing.T) {
+	fs := NewFailoverState(3, false)
+	upstream := &service.UpstreamFailoverError{
+		StatusCode: http.StatusForbidden, ResponseBody: []byte(`{"error":{"type":"billing_error","message":"insufficient balance"}}`),
+	}
+	unscheduler := &mockTempUnscheduler{}
+	require.Equal(t, FailoverContinue, fs.HandleFailoverError(context.Background(), unscheduler, 335, service.PlatformAnthropic, 3, upstream))
+	require.Contains(t, fs.FailedAccountIDs, int64(335))
+	require.NotContains(t, fs.FailedAccountIDs, int64(336), "another eligible account remains selectable")
+	require.Equal(t, 1, fs.SwitchCount)
+	require.Empty(t, fs.SameAccountRetryCount)
+	require.Empty(t, unscheduler.calls, "the service already handled the explicit account policy")
+	require.False(t, fs.isInitialSelection())
+	require.Equal(t, FailoverExhausted, fs.HandleSelectionExhausted(context.Background()))
+	require.Same(t, upstream, fs.LastFailoverErr)
+}
+
 func TestSameAccountRetryDelayFor(t *testing.T) {
 	capacityErr := &service.UpstreamFailoverError{RequestScopedTransient: true}
 

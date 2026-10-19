@@ -196,7 +196,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 				reqLog.Info("gateway.cc.account_select_aborted_client_disconnected", zap.Error(err))
 				return
 			}
-			if len(fs.FailedAccountIDs) == 0 {
+			if fs.isInitialSelection() {
 				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, groupPlatform)
 				cls = classifySelectionFailureError(err, cls)
 				if !cls.ModelNotFound {
@@ -440,6 +440,13 @@ func (h *GatewayHandler) handleCCFailoverExhausted(c *gin.Context, lastErr *serv
 	if lastErr != nil && service.IsOpenAISilentRefusalErrorBody(lastErr.ResponseBody) {
 		service.SetOpsUpstreamError(c, statusCode, service.OpenAISilentRefusalClientMessage(), "")
 		h.chatCompletionsErrorResponse(c, http.StatusBadGateway, "upstream_error", service.OpenAISilentRefusalClientMessage())
+		return
+	}
+	if lastErr != nil && (service.IsUpstreamQuotaExhausted(statusCode, lastErr.ResponseBody) || service.IsUpstreamWalletExhausted(statusCode, lastErr.ResponseBody)) {
+		service.SetOpsUpstreamError(c, statusCode, service.ExtractUpstreamErrorMessage(lastErr.ResponseBody), "")
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": gin.H{
+			"type": "rate_limit_error", "code": "insufficient_quota", "message": service.UpstreamQuotaExhaustedMessage,
+		}})
 		return
 	}
 	h.chatCompletionsErrorResponse(c, statusCode, "server_error", "All available accounts exhausted")

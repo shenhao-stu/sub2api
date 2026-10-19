@@ -742,7 +742,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
 			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
 
-		s.handleFailoverSideEffects(ctx, resp, account, reqModel)
+		shouldStop := s.handleFailoverSideEffects(ctx, resp, account, reqModel)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			ProxyID:            opsUpstreamProxyID(account),
 			ProxyName:          opsUpstreamProxyName(account),
@@ -762,7 +762,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		return nil, &UpstreamFailoverError{
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           respBody,
-			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+			RetryableOnSameAccount: !shouldStop && account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
 		}
 	}
 	if resp.StatusCode >= 400 {

@@ -310,7 +310,7 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
-		s.handleFailoverSideEffects(ctx, resp, account, modelKey)
+		shouldStop := s.handleFailoverSideEffects(ctx, resp, account, modelKey)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			ProxyID:            opsUpstreamProxyID(account),
 			ProxyName:          opsUpstreamProxyName(account),
@@ -324,7 +324,7 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 		return nil, &UpstreamFailoverError{
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           respBody,
-			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+			RetryableOnSameAccount: !shouldStop && account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
 		}
 	}
 
