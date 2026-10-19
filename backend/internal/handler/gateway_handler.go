@@ -356,7 +356,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				if h.handleAccountSelectionPolicyError(c, err, streamStarted) {
 					return
 				}
-				if len(fs.FailedAccountIDs) == 0 {
+				if fs.isInitialSelection() {
 					cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, service.PlatformGemini)
 					if !cls.ModelNotFound {
 						markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
@@ -699,7 +699,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				if h.handleAccountSelectionPolicyError(c, err, streamStarted) {
 					return
 				}
-				if len(fs.FailedAccountIDs) == 0 {
+				if fs.isInitialSelection() {
 					cls := classifyNoAccountErrorFromGin(c, h.gatewayService, currentAPIKey, reqModel, reqModel, platform)
 					if !cls.ModelNotFound {
 						markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
@@ -1984,7 +1984,7 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 	// 记录原始上游状态码，以便 ops 错误日志捕获真实的上游错误
 	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
 	service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
-	if service.IsUpstreamQuotaExhausted(statusCode, responseBody) {
+	if service.IsUpstreamQuotaExhausted(statusCode, responseBody) || service.IsUpstreamWalletExhausted(statusCode, responseBody) {
 		h.handleStreamingAwareErrorWithCode(c, http.StatusTooManyRequests, "rate_limit_error", "insufficient_quota", service.UpstreamQuotaExhaustedMessage, streamStarted)
 		return
 	}
