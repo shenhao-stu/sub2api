@@ -643,55 +643,31 @@ func extractAnthropicSSEDataLine(line string) (string, bool) {
 // parseSSEUsagePassthrough 从 Anthropic SSE data 行提取 usage（包级函数：
 // Anthropic 平台 passthrough 与国产供应商原生 Anthropic 直通共用）。
 func parseSSEUsagePassthrough(data string, usage *ClaudeUsage) {
-	if usage == nil || data == "" || data == "[DONE]" {
+	if usage == nil || data == "" || data == "[DONE]" || !gjson.Valid(data) {
 		return
 	}
 
 	parsed := gjson.Parse(data)
+	var counters gjson.Result
 	switch parsed.Get("type").String() {
 	case "message_start":
-		msgUsage := parsed.Get("message.usage")
-		if msgUsage.Exists() {
-			usage.InputTokens = int(msgUsage.Get("input_tokens").Int())
-			usage.OutputTokens = int(msgUsage.Get("output_tokens").Int())
-			usage.CacheCreationInputTokens = int(msgUsage.Get("cache_creation_input_tokens").Int())
-			usage.CacheReadInputTokens = int(msgUsage.Get("cache_read_input_tokens").Int())
-
-			// 保持与通用解析一致：message_start 允许覆盖 5m/1h 明细（包括 0）。
-			cc5m := msgUsage.Get("cache_creation.ephemeral_5m_input_tokens")
-			cc1h := msgUsage.Get("cache_creation.ephemeral_1h_input_tokens")
-			if cc5m.Exists() || cc1h.Exists() {
-				usage.CacheCreation5mTokens = int(cc5m.Int())
-				usage.CacheCreation1hTokens = int(cc1h.Int())
-			}
-		}
+		counters = parsed.Get("message.usage")
 	case "message_delta":
-		deltaUsage := parsed.Get("usage")
-		if deltaUsage.Exists() {
-			if v := deltaUsage.Get("input_tokens").Int(); v > 0 {
-				usage.InputTokens = int(v)
-			}
-			if v := deltaUsage.Get("output_tokens").Int(); v > 0 {
-				usage.OutputTokens = int(v)
-			}
-			if v := deltaUsage.Get("cache_creation_input_tokens").Int(); v > 0 {
-				usage.CacheCreationInputTokens = int(v)
-			}
-			if v := deltaUsage.Get("cache_read_input_tokens").Int(); v > 0 {
-				usage.CacheReadInputTokens = int(v)
-			}
-
-			cc5m := deltaUsage.Get("cache_creation.ephemeral_5m_input_tokens")
-			cc1h := deltaUsage.Get("cache_creation.ephemeral_1h_input_tokens")
-			if cc5m.Exists() {
-				usage.CacheCreation5mTokens = int(cc5m.Int())
-			}
-			if cc1h.Exists() {
-				usage.CacheCreation1hTokens = int(cc1h.Int())
-			}
-		}
+		counters = parsed.Get("usage")
+	}
+	if counters.IsObject() {
+		patch := &sseUsagePatch{}
+		patch.inputTokens, patch.hasInputTokens = parseSSEUsageInt(counters.Get("input_tokens").Value())
+		patch.outputTokens, patch.hasOutputTokens = parseSSEUsageInt(counters.Get("output_tokens").Value())
+		patch.cacheCreationInputTokens, patch.hasCacheCreationInput = parseSSEUsageInt(counters.Get("cache_creation_input_tokens").Value())
+		patch.cacheReadInputTokens, patch.hasCacheReadInput = parseSSEUsageInt(counters.Get("cache_read_input_tokens").Value())
+		patch.cacheCreation5mTokens, patch.hasCacheCreation5m = parseSSEUsageInt(counters.Get("cache_creation.ephemeral_5m_input_tokens").Value())
+		patch.cacheCreation1hTokens, patch.hasCacheCreation1h = parseSSEUsageInt(counters.Get("cache_creation.ephemeral_1h_input_tokens").Value())
+		mergeSSEUsagePatch(usage, patch)
 	}
 
+	// Preserve provider-compatible aliases after applying native cumulative
+	// counters. These providers use zero as an alias fallback sentinel.
 	if usage.CacheReadInputTokens == 0 {
 		if cached := parsed.Get("message.usage.cached_tokens").Int(); cached > 0 {
 			usage.CacheReadInputTokens = int(cached)
