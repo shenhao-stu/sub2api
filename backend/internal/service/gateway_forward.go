@@ -841,9 +841,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			if errors.As(err, &sseErr) {
 				// 上游 HTTP 200 + SSE 流体内出现 event:error 帧。
 				body := []byte(sseErr.RawData)
-				semanticStatus := http.StatusForbidden
+				semanticStatus := anthropicStreamErrorStatus(body)
 				if AnthropicKeepaliveAdjustedWrittenSize(c) == writerSizeBeforeStream && gjson.GetBytes(body, "error.type").String() == "overloaded_error" {
-					semanticStatus = 529
 					syntheticResp := &http.Response{
 						StatusCode: semanticStatus,
 						Header:     resp.Header.Clone(),
@@ -923,6 +922,30 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		FirstTokenMs:                  firstTokenMs,
 		ClientDisconnect:              clientDisconnect,
 	}, nil
+}
+
+func anthropicStreamErrorStatus(body []byte) int {
+	switch gjson.GetBytes(body, "error.type").String() {
+	case "invalid_request_error":
+		return http.StatusBadRequest
+	case "authentication_error":
+		return http.StatusUnauthorized
+	case "permission_error":
+		return http.StatusForbidden
+	case "not_found_error":
+		return http.StatusNotFound
+	case "request_too_large":
+		return http.StatusRequestEntityTooLarge
+	case "rate_limit_error":
+		return http.StatusTooManyRequests
+	case "api_error":
+		return http.StatusInternalServerError
+	case "overloaded_error":
+		return 529
+	default:
+		// HTTP 200 with a failed stream is not evidence of a permission failure.
+		return http.StatusBadGateway
+	}
 }
 
 func anthropicSpeedModel(parsed *ParsedRequest, result *ForwardResult) string {
