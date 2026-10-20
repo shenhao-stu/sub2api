@@ -8,9 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -1206,81 +1206,33 @@ type sseUsagePatch struct {
 }
 
 func (s *GatewayService) extractSSEUsagePatch(event map[string]any) *sseUsagePatch {
-	if len(event) == 0 {
-		return nil
-	}
-
 	eventType, _ := event["type"].(string)
+	var usageObj map[string]any
 	switch eventType {
 	case "message_start":
 		msg, _ := event["message"].(map[string]any)
-		usageObj, _ := msg["usage"].(map[string]any)
-		if len(usageObj) == 0 {
-			return nil
-		}
-
-		patch := &sseUsagePatch{}
-		patch.hasInputTokens = true
-		if v, ok := parseSSEUsageInt(usageObj["input_tokens"]); ok {
-			patch.inputTokens = v
-		}
-		patch.hasCacheCreationInput = true
-		if v, ok := parseSSEUsageInt(usageObj["cache_creation_input_tokens"]); ok {
-			patch.cacheCreationInputTokens = v
-		}
-		patch.hasCacheReadInput = true
-		if v, ok := parseSSEUsageInt(usageObj["cache_read_input_tokens"]); ok {
-			patch.cacheReadInputTokens = v
-		}
-		if cc, ok := usageObj["cache_creation"].(map[string]any); ok {
-			if v, exists := parseSSEUsageInt(cc["ephemeral_5m_input_tokens"]); exists {
-				patch.cacheCreation5mTokens = v
-				patch.hasCacheCreation5m = true
-			}
-			if v, exists := parseSSEUsageInt(cc["ephemeral_1h_input_tokens"]); exists {
-				patch.cacheCreation1hTokens = v
-				patch.hasCacheCreation1h = true
-			}
-		}
-		return patch
-
+		usageObj, _ = msg["usage"].(map[string]any)
 	case "message_delta":
-		usageObj, _ := event["usage"].(map[string]any)
-		if len(usageObj) == 0 {
-			return nil
-		}
-
-		patch := &sseUsagePatch{}
-		if v, ok := parseSSEUsageInt(usageObj["input_tokens"]); ok && v > 0 {
-			patch.inputTokens = v
-			patch.hasInputTokens = true
-		}
-		if v, ok := parseSSEUsageInt(usageObj["output_tokens"]); ok && v > 0 {
-			patch.outputTokens = v
-			patch.hasOutputTokens = true
-		}
-		if v, ok := parseSSEUsageInt(usageObj["cache_creation_input_tokens"]); ok && v > 0 {
-			patch.cacheCreationInputTokens = v
-			patch.hasCacheCreationInput = true
-		}
-		if v, ok := parseSSEUsageInt(usageObj["cache_read_input_tokens"]); ok && v > 0 {
-			patch.cacheReadInputTokens = v
-			patch.hasCacheReadInput = true
-		}
-		if cc, ok := usageObj["cache_creation"].(map[string]any); ok {
-			if v, exists := parseSSEUsageInt(cc["ephemeral_5m_input_tokens"]); exists {
-				patch.cacheCreation5mTokens = v
-				patch.hasCacheCreation5m = true
-			}
-			if v, exists := parseSSEUsageInt(cc["ephemeral_1h_input_tokens"]); exists {
-				patch.cacheCreation1hTokens = v
-				patch.hasCacheCreation1h = true
-			}
-		}
-		return patch
+		usageObj, _ = event["usage"].(map[string]any)
+	default:
+		return nil
+	}
+	if len(usageObj) == 0 {
+		return nil
 	}
 
-	return nil
+	patch := &sseUsagePatch{}
+	patch.inputTokens, patch.hasInputTokens = parseSSEUsageInt(usageObj["input_tokens"])
+	patch.cacheCreationInputTokens, patch.hasCacheCreationInput = parseSSEUsageInt(usageObj["cache_creation_input_tokens"])
+	patch.cacheReadInputTokens, patch.hasCacheReadInput = parseSSEUsageInt(usageObj["cache_read_input_tokens"])
+	if eventType == "message_delta" {
+		patch.outputTokens, patch.hasOutputTokens = parseSSEUsageInt(usageObj["output_tokens"])
+	}
+	if cc, ok := usageObj["cache_creation"].(map[string]any); ok {
+		patch.cacheCreation5mTokens, patch.hasCacheCreation5m = parseSSEUsageInt(cc["ephemeral_5m_input_tokens"])
+		patch.cacheCreation1hTokens, patch.hasCacheCreation1h = parseSSEUsageInt(cc["ephemeral_1h_input_tokens"])
+	}
+	return patch
 }
 
 func mergeSSEUsagePatch(usage *ClaudeUsage, patch *sseUsagePatch) {
@@ -1308,28 +1260,25 @@ func mergeSSEUsagePatch(usage *ClaudeUsage, patch *sseUsagePatch) {
 	}
 }
 
+// SSE counts are cumulative: an explicit nonnegative integer, including zero,
+// replaces the previous value. Missing, null or invalid fields leave it intact.
 func parseSSEUsageInt(value any) (int, bool) {
 	switch v := value.(type) {
 	case float64:
-		return int(v), true
+		if v >= 0 && v < float64(math.MaxInt) && math.Trunc(v) == v {
+			return int(v), true
+		}
 	case float32:
-		return int(v), true
+		return parseSSEUsageInt(float64(v))
 	case int:
-		return v, true
+		return v, v >= 0
 	case int64:
-		return int(v), true
+		return int(v), v >= 0 && int64(int(v)) == v
 	case int32:
-		return int(v), true
+		return int(v), v >= 0
 	case json.Number:
 		if i, err := v.Int64(); err == nil {
-			return int(i), true
-		}
-		if f, err := v.Float64(); err == nil {
-			return int(f), true
-		}
-	case string:
-		if parsed, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
-			return parsed, true
+			return parseSSEUsageInt(i)
 		}
 	}
 	return 0, false
