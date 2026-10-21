@@ -1314,6 +1314,12 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 		// 调度器让每个请求反复撞同一批持续 429 的账号（failover 预算被白白烧掉，
 		// 客户端稳定收到 429）。因此同样走可配置的秒级兜底回避，管理端可调大或关闭。
 		if account.Platform == PlatformAnthropic {
+			// 兼容网关型上游（如 vm2api 本地额度预检）：没有 anthropic-ratelimit-* 头，
+			// 但按 HTTP 语义给出了 Retry-After。尊重它，否则账号只冷却兜底秒数，
+			// 窗口内每个请求都会先撞一次 429 再 failover。
+			if s.applyRetryAfterRateLimit(ctx, account, headers, "anthropic_retry_after") {
+				return
+			}
 			slog.Warn("rate_limit_429_no_reset_time",
 				"account_id", account.ID,
 				"platform", account.Platform,
@@ -1370,6 +1376,43 @@ func (s *RateLimitService) apply429FallbackRateLimit(ctx context.Context, accoun
 	if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetAt); err != nil {
 		slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
 	}
+}
+
+// applyRetryAfterRateLimit 按上游 Retry-After 头冷却账号。
+// 返回 false 表示头缺失/不可解析/已过期，调用方继续走兜底逻辑。
+//   - 下限：不短于管理端配置的 429 兜底秒数（启用时），避免 Retry-After: 1 把冷却缩成瞬时；
+//   - 上限：parseRetryAfterDelay 已限制在 upstreamQuotaRetryAfterMax（7d）；
+//   - 写入：优先 SetRateLimitedIfLater，绝不缩短账号已有的更晚重置时间。
+func (s *RateLimitService) applyRetryAfterRateLimit(ctx context.Context, account *Account, headers http.Header, reason string) bool {
+	if account == nil || headers == nil {
+		return false
+	}
+	now := time.Now()
+	delay, ok := parseRetryAfterDelay(now, headers)
+	if !ok || delay <= 0 {
+		return false
+	}
+	if fallback, enabled := s.get429FallbackCooldown(ctx, account); enabled && fallback > delay {
+		delay = fallback
+	}
+	resetAt := now.Add(delay)
+	s.notifyAccountSchedulingBlocked(account, resetAt, "429")
+	if extender, ok := s.accountRepo.(accountRateLimitExtender); ok {
+		if err := extender.SetRateLimitedIfLater(ctx, account.ID, resetAt); err != nil {
+			slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
+			return true
+		}
+	} else if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetAt); err != nil {
+		slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
+		return true
+	}
+	slog.Info("account_rate_limited_retry_after",
+		"account_id", account.ID,
+		"platform", account.Platform,
+		"reason", reason,
+		"reset_at", resetAt,
+		"reset_in", delay.Truncate(time.Second))
+	return true
 }
 
 func (s *RateLimitService) get429FallbackCooldown(ctx context.Context, account *Account) (time.Duration, bool) {

@@ -45,6 +45,9 @@ func RegisterGatewayRoutes(
 	// 分组级模型白名单准入：在 apiKeyAuth 之后、compositeTarget 之前，
 	// 保证校验发生在合成路由改写与调度之前，且只看客户端书写的模型名。
 	groupModelAllowlist := middleware.GroupModelAllowlist(cfg)
+	// 账号亲和标签：可信 API Key 携带的用户标识 → 调度 context。
+	// 只挂 /v1 网关组（自有池调用方的入口），apiKeyAuth 之后即可，不参与准入。
+	accountAffinity := middleware.AccountAffinity(settingService)
 
 	isOpenAIResponsesCompatibleGatewayPlatform := func(c *gin.Context) bool {
 		// openai、grok 与多协议 API Key 供应商经 OpenAI 网关转发（平台清单）。
@@ -183,6 +186,7 @@ func RegisterGatewayRoutes(
 	gateway.Use(opsErrorLogger)
 	gateway.Use(endpointNorm)
 	gateway.Use(gin.HandlerFunc(apiKeyAuth), middleware.UsageReceiptCapability())
+	gateway.Use(accountAffinity)
 	gateway.GET("/sub2api/billing", h.Gateway.KeyBillingInfo)
 	gateway.GET("/sub2api/usage/:request_id", h.Gateway.KeyUsageReceipt)
 	gateway.Use(groupModelAllowlist)

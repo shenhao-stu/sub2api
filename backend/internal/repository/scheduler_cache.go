@@ -1081,6 +1081,9 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"quota_weekly_reset_hour",
 		"quota_reset_timezone",
 		"mixed_scheduling",
+		// 账号亲和可见性过滤(listSchedulableAccounts)读的是本投影：裁掉它，
+		// 保留账号在快照里会退化成开放账号，对所有请求可见——硬 1:1 失效。
+		service.AffinityTagsExtraKey,
 		"window_cost_limit",
 		"window_cost_sticky_reserve",
 		// RPM 门与窗口费用门一样跑在本投影上：isAccountSchedulableForRPM 读 base_rpm，

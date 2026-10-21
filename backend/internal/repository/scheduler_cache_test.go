@@ -34,6 +34,23 @@ func TestSchedulerMetadataPreservesCommandCodePolicy(t *testing.T) {
 	}
 }
 
+// 亲和可见性过滤跑在快照投影上：裁掉 affinity_tags 会让保留账号对所有请求可见。
+func TestFilterSchedulerExtraKeepsAffinityTags(t *testing.T) {
+	filtered := filterSchedulerExtra(map[string]any{
+		service.AffinityTagsExtraKey: []any{"getoken:1"},
+		"anthropic_passthrough":      true,
+		"some_private_note":          "secret",
+	})
+	require.Equal(t, []any{"getoken:1"}, filtered[service.AffinityTagsExtraKey])
+	require.NotContains(t, filtered, "some_private_note")
+
+	account := service.Account{ID: 7, Platform: service.PlatformAnthropic, Type: service.AccountTypeAPIKey,
+		Extra: map[string]any{service.AffinityTagsExtraKey: []any{"getoken:1"}}}
+	metadata := buildSchedulerMetadataAccount(account)
+	require.True(t, metadata.IsAffinityReserved())
+	require.True(t, metadata.MatchesAffinityTags([]string{"getoken:1"}))
+}
+
 func TestFilterSchedulerCredentialsKeepsSubscriptionPlanType(t *testing.T) {
 	filtered := filterSchedulerCredentials(map[string]any{
 		"plan_type":     "plus",
