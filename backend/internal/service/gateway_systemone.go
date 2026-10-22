@@ -156,6 +156,7 @@ func (s *GatewayService) handleSystemOneErrorResponse(ctx context.Context, c *gi
 		StatusCode:             resp.StatusCode,
 		ResponseBody:           respBody,
 		ResponseHeaders:        resp.Header.Clone(),
+		ExcludeFromRetry:       shouldDisable,
 		RetryableOnSameAccount: !shouldDisable && account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
