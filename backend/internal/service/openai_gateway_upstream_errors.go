@@ -617,6 +617,9 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		)
 	}
 
+	if account != nil && account.Platform == PlatformOpenAI && WriteOpenAIClientErrorPassthrough(c, getBoundErrorPassthroughService(c), resp.StatusCode, body, false) {
+		return nil, fmt.Errorf("upstream error: %d (structured passthrough)", resp.StatusCode)
+	}
 	if status, errType, errMsg, matched := applyErrorPassthroughRule(
 		c,
 		PlatformOpenAI,
@@ -841,6 +844,9 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	}
 
 	// Apply error passthrough rules
+	if account.Platform == PlatformOpenAI && WriteOpenAIClientErrorPassthrough(c, getBoundErrorPassthroughService(c), resp.StatusCode, body, false) {
+		return nil, fmt.Errorf("upstream error: %d (structured passthrough)", resp.StatusCode)
+	}
 	if status, errType, errMsg, matched := applyErrorPassthroughRule(
 		c, account.Platform, resp.StatusCode, body,
 		http.StatusBadGateway, "api_error", "Upstream request failed",
