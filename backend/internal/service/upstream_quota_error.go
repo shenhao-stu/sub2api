@@ -34,17 +34,34 @@ func IsUpstreamQuotaExhausted(statusCode int, body []byte) bool {
 		strings.TrimSpace(payload.Error.Type) == "insufficient_quota"
 }
 
+// parseRetryAfterDelay 解析标准 Retry-After 头（秒数或 HTTP 日期）。
+// 返回 ok=false 表示头缺失/无法解析/超过 upstreamQuotaRetryAfterMax 上限（视为不可信）。
+// 已过去的 HTTP 日期返回 (<=0, true)，由调用方决定是否忽略。
+func parseRetryAfterDelay(now time.Time, headers http.Header) (time.Duration, bool) {
+	raw := strings.TrimSpace(headers.Get("Retry-After"))
+	if raw == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.ParseUint(raw, 10, 64); err == nil {
+		if seconds > uint64(upstreamQuotaRetryAfterMax/time.Second) {
+			return 0, false
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+	if at, err := http.ParseTime(raw); err == nil {
+		remaining := at.Sub(now)
+		if remaining > upstreamQuotaRetryAfterMax {
+			return 0, false
+		}
+		return remaining, true
+	}
+	return 0, false
+}
+
 func upstreamQuotaResetAt(now time.Time, headers http.Header, fallback time.Duration, enabled bool) time.Time {
 	var delay time.Duration
-	raw := strings.TrimSpace(headers.Get("Retry-After"))
-	if seconds, err := strconv.ParseUint(raw, 10, 64); err == nil {
-		if seconds <= uint64(upstreamQuotaRetryAfterMax/time.Second) {
-			delay = time.Duration(seconds) * time.Second
-		}
-	} else if at, err := http.ParseTime(raw); err == nil {
-		if remaining := at.Sub(now); remaining <= upstreamQuotaRetryAfterMax {
-			delay = remaining
-		}
+	if parsed, ok := parseRetryAfterDelay(now, headers); ok && parsed > 0 {
+		delay = parsed
 	}
 	if enabled {
 		if fallback > delay {

@@ -579,6 +579,8 @@ const (
 
 	// SettingKeyRateLimit429CooldownSettings stores JSON config for 429 fallback cooldown handling.
 	SettingKeyRateLimit429CooldownSettings = "rate_limit_429_cooldown_settings"
+	// SettingKeyAccountAffinitySettings stores JSON config for reserved-account affinity scheduling.
+	SettingKeyAccountAffinitySettings = "account_affinity_settings"
 	// SettingKeyOpenAIImagesOAuthUnavailableCooldownSettings stores the cooldown applied when the OAuth image tool is unavailable.
 	SettingKeyOpenAIImagesOAuthUnavailableCooldownSettings = "openai_images_oauth_unavailable_cooldown_settings"
 	// SettingKeyOpenAIAPIKeyHealthBreakerSettings stores the opt-in OpenAI pool API-key breaker config.

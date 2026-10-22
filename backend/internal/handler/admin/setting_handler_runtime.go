@@ -154,6 +154,62 @@ func (h *SettingHandler) UpdateRateLimit429CooldownSettings(c *gin.Context) {
 	})
 }
 
+func accountAffinitySettingsDTO(settings *service.AccountAffinitySettings) dto.AccountAffinitySettings {
+	ids := settings.TrustedAPIKeyIDs
+	if ids == nil {
+		ids = []int64{}
+	}
+	return dto.AccountAffinitySettings{
+		Enabled:          settings.Enabled,
+		TrustedAPIKeyIDs: ids,
+		TagPrefix:        settings.TagPrefix,
+		Header:           service.AccountAffinityHeader,
+	}
+}
+
+// GetAccountAffinitySettings 获取账号亲和（保留账号）调度配置
+// GET /api/v1/admin/settings/account-affinity
+func (h *SettingHandler) GetAccountAffinitySettings(c *gin.Context) {
+	settings, err := h.settingService.GetAccountAffinitySettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, accountAffinitySettingsDTO(settings))
+}
+
+// UpdateAccountAffinitySettingsRequest 更新账号亲和调度配置请求
+type UpdateAccountAffinitySettingsRequest struct {
+	Enabled          bool    `json:"enabled"`
+	TrustedAPIKeyIDs []int64 `json:"trusted_api_key_ids"`
+	TagPrefix        string  `json:"tag_prefix"`
+}
+
+// UpdateAccountAffinitySettings 更新账号亲和调度配置
+// PUT /api/v1/admin/settings/account-affinity
+func (h *SettingHandler) UpdateAccountAffinitySettings(c *gin.Context) {
+	var req UpdateAccountAffinitySettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	settings := &service.AccountAffinitySettings{
+		Enabled:          req.Enabled,
+		TrustedAPIKeyIDs: req.TrustedAPIKeyIDs,
+		TagPrefix:        req.TagPrefix,
+	}
+	if err := h.settingService.SetAccountAffinitySettings(c.Request.Context(), settings); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	updated, err := h.settingService.GetAccountAffinitySettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, accountAffinitySettingsDTO(updated))
+}
+
 func (h *SettingHandler) GetOpenAIImagesOAuthUnavailableCooldownSettings(c *gin.Context) {
 	settings, err := h.settingService.GetOpenAIImagesOAuthUnavailableCooldownSettings(c.Request.Context())
 	if err != nil {

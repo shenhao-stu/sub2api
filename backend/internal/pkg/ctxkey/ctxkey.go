@@ -59,6 +59,11 @@ const (
 	// Group 认证后的分组信息，由 API Key 认证中间件设置
 	Group Key = "ctx_group"
 
+	// AccountAffinityTags 是本请求可见的账号亲和标签（[]string），由
+	// middleware.AccountAffinity 在信任的 API Key 携带标签头时设置。
+	// 调度器据此决定 extra.affinity_tags 非空的保留账号是否对本请求可见/优先。
+	AccountAffinityTags Key = "ctx_account_affinity_tags"
+
 	// UserID 认证后的 Sub2API 用户 ID，由 API Key 认证中间件设置。
 	// 供 service 层执行用户级策略，不能使用客户端请求体中的 user 标识替代。
 	UserID Key = "ctx_user_id"

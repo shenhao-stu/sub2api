@@ -478,6 +478,14 @@ type RateLimit429CooldownSettings struct {
 	CooldownSeconds int  `json:"cooldown_seconds"`
 }
 
+// AccountAffinitySettings 账号亲和（保留账号）调度配置 DTO
+type AccountAffinitySettings struct {
+	Enabled          bool    `json:"enabled"`
+	TrustedAPIKeyIDs []int64 `json:"trusted_api_key_ids"`
+	TagPrefix        string  `json:"tag_prefix"`
+	Header           string  `json:"header"`
+}
+
 type OpenAIImagesOAuthUnavailableCooldownSettings struct {
 	CooldownMinutes int `json:"cooldown_minutes"`
 }

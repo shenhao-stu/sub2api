@@ -477,6 +477,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					}
 				})
 				shuffleWithinSortGroups(routingAvailable)
+				// 携带匹配标签时，保留账号排到最前；忙则按原顺序落到其余账号
+				stablePreferAffinityAccountsWithLoad(ctx, routingAvailable)
 
 				// 4. 尝试获取槽位
 				for _, item := range routingAvailable {
@@ -735,10 +737,12 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 		}
 
-		// 分层过滤选择：优先级 →（可选）最早重置 → 负载率 → LRU
+		// 分层过滤选择：亲和标签 → 优先级 →（可选）最早重置 → 负载率 → LRU
 		for len(available) > 0 {
+			// 0. 请求携带匹配标签时只看对应保留账号；它被移除（槽位满）后下一轮回到全体
+			tier := filterByAffinityPreference(ctx, available)
 			// 1. 取优先级最小的集合
-			candidates := filterByMinPriority(available)
+			candidates := filterByMinPriority(tier)
 			// 2. （可选）use-it-or-lose-it：优先选用会话窗口最早重置的账号
 			if cfg.PreferSoonestReset {
 				candidates = filterBySoonestReset(candidates)
@@ -778,6 +782,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	// ============ Layer 3: 兜底排队 ============
 	s.sortCandidatesForFallback(candidates, preferOAuth, cfg.FallbackSelectionMode)
+	// 全员槽位满时，携带匹配标签的请求优先排在自己的保留账号上
+	stablePreferAffinityAccounts(ctx, candidates)
 	for _, acc := range candidates {
 		// 会话数量限制检查（等待计划也需要占用会话配额）
 		if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
@@ -796,6 +802,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool) (*AccountSelectionResult, bool, error) {
 	ordered := append([]*Account(nil), candidates...)
 	sortAccountsByPriorityAndLastUsed(ordered, preferOAuth)
+	stablePreferAffinityAccounts(ctx, ordered)
 
 	for _, acc := range ordered {
 		result, err := s.tryAcquireAccountSlot(ctx, acc.ID, acc.Concurrency)
@@ -1011,7 +1018,27 @@ func (s *GatewayService) resolvePlatform(ctx context.Context, groupID *int64, gr
 	return PlatformAnthropic, false, nil
 }
 
+// listSchedulableAccounts 是所有调度路径的唯一候选列表入口。
+// 账号亲和可见性（extra.affinity_tags 非空的保留账号只对携带匹配标签的请求可见）
+// 统一在这里裁剪，Layer 1/1.5/2/3 与 legacy 路径都不可能再看到不属于本请求的保留账号。
 func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
+	accounts, useMixed, err := s.listSchedulableAccountsUnfiltered(ctx, groupID, platform, hasForcePlatform)
+	if err != nil {
+		return accounts, useMixed, err
+	}
+	visible := filterAccountsByAffinityVisibility(ctx, accounts)
+	if len(visible) != len(accounts) {
+		slog.Debug("account_scheduling_affinity_filtered",
+			"group_id", derefGroupID(groupID),
+			"platform", platform,
+			"total", len(accounts),
+			"visible", len(visible),
+			"request_tags", len(AccountAffinityTagsFromContext(ctx)))
+	}
+	return visible, useMixed, nil
+}
+
+func (s *GatewayService) listSchedulableAccountsUnfiltered(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
 	if s.schedulerSnapshot != nil {
 		accounts, useMixed, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
 		if err == nil {
