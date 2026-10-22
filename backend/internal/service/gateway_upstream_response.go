@@ -1123,6 +1123,8 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 						if usagePatch != nil {
 							mergeSSEUsagePatch(usage, usagePatch)
 						}
+						observeReceiptFinality(data, usage)
+						freezeReceiptUsage(usage)
 					}
 				}
 				continue
@@ -1180,6 +1182,8 @@ func (s *GatewayService) parseSSEUsage(data string, usage *ClaudeUsage) {
 		return
 	}
 
+	observeReceiptFinality(data, usage)
+	defer freezeReceiptUsage(usage)
 	var event map[string]any
 	if err := json.Unmarshal([]byte(data), &event); err != nil {
 		return

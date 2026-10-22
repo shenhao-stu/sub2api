@@ -20,7 +20,7 @@ func TestAnthropicSSEUsagePresence(t *testing.T) {
 				usage := &ClaudeUsage{}
 				parse(`{"type":"message_start","message":{"usage":{"input_tokens":8,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}`, usage)
 				parse(`{"type":"message_delta","usage":{"input_tokens":0,"output_tokens":2,"cache_read_input_tokens":7553,"cache_creation_input_tokens":1644}}`, usage)
-				require.Equal(t, &ClaudeUsage{
+				require.EqualExportedValues(t, &ClaudeUsage{
 					InputTokens: 0, OutputTokens: 2,
 					CacheReadInputTokens: 7553, CacheCreationInputTokens: 1644,
 				}, usage)
@@ -28,14 +28,14 @@ func TestAnthropicSSEUsagePresence(t *testing.T) {
 			t.Run("omitted_fields_keep_observed_usage", func(t *testing.T) {
 				usage := &ClaudeUsage{InputTokens: 8, CacheReadInputTokens: 7, OutputTokens: 1}
 				parse(`{"type":"message_delta","usage":{"output_tokens":2}}`, usage)
-				require.Equal(t, &ClaudeUsage{InputTokens: 8, CacheReadInputTokens: 7, OutputTokens: 2}, usage)
+				require.EqualExportedValues(t, &ClaudeUsage{InputTokens: 8, CacheReadInputTokens: 7, OutputTokens: 2}, usage)
 				parse(`{"type":"error","error":{"type":"upstream_error","message":"stopped"}}`, usage)
-				require.Equal(t, &ClaudeUsage{InputTokens: 8, CacheReadInputTokens: 7, OutputTokens: 2}, usage)
+				require.EqualExportedValues(t, &ClaudeUsage{InputTokens: 8, CacheReadInputTokens: 7, OutputTokens: 2}, usage)
 			})
 			t.Run("malformed_event_keeps_observed_usage", func(t *testing.T) {
 				usage := &ClaudeUsage{InputTokens: 8, OutputTokens: 2}
 				parse(`{"type":"message_delta","usage":{"input_tokens":0`, usage)
-				require.Equal(t, &ClaudeUsage{InputTokens: 8, OutputTokens: 2}, usage)
+				require.EqualExportedValues(t, &ClaudeUsage{InputTokens: 8, OutputTokens: 2}, usage)
 			})
 			t.Run("explicit_zero_overwrites_every_bucket", func(t *testing.T) {
 				usage := &ClaudeUsage{
@@ -43,7 +43,7 @@ func TestAnthropicSSEUsagePresence(t *testing.T) {
 					CacheCreationInputTokens: 3, CacheCreation5mTokens: 1, CacheCreation1hTokens: 2,
 				}
 				parse(`{"type":"message_delta","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}`, usage)
-				require.Equal(t, &ClaudeUsage{}, usage)
+				require.EqualExportedValues(t, &ClaudeUsage{}, usage)
 			})
 			for _, event := range []string{"message_start", "message_delta"} {
 				t.Run(event+"/independent_ttl_buckets", func(t *testing.T) {
@@ -58,7 +58,7 @@ func TestAnthropicSSEUsagePresence(t *testing.T) {
 					raw, err := json.Marshal(obj)
 					require.NoError(t, err)
 					parse(string(raw), usage)
-					require.Equal(t, &ClaudeUsage{CacheCreationInputTokens: 3, CacheCreation1hTokens: 2}, usage)
+					require.EqualExportedValues(t, &ClaudeUsage{CacheCreationInputTokens: 3, CacheCreation1hTokens: 2}, usage)
 				})
 			}
 			for _, invalid := range []string{"null", "-1", "0.5", `"0"`, "true", "{}", "1e99"} {
@@ -73,7 +73,7 @@ func TestAnthropicSSEUsagePresence(t *testing.T) {
 						} else {
 							parse(`{"type":"message_delta","usage":`+fields+`}`, &usage)
 						}
-						require.Equal(t, before, usage)
+						require.EqualExportedValues(t, before, usage)
 					})
 				}
 			}

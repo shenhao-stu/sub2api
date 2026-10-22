@@ -643,10 +643,20 @@ func extractAnthropicSSEDataLine(line string) (string, bool) {
 // parseSSEUsagePassthrough 从 Anthropic SSE data 行提取 usage（包级函数：
 // Anthropic 平台 passthrough 与国产供应商原生 Anthropic 直通共用）。
 func parseSSEUsagePassthrough(data string, usage *ClaudeUsage) {
-	if usage == nil || data == "" || data == "[DONE]" || !gjson.Valid(data) {
+	if usage != nil && data == "[DONE]" {
+		observeReceiptFinality(data, usage)
+		freezeReceiptUsage(usage)
+		return
+	}
+	if usage == nil || data == "" {
 		return
 	}
 
+	observeReceiptFinality(data, usage)
+	defer freezeReceiptUsage(usage)
+	if !gjson.Valid(data) {
+		return
+	}
 	parsed := gjson.Parse(data)
 	var counters gjson.Result
 	switch parsed.Get("type").String() {
