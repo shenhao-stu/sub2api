@@ -53,13 +53,13 @@ func boundedOpenAIClientError(body []byte, status int) openAIClientErrorFields {
 		_ = json.Unmarshal(doc.Error[key], &value)
 		return strings.TrimSpace(value)
 	}
-	if value := field("type"); clientErrorIdentifier.MatchString(value) && !clientErrorCredential.MatchString(value) {
+	if value := field("type"); clientErrorIdentifier.MatchString(value) && !clientErrorCredential.MatchString(value) && redactClientErrorOrigins(value) == value {
 		result.Type = value
 	}
-	if value := field("code"); clientErrorIdentifier.MatchString(value) && !clientErrorCredential.MatchString(value) {
+	if value := field("code"); clientErrorIdentifier.MatchString(value) && !clientErrorCredential.MatchString(value) && redactClientErrorOrigins(value) == value {
 		result.Code = value
 	}
-	if value := field("param"); len(value) <= 512 && clientErrorParam.MatchString(value) {
+	if value := field("param"); len(value) <= 512 && clientErrorParam.MatchString(value) && redactClientErrorOrigins(value) == value {
 		result.Param = value
 	}
 	message := field("message")
@@ -67,6 +67,7 @@ func boundedOpenAIClientError(body []byte, status int) openAIClientErrorFields {
 	if message == "" || strings.HasPrefix(message, "{") || strings.HasPrefix(message, "[") || strings.HasPrefix(message, "<") {
 		return result
 	}
+	message = redactClientErrorOrigins(message)
 	message = clientErrorCredential.ReplaceAllString(message, "[REDACTED]")
 	message = logredact.RedactText(sanitizeUpstreamErrorMessage(message), "api_key", "apikey", "authorization", "cookie", "set-cookie")
 	message = strings.Map(func(r rune) rune {
@@ -104,6 +105,11 @@ func WriteOpenAIClientErrorPassthrough(c *gin.Context, rules *ErrorPassthroughSe
 		c.Set(OpsSkipPassthroughKey, true)
 	}
 	fields := boundedOpenAIClientError(body, status)
+	return writeOpenAIErrorFields(c, fields, streamStarted)
+}
+
+func writeOpenAIErrorFields(c *gin.Context, fields openAIClientErrorFields, streamStarted bool) bool {
+	status := fields.StatusCode
 	streamStarted = StopOpenAICompactSSEKeepaliveCommitted(c) || streamStarted ||
 		(c.Writer.Written() && strings.HasPrefix(c.Writer.Header().Get("Content-Type"), "text/event-stream"))
 	MarkResponseCommitted(c)

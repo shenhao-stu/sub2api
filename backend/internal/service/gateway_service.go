@@ -736,7 +736,7 @@ func (e *UpstreamFailoverError) IsCredentialFailure() bool {
 // credential failures from being misattributed to the selected account. Legacy
 // and inference failures retain their existing scheduler-health behavior.
 func (e *UpstreamFailoverError) ShouldReportAccountScheduleFailure() bool {
-	if e == nil {
+	if e == nil || e.Reason == conversationGuardReason {
 		return false
 	}
 	return !e.IsCredentialFailure() || e.Scope == GatewayFailureScopeAccount

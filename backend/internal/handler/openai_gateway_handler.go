@@ -1620,6 +1620,9 @@ func (h *OpenAIGatewayHandler) anthropicStreamingAwareError(c *gin.Context, stat
 func (h *OpenAIGatewayHandler) handleAnthropicFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, streamStarted bool) {
 	if failoverErr != nil {
 		copyFailoverRetryAfter(c, failoverErr.ResponseHeaders)
+		if service.WriteConversationGuardError(c, failoverErr.StatusCode, failoverErr.ResponseBody, streamStarted) {
+			return
+		}
 	}
 	if failoverErr != nil && failoverErr.IsCredentialFailure() {
 		status, message := credentialFailoverClientResponse(failoverErr)
@@ -3563,6 +3566,9 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 		return
 	}
 	copyFailoverRetryAfter(c, failoverErr.ResponseHeaders)
+	if service.WriteConversationGuardError(c, failoverErr.StatusCode, failoverErr.ResponseBody, streamStarted) {
+		return
+	}
 	if failoverErr.IsOpenAIRequestBodyTooLarge() {
 		service.SetOpsUpstreamError(c, http.StatusRequestEntityTooLarge, service.OpenAIRequestBodyTooLargeClientMessage, "")
 		h.handleStreamingAwareError(
