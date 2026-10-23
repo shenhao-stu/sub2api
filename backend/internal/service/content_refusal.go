@@ -37,11 +37,32 @@ func (s *GatewayService) handleContentRefusalResponse(c *gin.Context, account *A
 		return nil, nil, false
 	}
 	fields := boundedOpenAIClientError(body, resp.StatusCode)
-	setOpsUpstreamError(c, resp.StatusCode, fields.Message, "")
+	// Preserve restricted diagnostics under the existing administrator setting.
+	// Client redaction must not erase the evidence used to correlate incidents.
+	detail := ""
+	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+		limit := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
+		if limit <= 0 {
+			limit = 2048
+		}
+		detail = truncateString(string(body), limit)
+	}
+	upstreamRequestID := resp.Header.Get("x-request-id")
+	if upstreamRequestID == "" {
+		var envelope struct {
+			Error struct {
+				RequestID string `json:"request_id"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(body, &envelope) == nil && clientErrorIdentifier.MatchString(envelope.Error.RequestID) {
+			upstreamRequestID = envelope.Error.RequestID
+		}
+	}
+	setOpsUpstreamError(c, resp.StatusCode, fields.Message, detail)
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		AccountID: account.ID, Platform: account.Platform,
-		UpstreamStatusCode: resp.StatusCode, UpstreamRequestID: resp.Header.Get("x-request-id"),
-		Kind: "request_rejection", Message: fields.Message,
+		UpstreamStatusCode: resp.StatusCode, UpstreamRequestID: upstreamRequestID,
+		Kind: "request_rejection", Message: fields.Message, Detail: detail,
 	})
 	MarkResponseCommitted(c)
 	payload := gin.H{"type": "error", "error": fields}
