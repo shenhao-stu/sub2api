@@ -419,6 +419,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			})
 		}
 
+		if result, err, handled := s.handleContentRefusalResponse(c, account, resp, parsed.Model, reqModel, reqStream, startTime); handled {
+			return result, err
+		}
+
 		// 优先检测thinking block签名错误（400）并重试一次
 		if resp.StatusCode == 400 {
 			respBody, readErr := s.readUpstreamErrorBody(resp, c)
