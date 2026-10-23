@@ -104,6 +104,11 @@ func WriteOpenAIClientErrorPassthrough(c *gin.Context, rules *ErrorPassthroughSe
 		c.Set(OpsSkipPassthroughKey, true)
 	}
 	fields := boundedOpenAIClientError(body, status)
+	return writeOpenAIErrorFields(c, fields, streamStarted)
+}
+
+func writeOpenAIErrorFields(c *gin.Context, fields openAIClientErrorFields, streamStarted bool) bool {
+	status := fields.StatusCode
 	streamStarted = StopOpenAICompactSSEKeepaliveCommitted(c) || streamStarted ||
 		(c.Writer.Written() && strings.HasPrefix(c.Writer.Header().Get("Content-Type"), "text/event-stream"))
 	MarkResponseCommitted(c)

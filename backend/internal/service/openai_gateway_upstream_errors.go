@@ -342,6 +342,14 @@ func newOpenAIUpstreamFailoverError(
 		RetryableOnSameAccount: retryableOnSameAccount || requestScopedCapacity,
 		RequestScopedTransient: requestScopedCapacity,
 	}
+	if isConversationGuardError(statusCode, responseBody) {
+		failoverErr.RetryableOnSameAccount = false
+		failoverErr.RequestScopedTransient = false
+		failoverErr.Scope = GatewayFailureScopeRequest
+		failoverErr.Reason = conversationGuardReason
+		failoverErr.NextAccountAction = NextAccountStop
+		return failoverErr
+	}
 	if isOpenAIRequestBodyTooLargeError(statusCode, upstreamMsg, responseBody) {
 		failoverErr.RetryableOnSameAccount = false
 		failoverErr.RequestScopedTransient = false
