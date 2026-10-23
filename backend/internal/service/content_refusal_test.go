@@ -34,6 +34,8 @@ func TestContentRefusalAnthropicForwardStopsWithoutLosingUsage(t *testing.T) {
 				body += "}"
 				up := &anthropicHTTPUpstreamRecorder{resp: &http.Response{StatusCode: 403, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}}
 				s := &GatewayService{cfg: &config.Config{}, httpUpstream: up}
+				s.cfg.Gateway.LogUpstreamErrorBody = true
+				s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes = 2048
 				a := newAnthropicAPIKeyAccountForTest()
 				a.Credentials["pool_mode"] = true
 				result, err := s.forwardAnthropicAPIKeyPassthrough(context.Background(), c, a, []byte(`{"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"synthetic"}]}`), "claude-sonnet-5-5", "claude-sonnet-5-5", committed, time.Now())
@@ -61,6 +63,12 @@ func TestContentRefusalAnthropicForwardStopsWithoutLosingUsage(t *testing.T) {
 				require.NotContains(t, rec.Body.String(), "private-provider-id")
 				require.NotContains(t, strings.ToLower(rec.Body.String()), "derouter.ai")
 				require.NotContains(t, rec.Body.String(), "token=private")
+				privateEvents, ok := c.Get(OpsUpstreamErrorsKey)
+				require.True(t, ok)
+				events := privateEvents.([]*OpsUpstreamErrorEvent)
+				require.Len(t, events, 1)
+				require.Equal(t, "private-provider-id", events[0].UpstreamRequestID)
+				require.Contains(t, events[0].Detail, "private-provider-id")
 			})
 		}
 	}
