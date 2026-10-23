@@ -331,12 +331,31 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	pendingLines := make([]string, 0, 8)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
 	var terminal openAIRawStreamTerminalState
+	gemini := newGeminiChatDelivery(originalModel, upstreamModel)
+	var geminiPending []string
+	geminiPendingBytes := 0
 
 	writeLine := func(line string) {
 		if clientDisconnected {
 			return
 		}
-		if !clientOutputStarted && !refusalDetector.ShouldReleaseClientOutput() {
+		if gemini.empty() {
+			// Only a role/usage/terminal prefix is withheld. Bound it without
+			// dropping usage: counters are parsed before any output decisions.
+			if !gemini.prefixOverflow && geminiPendingBytes+len(line)+1 <= 64*1024 {
+				geminiPending = append(geminiPending, line)
+				geminiPendingBytes += len(line) + 1
+			} else {
+				gemini.prefixOverflow = true
+				geminiPending = nil
+			}
+			return
+		}
+		if len(geminiPending) > 0 {
+			pendingLines = append(pendingLines, geminiPending...)
+			geminiPending = nil
+		}
+		if !clientOutputStarted && !gemini.enabled && !refusalDetector.ShouldReleaseClientOutput() {
 			pendingLines = append(pendingLines, line)
 			return
 		}
@@ -368,6 +387,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		line := scanner.Text()
 		refusalDetector.ObserveSSELine(line)
 		if payload, ok := extractOpenAISSEDataLine(line); ok {
+			gemini.observe([]byte(payload))
 			trimmedPayload := strings.TrimSpace(payload)
 			terminal.ObserveDataLine(trimmedPayload)
 			if trimmedPayload != "[DONE]" {
@@ -468,6 +488,9 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 		recordOpenAIRawStreamTruncation(c, account, requestID, cause, "http_error")
 		return resultWithUsage(), newOpenAIUpstreamStreamReadError(cause)
+	}
+	if scanErr == nil && !clientDisconnected && gemini.empty() {
+		return resultWithUsage(), gemini.reject(c, account, requestID, &usage)
 	}
 
 	if scanErr == nil && !clientDisconnected && !clientOutputStarted {
@@ -570,6 +593,26 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 	if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(respBody); ok {
 		usage = parsedUsage
 	}
+	result := &OpenAIForwardResult{
+		RequestID:                     requestID,
+		UpstreamHeaders:               resp.Header,
+		Usage:                         usage,
+		Model:                         originalModel,
+		BillingModel:                  billingModel,
+		UpstreamModel:                 upstreamModel,
+		UpstreamResponseModel:         observedUpstreamResponseModel(c),
+		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+		UpstreamResponseServiceTier:   observedUpstreamResponseServiceTier(c),
+		ReasoningEffort:               reasoningEffort,
+		ServiceTier:                   resolvedOpenAIUpstreamServiceTier(c, serviceTier),
+		Stream:                        false,
+		Duration:                      time.Since(startTime),
+	}
+	gemini := newGeminiChatDelivery(originalModel, upstreamModel)
+	gemini.observe(respBody)
+	if gemini.empty() {
+		return result, gemini.reject(c, account, requestID, &usage)
+	}
 	responseModel := gjson.GetBytes(respBody, "model").String()
 	if requiresBillableGrokChatUsage(account, billingModel, upstreamModel, responseModel) && !hasBillableGrokChatUsage(usage) {
 		upstreamRequestID := firstNonEmpty(requestID, resp.Header.Get("xai-request-id"))
@@ -589,21 +632,7 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 	c.Writer.WriteHeader(http.StatusOK)
 	_, _ = c.Writer.Write(respBody)
 
-	return &OpenAIForwardResult{
-		RequestID:                     requestID,
-		UpstreamHeaders:               resp.Header,
-		Usage:                         usage,
-		Model:                         originalModel,
-		BillingModel:                  billingModel,
-		UpstreamModel:                 upstreamModel,
-		UpstreamResponseModel:         observedUpstreamResponseModel(c),
-		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
-		UpstreamResponseServiceTier:   observedUpstreamResponseServiceTier(c),
-		ReasoningEffort:               reasoningEffort,
-		ServiceTier:                   resolvedOpenAIUpstreamServiceTier(c, serviceTier),
-		Stream:                        false,
-		Duration:                      time.Since(startTime),
-	}, nil
+	return result, nil
 }
 
 // buildOpenAIChatCompletionsURL 拼接上游 Chat Completions 端点 URL。
