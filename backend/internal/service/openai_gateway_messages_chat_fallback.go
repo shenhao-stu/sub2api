@@ -60,6 +60,14 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, fmt.Errorf("convert anthropic to chat completions: %w", err)
 	}
+	if account.Platform == PlatformKimi {
+		options, cacheErr := kimiMessagesCacheOptions(body)
+		if cacheErr != nil {
+			writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", cacheErr.Error())
+			return nil, cacheErr
+		}
+		chatReq.PromptCacheOptions = options
+	}
 	if account.IsCommandCodeGo() {
 		// Native GO accepts sampling options independently of OpenAI model names.
 		// The incoming name may also be an alias for a different upstream model.
@@ -179,7 +187,11 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsAnthropic(
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
-	c.JSON(http.StatusOK, anthropicResp)
+	encoded, err := json.Marshal(anthropicResp)
+	if err != nil {
+		return nil, fmt.Errorf("marshal Anthropic response: %w", err)
+	}
+	c.Data(http.StatusOK, "application/json", injectKimiCacheWriteUsage(c, encoded))
 
 	return &OpenAIForwardResult{
 		RequestID:                   requestID,
@@ -225,6 +237,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 			if err != nil {
 				continue
 			}
+			sse = injectKimiCacheWriteSSE(c, sse)
 			writeStreamHeaders()
 			if _, err := fmt.Fprint(c.Writer, sse); err != nil {
 				clientDisconnected = true
@@ -268,6 +281,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 			if err != nil {
 				continue
 			}
+			sse = injectKimiCacheWriteSSE(c, sse)
 			writeStreamHeaders()
 			if _, err := fmt.Fprint(c.Writer, sse); err != nil {
 				clientDisconnected = true

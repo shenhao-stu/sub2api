@@ -54,7 +54,9 @@ type chatReceiptCapture struct {
 
 // Only adapters with final downstream Chat-meter capture can acknowledge v2.
 func (s *OpenAIGatewayService) SupportsChatUsageReceipt(ctx context.Context, account *Account, body []byte) bool {
-	return account != nil && s.resolveUpstreamProtocolFor(ctx, account, APIProtocolChatCompletions, upstreamRoutingModel(account, body, "")) != APIProtocolAnthropic
+	// V2 has no cache-write TTL representation. Do not acknowledge a request
+	// whose final meter could lose a real Kimi 1h charge.
+	return account != nil && account.Platform != PlatformKimi && s.resolveUpstreamProtocolFor(ctx, account, APIProtocolChatCompletions, upstreamRoutingModel(account, body, "")) != APIProtocolAnthropic
 }
 
 // BeginChatUsageReceipt reserves an identity before generation. Reusing even an

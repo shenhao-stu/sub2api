@@ -57,9 +57,13 @@ func (r *chatHandlerReceiptRepo) GetUsageReceipt(_ context.Context, key int64, i
 
 func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, mode := range []string{"normal", "queue_headers_committed", "no_account", "invalid_id"} {
+	for _, mode := range []string{"normal", "queue_headers_committed", "no_account", "invalid_id", "kimi_unsupported"} {
 		t.Run(mode, func(t *testing.T) {
 			accounts := []service.Account{{ID: 19930, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"api_key": "synthetic"}, Extra: map[string]any{"openai_responses_supported": true}}}
+			if mode == "kimi_unsupported" {
+				accounts[0].Platform = service.PlatformKimi
+				accounts[0].Credentials["api_protocol"] = "chat_completions"
+			}
 			if mode == "no_account" {
 				accounts = nil
 			}
@@ -84,6 +88,10 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 				groupID := int64(14230)
 				c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{ID: 11830, UserID: 11730, GroupID: &groupID, User: &service.User{ID: 11730, Status: service.StatusActive, Balance: 100}, Group: &service.Group{ID: groupID, Hydrated: true, Platform: service.PlatformOpenAI, Status: service.StatusActive, RateMultiplier: 1}})
 				c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 11730})
+				if mode == "kimi_unsupported" {
+					key, _ := c.Get(string(middleware.ContextKeyAPIKey))
+					key.(*service.APIKey).Group.Platform = service.PlatformKimi
+				}
 				c.Next()
 			})
 			router.POST(service.ChatReceiptEndpoint, func(c *gin.Context) {
@@ -104,18 +112,36 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 			if mode == "invalid_id" {
 				id = "client-spoof"
 			}
+			var lastBody string
 			send := func() *http.Response {
-				req, err := http.NewRequest("POST", server.URL+service.ChatReceiptEndpoint, strings.NewReader(`{"model":"gemini-4-argon","messages":[{"role":"user","content":"synthetic"}],"stream":true}`))
+				body := `{"model":"gemini-4-argon","messages":[{"role":"user","content":"synthetic"}],"stream":true}`
+				if mode == "kimi_unsupported" {
+					body = strings.Replace(body, "gemini-4-argon", "kimi-k3", 1)
+				}
+				req, err := http.NewRequest("POST", server.URL+service.ChatReceiptEndpoint, strings.NewReader(body))
 				require.NoError(t, err)
 				req.Header.Set(service.ChatReceiptVersionHeader, "v2")
 				req.Header.Set(service.ChatReceiptIDHeader, id)
 				resp, err := server.Client().Do(req)
 				require.NoError(t, err)
-				io.Copy(io.Discard, resp.Body)
+				data, _ := io.ReadAll(resp.Body)
+				lastBody = string(data)
 				resp.Body.Close()
 				return resp
 			}
 			resp := send()
+			if mode == "kimi_unsupported" {
+				require.Equal(t, 400, resp.StatusCode)
+				require.Contains(t, lastBody, "unsupported_metering_protocol")
+				require.Nil(t, repo.claim)
+				require.Nil(t, repo.receipt)
+				require.Zero(t, upstream.calls)
+				require.Zero(t, len(billing.commands))
+				require.Zero(t, len(repo.created))
+				require.Empty(t, resp.Header.Get(service.ChatReceiptVersionHeader))
+				return
+			}
+
 			if mode == "no_account" || mode == "invalid_id" {
 				require.GreaterOrEqual(t, resp.StatusCode, 400)
 				require.Empty(t, resp.Header.Get(service.ChatReceiptVersionHeader))

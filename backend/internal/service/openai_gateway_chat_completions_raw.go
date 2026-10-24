@@ -396,7 +396,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				usageOnlyChunk := isOpenAIChatUsageOnlyStreamChunk(payload)
 				if u := extractCCStreamUsage(payload); u != nil {
 					if openAIUsageHasTokens(u) || !openAIUsageHasTokens(&usage) {
-						usage = *u
+						usage = applyKimiCacheWriteHeaders(c, resp.Header, *u, []byte(payload))
 					}
 				}
 				if firstTokenMs == nil && !usageOnlyChunk {
@@ -405,6 +405,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				}
 			}
 		}
+		line = injectKimiCacheWriteSSE(c, line)
 		line = applyOllamaCloudRawChatCompletionsSSELine(account, line)
 		line = stripEmptyChatToolCallIdentityFromSSELine(line)
 
@@ -595,7 +596,7 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 
 	var usage OpenAIUsage
 	if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(respBody); ok {
-		usage = parsedUsage
+		usage = applyKimiCacheWriteHeaders(c, resp.Header, parsedUsage, respBody)
 	}
 	result := &OpenAIForwardResult{
 		RequestID:                     requestID,
@@ -623,6 +624,7 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		upstreamRequestID := firstNonEmpty(requestID, resp.Header.Get("xai-request-id"))
 		return nil, newGrokMissingUsageFailoverError(c, account, upstreamRequestID)
 	}
+	respBody = injectKimiCacheWriteUsage(c, respBody)
 	respBody = applyOllamaCloudRawChatCompletionsResponse(account, respBody)
 	respBody = s.replaceModelInResponseBody(respBody, upstreamModel, originalModel)
 

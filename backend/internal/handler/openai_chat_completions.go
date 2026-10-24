@@ -263,7 +263,11 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			if accountReleaseFunc != nil {
 				accountReleaseFunc()
 			}
-			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "usage_receipt_error", "Usage receipts are unavailable for the selected protocol", streamStarted)
+			if account.Platform == service.PlatformKimi {
+				h.handleStreamingAwareError(c, http.StatusBadRequest, "unsupported_metering_protocol", "Usage receipt v2 does not support cache-write TTL metering for this account", streamStarted)
+			} else {
+				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "usage_receipt_error", "Usage receipts are unavailable for the selected protocol", streamStarted)
+			}
 			return
 		}
 		if receiptRequested && !receiptClaimed {
