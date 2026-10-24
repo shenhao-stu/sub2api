@@ -388,8 +388,9 @@ type ResponsesResponse struct {
 
 // ResponsesError describes an error in a failed response.
 type ResponsesError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	StatusCode int    `json:"status_code,omitempty"`
+	Code       string `json:"code"`
+	Message    string `json:"message"`
 }
 
 // ResponsesIncompleteDetails explains why a response is incomplete.

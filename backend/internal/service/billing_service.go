@@ -973,10 +973,15 @@ func (s *BillingService) initFallbackPricing() {
 	grok47Fast.InputPricePerToken *= 2
 	grok47Fast.OutputPricePerToken *= 2
 	grok47Fast.CacheReadPricePerToken *= 2
+	// Official Fast long-context card: $6 / $1.50 / $18.
+	grok47Fast.LongContextInputMultiplier = 1.5
+	grok47Fast.LongContextOutputMultiplier = 1.5
 	fixedTier := 1.0
 	grok47Fast.FastMultiplier = &fixedTier
 	grok47Fast.FlexMultiplier = &fixedTier
 	s.fallbackPrices["grok-4.7-build-fast"] = &grok47Fast
+
+	s.fallbackPrices["grok-4.7-fast"] = &grok47Fast
 
 	// xAI Grok 4.3: $1.25 input / $0.20 cached / $2.50 output below 200k;
 	// long-context rates are $2.50 / $0.40 / $5.
