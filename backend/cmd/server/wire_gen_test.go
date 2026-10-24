@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -22,7 +23,7 @@ func TestProvideServiceBuildInfo(t *testing.T) {
 	require.Equal(t, in.BuildType, out.BuildType)
 }
 
-func newCleanupTest(t *testing.T, billingCacheSvc *service.BillingCacheService, usagePool *service.UsageRecordWorkerPool) func() {
+func newCleanupTest(t *testing.T, billingCacheSvc *service.BillingCacheService, usagePool *service.UsageRecordWorkerPool, clients ...*ent.Client) func() {
 	t.Helper()
 	cfg := &config.Config{}
 
@@ -56,8 +57,12 @@ func newCleanupTest(t *testing.T, billingCacheSvc *service.BillingCacheService, 
 	schedulerSnapshotSvc := service.NewSchedulerSnapshotService(nil, nil, nil, nil, cfg)
 	opsSystemLogSinkSvc := service.NewOpsSystemLogSink(nil)
 
+	var entClient *ent.Client
+	if len(clients) > 0 {
+		entClient = clients[0]
+	}
 	cleanup := provideCleanup(
-		nil, // entClient
+		entClient,
 		nil, // redis
 		&service.OpsMetricsCollector{},
 		&service.OpsAggregationService{},

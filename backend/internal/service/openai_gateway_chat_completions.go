@@ -778,6 +778,17 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	acc.SupplementResponseOutput(finalResponse)
 
 	chatResp := apicompat.ResponsesToChatCompletions(finalResponse, originalModel)
+	gemini := newGeminiChatDelivery(originalModel, upstreamModel)
+	if gemini.enabled {
+		payload, err := json.Marshal(chatResp)
+		if err != nil {
+			return partialResult(), fmt.Errorf("marshal converted chat completion: %w", err)
+		}
+		gemini.observe(payload)
+		if gemini.empty() {
+			return partialResult(), gemini.reject(c, account, requestID, &usage)
+		}
+	}
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -884,6 +895,30 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	clientOutputStarted := false
 	pendingSSE := make([]string, 0, 4)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
+	gemini := newGeminiChatDelivery(originalModel, upstreamModel)
+	geminiResponseStarted := false
+	pendingSSEBytes := 0
+	bufferGeminiPrefix := func(sse string) bool {
+		if !gemini.enabled {
+			return false
+		}
+		// Judge the converted bytes delivered to the client. Upstream role,
+		// usage and encrypted/empty reasoning events are not answer content.
+		if payload, ok := extractOpenAISSEDataLine(sse); ok {
+			gemini.observe([]byte(payload))
+		}
+		if !gemini.empty() {
+			return false
+		}
+		if !gemini.prefixOverflow && pendingSSEBytes+len(sse) <= 64*1024 {
+			pendingSSE = append(pendingSSE, sse)
+			pendingSSEBytes += len(sse)
+		} else {
+			gemini.prefixOverflow = true
+			pendingSSE = nil
+		}
+		return true
+	}
 	var streamFailoverErr *UpstreamFailoverError
 	var streamNonFailoverErr error
 	terminalEventType := ""
@@ -971,6 +1006,11 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		s.parseSSEUsageBytesWithType([]byte(payload), event.Type, &usage)
 
 		isTerminalEvent := isOpenAICompatResponsesTerminalEvent(event.Type)
+		if gemini.enabled && !isTerminalEvent && strings.HasPrefix(strings.TrimSpace(event.Type), "response.") {
+			// Withheld role/opaque reasoning still means the upstream started
+			// processing. A later error without usage is not safe to replay.
+			geminiResponseStarted = true
+		}
 		if isTerminalEvent {
 			terminalEventType = strings.TrimSpace(event.Type)
 		}
@@ -1014,7 +1054,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			if strings.TrimSpace(event.Type) == "error" {
 				shouldFailover = openAIStreamErrorEventShouldFailover(payloadBytes, message)
 			}
-			if !clientOutputStarted && !openAIUsageHasTokens(&usage) && shouldFailover {
+			if !clientOutputStarted && !geminiResponseStarted && !openAIUsageHasTokens(&usage) && shouldFailover {
 				streamFailoverErr = s.newOpenAIStreamFailoverErrorWithModel(c, account, false, requestID, payloadBytes, message, upstreamModel, resp.Header)
 				return true
 			}
@@ -1067,7 +1107,10 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 					)
 					continue
 				}
-				if !clientOutputStarted && !refusalDetector.ShouldReleaseClientOutput() {
+				if bufferGeminiPrefix(sse) {
+					continue
+				}
+				if !clientOutputStarted && !gemini.enabled && !refusalDetector.ShouldReleaseClientOutput() {
 					pendingSSE = append(pendingSSE, sse)
 					continue
 				}
@@ -1120,7 +1163,10 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				if err != nil {
 					continue
 				}
-				if !clientOutputStarted && !refusalDetector.ShouldReleaseClientOutput() {
+				if bufferGeminiPrefix(sse) {
+					continue
+				}
+				if !clientOutputStarted && !gemini.enabled && !refusalDetector.ShouldReleaseClientOutput() {
 					pendingSSE = append(pendingSSE, sse)
 					continue
 				}
@@ -1149,6 +1195,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 					break
 				}
 			}
+		}
+		if !clientDisconnected && gemini.empty() {
+			return resultWithUsage(), gemini.reject(c, account, requestID, &usage)
 		}
 		if !clientDisconnected && !clientOutputStarted {
 			if refusalDetector.IsSilentRefusal() {

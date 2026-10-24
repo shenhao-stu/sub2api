@@ -461,8 +461,21 @@ func provideCleanup(
 
 		runParallel(parallelSteps)
 		runSequential(billingSteps)
+
+		// Preserve billing cleanup priority, then drain request error logs while
+		// their database dependency is still open. Stop has its own bounded wait.
+		opsDrained := handler.StopOpsErrorLogWorkers()
+		if opsDrained {
+			log.Printf("[Cleanup] OpsErrorLogWorkers succeeded")
+		} else {
+			log.Printf("[Cleanup] OpsErrorLogWorkers failed: drain timeout; pending error logs may remain")
+		}
 		runSequential(infraSteps)
 
+		if !opsDrained {
+			log.Printf("[Cleanup] Cleanup steps attempted; pending Ops error logs may remain")
+			return
+		}
 		log.Printf("[Cleanup] All cleanup steps completed")
 	}
 }
