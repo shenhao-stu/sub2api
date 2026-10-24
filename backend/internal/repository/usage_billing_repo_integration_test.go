@@ -454,12 +454,13 @@ func TestUsageBillingRepositoryApply_EnqueuesSchedulerOutboxOnQuotaCrossing(t *t
 	})
 
 	t.Run("total_first_crossing_enqueues", func(t *testing.T) {
-		apiKeyID, accountID := newFixture(t, map[string]any{
+		userID, apiKeyID, accountID := newFixture(t, map[string]any{
 			"quota_limit": 10.0,
 		})
 		_, err := repo.Apply(ctx, &service.UsageBillingCommand{
 			RequestID:        uuid.NewString(),
 			APIKeyID:         apiKeyID,
+			UserID:           userID,
 			AccountID:        accountID,
 			AccountType:      service.AccountTypeAPIKey,
 			AccountQuotaCost: 4,
@@ -470,6 +471,7 @@ func TestUsageBillingRepositoryApply_EnqueuesSchedulerOutboxOnQuotaCrossing(t *t
 		_, err = repo.Apply(ctx, &service.UsageBillingCommand{
 			RequestID:        uuid.NewString(),
 			APIKeyID:         apiKeyID,
+			UserID:           userID,
 			AccountID:        accountID,
 			AccountType:      service.AccountTypeAPIKey,
 			AccountQuotaCost: 8,

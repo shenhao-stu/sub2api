@@ -27,7 +27,7 @@ func TestIsGeminiImageGenerationIntent(t *testing.T) {
 		{name: "image generation experimental", models: []string{"gemini-2.0-flash-exp-image-generation"}, want: true},
 		{name: "imageless suffix", models: []string{"gemini-3-pro-imageless"}, want: false},
 		{name: "image without gemini prefix", models: []string{"unknown-image", "my-image-chat"}, want: false},
-		{name: "banana alias without resolved image model", models: []string{"nano-banana-2"}, want: false},
+		{name: "known banana image alias must respect image permission before mapping", models: []string{"nano-banana-2"}, want: true},
 		{name: "any resolved name", models: []string{"my-alias", "gemini-2.5-flash-image"}, want: true},
 		{name: "text model", models: []string{"gemini-3.7-flash", "gemini-3.1-pro-preview"}, want: false},
 		{name: "empty", models: []string{"", "  "}, want: false},

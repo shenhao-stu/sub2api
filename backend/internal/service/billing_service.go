@@ -973,6 +973,9 @@ func (s *BillingService) initFallbackPricing() {
 	grok47Fast.InputPricePerToken *= 2
 	grok47Fast.OutputPricePerToken *= 2
 	grok47Fast.CacheReadPricePerToken *= 2
+	// Official Fast long-context card: $6 / $1.50 / $18.
+	grok47Fast.LongContextInputMultiplier = 1.5
+	grok47Fast.LongContextOutputMultiplier = 1.5
 	fixedTier := 1.0
 	grok47Fast.FastMultiplier = &fixedTier
 	grok47Fast.FlexMultiplier = &fixedTier

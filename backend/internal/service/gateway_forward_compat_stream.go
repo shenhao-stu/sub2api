@@ -37,8 +37,9 @@ type anthropicCompatStream struct {
 	// clientGone 是请求 ctx 的 Done，客户端断开后为 nil。
 	clientGone <-chan struct{}
 
-	clientDisconnected bool
-	sawMessageStart    bool
+	clientDisconnected    bool
+	sawMessageStart       bool
+	sawGenerationProgress bool
 	// sawTerminal 表示上游已发出 message_stop、带 stop_reason 的 message_delta 或 [DONE]。
 	sawTerminal bool
 	// upstreamErr* 记录上游流内的 error 事件；收到后调用方结束读取。
@@ -147,6 +148,9 @@ func (st *anthropicCompatStream) observe(event *apicompat.AnthropicStreamEvent, 
 	switch event.Type {
 	case "message_start":
 		st.sawMessageStart = true
+		st.sawGenerationProgress = true
+	case "content_block_start", "content_block_delta", "content_block_stop":
+		st.sawGenerationProgress = true
 	case "message_stop":
 		st.sawTerminal = true
 	case "message_delta":
@@ -155,8 +159,12 @@ func (st *anthropicCompatStream) observe(event *apicompat.AnthropicStreamEvent, 
 		}
 	case "error":
 		st.upstreamErrPayload = payload
-		st.upstreamErrType = firstNonEmpty(gjson.Get(payload, "error.type").String(), "upstream_error")
-		st.upstreamErrMessage = firstNonEmpty(sanitizeUpstreamErrorMessage(gjson.Get(payload, "error.message").String()), "upstream stream error")
+		fields := boundedOpenAIClientError([]byte(payload), anthropicStreamErrorStatus([]byte(payload)))
+		st.upstreamErrType = fields.Type
+		if gjson.Get(payload, "error.type").String() != fields.Type {
+			st.upstreamErrType = "upstream_error"
+		}
+		st.upstreamErrMessage = anthropicCompatClientErrorSummary(fields.StatusCode)
 		_ = st.body.Close()
 		logger.L().Warn(st.logPrefix+" stream: upstream error event",
 			zap.String("request_id", st.requestID),
@@ -212,21 +220,34 @@ func (st *anthropicCompatStream) failure() *anthropicCompatStreamFailure {
 	}
 }
 
-// finishAnthropicCompatStreamFailure 按失败原因收尾，返回交给调用方的结果与错误。
-// 上游流内 error 事件与 /v1/messages 一致：不计费，返回 sseStreamErrorEventError
-// 由调用方转为 UpstreamFailoverError；尚未向客户端写出内容时不写终止错误，由
-// handler 换号重试。其余失败写出终止错误，并带上已观测到的 usage；未观测到任何
-// usage 时结果为 nil。
-func finishAnthropicCompatStreamFailure(c *gin.Context, writerSizeBeforeStream int, failure *anthropicCompatStreamFailure, result *ForwardResult, writeFailure func()) (*ForwardResult, error) {
+// Provider addresses and opaque upstream diagnostics stay in the private error
+// payload. The public terminal retains the typed cause and intended HTTP status.
+func anthropicCompatClientErrorSummary(status int) string {
+	if status == 529 {
+		return "Overloaded: upstream capacity is temporarily unavailable"
+	}
+	return "Upstream stream failed: " + http.StatusText(status)
+}
+
+func anthropicCompatFailureStatus(failure *anthropicCompatStreamFailure) int {
 	var sseErr *sseStreamErrorEventError
 	if errors.As(failure.err, &sseErr) {
-		if c.Writer.Size() != writerSizeBeforeStream {
-			writeFailure()
-		}
+		return anthropicStreamErrorStatus([]byte(sseErr.RawData))
+	}
+	return http.StatusBadGateway
+}
+
+// finishAnthropicCompatStreamFailure preserves observed usage and prevents replay
+// once upstream generation has started. An error before any progress or usage may
+// still fail over; no usage is invented for a terminal failure without metering.
+func finishAnthropicCompatStreamFailure(c *gin.Context, writerSizeBeforeStream int, generationStarted bool, failure *anthropicCompatStreamFailure, result *ForwardResult, writeFailure func()) (*ForwardResult, error) {
+	var sseErr *sseStreamErrorEventError
+	observed := result != nil && result.Usage.hasObservedTokens()
+	if errors.As(failure.err, &sseErr) && !generationStarted && !observed && c.Writer.Size() == writerSizeBeforeStream {
 		return nil, failure.err
 	}
 	writeFailure()
-	if !result.Usage.hasObservedTokens() {
+	if !observed {
 		return nil, failure.err
 	}
 	return result, failure.err
@@ -234,20 +255,29 @@ func finishAnthropicCompatStreamFailure(c *gin.Context, writerSizeBeforeStream i
 
 // writeAnthropicCompatCCStreamFailure 向 Chat Completions 流写出终止错误帧，
 // 并标记响应已提交，handler 不再追加兜底错误。
-func writeAnthropicCompatCCStreamFailure(c *gin.Context, failure *anthropicCompatStreamFailure) {
-	payload, _ := json.Marshal(map[string]any{
-		"error": map[string]string{
-			"type":    failure.errType,
-			"message": failure.message,
-		},
-	})
+func writeAnthropicCompatCCStreamFailure(c *gin.Context, failure *anthropicCompatStreamFailure, usage *ClaudeUsage) {
+	body := gin.H{"error": openAIClientErrorFields{
+		Type: failure.errType, Message: failure.message,
+		StatusCode: anthropicCompatFailureStatus(failure),
+	}}
+	if usage != nil && usage.hasObservedTokens() {
+		u := claudeUsageToOpenAIUsage(usage)
+		body["usage"] = apicompat.ChatUsage{
+			PromptTokens: u.InputTokens, CompletionTokens: u.OutputTokens,
+			TotalTokens: u.InputTokens + u.OutputTokens,
+			PromptTokensDetails: &apicompat.ChatTokenDetails{
+				CachedTokens: u.CacheReadInputTokens, CacheCreationTokens: u.CacheCreationInputTokens,
+			},
+		}
+	}
+	payload, _ := json.Marshal(openAIMeteredErrorMetadata(c, body))
 	commitAnthropicCompatStreamFailure(c, failure, "data: "+string(payload)+"\n\n")
 }
 
 // writeAnthropicCompatResponsesStreamFailure 向 Responses 流写出 response.failed
 // 终止事件，沿用流内的 response id；sequence_number 经 restorer 与已写出的事件
 // 保持连续。写出后标记响应已提交。
-func writeAnthropicCompatResponsesStreamFailure(c *gin.Context, state *apicompat.AnthropicEventToResponsesState, restorer *apicompat.ResponsesClientToolStreamRestorer, failure *anthropicCompatStreamFailure) {
+func writeAnthropicCompatResponsesStreamFailure(c *gin.Context, state *apicompat.AnthropicEventToResponsesState, restorer *apicompat.ResponsesClientToolStreamRestorer, failure *anthropicCompatStreamFailure, usage *ClaudeUsage) {
 	responseID := state.ResponseID
 	if responseID == "" {
 		responseID = "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
@@ -262,8 +292,17 @@ func writeAnthropicCompatResponsesStreamFailure(c *gin.Context, state *apicompat
 			Model:     state.Model,
 			Status:    "failed",
 			Output:    []apicompat.ResponsesOutput{},
-			Error:     &apicompat.ResponsesError{Code: failure.errType, Message: failure.message},
+			Error:     &apicompat.ResponsesError{Code: failure.errType, Message: failure.message, StatusCode: anthropicCompatFailureStatus(failure)},
 		},
+	}
+	if usage != nil && usage.hasObservedTokens() {
+		u := claudeUsageToOpenAIUsage(usage)
+		evt.Response.Usage = &apicompat.ResponsesUsage{
+			InputTokens: u.InputTokens, OutputTokens: u.OutputTokens,
+			TotalTokens:              u.InputTokens + u.OutputTokens,
+			CacheCreationInputTokens: u.CacheCreationInputTokens,
+			InputTokensDetails:       &apicompat.ResponsesInputTokensDetails{CachedTokens: u.CacheReadInputTokens},
+		}
 	}
 	state.SequenceNumber++
 	payload, err := json.Marshal(evt)
@@ -282,7 +321,7 @@ func writeAnthropicCompatResponsesStreamFailure(c *gin.Context, state *apicompat
 }
 
 func commitAnthropicCompatStreamFailure(c *gin.Context, failure *anthropicCompatStreamFailure, frame string) {
-	MarkOpsStreamError(c, failure.errType, failure.message, http.StatusBadGateway)
+	MarkOpsStreamError(c, failure.errType, failure.message, anthropicCompatFailureStatus(failure))
 	MarkResponseCommitted(c)
 	if _, err := io.WriteString(c.Writer, frame); err != nil {
 		return

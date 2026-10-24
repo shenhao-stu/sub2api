@@ -423,7 +423,8 @@ func TestAnthropicCompatStreaming_UpstreamErrorEventEndsStreamWithoutWaiting(t *
 				} else {
 					var sseErr *sseStreamErrorEventError
 					require.ErrorAs(t, got.err, &sseErr)
-					require.Nil(t, got.result, "an upstream error event is not billed while the client is online")
+					require.NotNil(t, got.result, "preserve real usage despite an upstream error event")
+					require.Equal(t, 20, got.result.Usage.InputTokens)
 					require.Equal(t, 1, strings.Count(writer.Body.String(), compatStreamFailureMarkers[name]))
 					require.Contains(t, writer.Body.String(), "Overloaded")
 				}
@@ -456,7 +457,9 @@ func TestAnthropicCompatStreaming_UpstreamErrorEventStopsReadingBufferedEvents(t
 
 			var sseErr *sseStreamErrorEventError
 			require.ErrorAs(t, err, &sseErr)
-			require.Nil(t, result)
+			require.NotNil(t, result)
+			require.Equal(t, 20, result.Usage.InputTokens)
+			require.NotEqual(t, 9, result.Usage.OutputTokens, "must not consume usage after terminal error")
 			body := rec.Body.String()
 			require.NotContains(t, body, "LEAKED")
 			require.NotContains(t, body, compatStreamTerminalMarkers[name])
@@ -476,7 +479,8 @@ func TestAnthropicCompatStreaming_UpstreamErrorEventMessageIsSanitized(t *testin
 			_, err := handle(&GatewayService{}, &http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader(stream))}, c)
 
 			require.Error(t, err)
-			require.Contains(t, rec.Body.String(), "key=***")
+			require.Contains(t, rec.Body.String(), "Overloaded")
+			require.NotContains(t, rec.Body.String(), "example.test")
 			require.NotContains(t, rec.Body.String(), "SECRET")
 		})
 	}
@@ -508,9 +512,10 @@ func TestForwardAsCompatStreaming_UpstreamErrorEventFailsOver(t *testing.T) {
 			name       string
 			stream     string
 			wantStatus int
+			wantUsage  bool
 		}{
 			{name: "before_output", stream: beforeOutput, wantStatus: 529},
-			{name: "after_output", stream: anthropicStreamWithInBandError("Overloaded", ""), wantStatus: http.StatusForbidden},
+			{name: "after_output", stream: anthropicStreamWithInBandError("Overloaded", ""), wantStatus: 529, wantUsage: true},
 		} {
 			t.Run(endpoint+"/"+tc.name, func(t *testing.T) {
 				gin.SetMode(gin.TestMode)
@@ -540,9 +545,15 @@ func TestForwardAsCompatStreaming_UpstreamErrorEventFailsOver(t *testing.T) {
 				}
 
 				var failoverErr *UpstreamFailoverError
-				require.ErrorAs(t, err, &failoverErr)
-				require.Equal(t, tc.wantStatus, failoverErr.StatusCode)
-				require.Nil(t, result)
+				if tc.wantUsage {
+					require.False(t, errors.As(err, &failoverErr), "generation must not be replayed")
+					require.NotNil(t, result)
+					require.Equal(t, 20, result.Usage.InputTokens)
+				} else {
+					require.ErrorAs(t, err, &failoverErr)
+					require.Equal(t, tc.wantStatus, failoverErr.StatusCode)
+					require.Nil(t, result)
+				}
 			})
 		}
 	}

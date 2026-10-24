@@ -1113,13 +1113,12 @@ func (s *GatewayService) isStickyAccountUpstreamRestricted(ctx context.Context, 
 }
 
 // sseStreamErrorEventFailover 把上游 HTTP 200 + SSE 流体内的 event:error 帧转为
-// UpstreamFailoverError：尚未向客户端写出内容且错误类型为 overloaded_error 时按 529
-// 处理并触发账号侧副作用，其余按 403；同时登记 stream_error 运维记录。
+// UpstreamFailoverError 保留上游语义状态；仅在生成之前 overloaded_error 触发
+// 账号侧副作用，同时登记 stream_error 运维记录。
 func (s *GatewayService) sseStreamErrorEventFailover(ctx context.Context, c *gin.Context, account *Account, resp *http.Response, rawData, model string, outputStarted bool) *UpstreamFailoverError {
 	body := []byte(rawData)
-	semanticStatus := http.StatusForbidden
+	semanticStatus := anthropicStreamErrorStatus(body)
 	if !outputStarted && gjson.GetBytes(body, "error.type").String() == "overloaded_error" {
-		semanticStatus = 529
 		syntheticResp := &http.Response{
 			StatusCode: semanticStatus,
 			Header:     resp.Header.Clone(),

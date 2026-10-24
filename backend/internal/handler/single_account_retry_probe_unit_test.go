@@ -49,7 +49,7 @@ func TestGeminiGroupRequestsDoNotReadAntigravityBucket(t *testing.T) {
 		{
 			name:  "gemini native",
 			route: "/v1beta/models/*modelAction",
-			path:  "/v1beta/models/gemini-2.5-flash:generateContent",
+			path:  "/v1beta/models/gemini-3.6-flash:generateContent",
 			body:  `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`,
 			call:  func(h *GatewayHandler) func(*gin.Context) { return h.GeminiV1BetaModels },
 		},
@@ -57,7 +57,7 @@ func TestGeminiGroupRequestsDoNotReadAntigravityBucket(t *testing.T) {
 			name:  "messages on gemini group",
 			route: "/v1/messages",
 			path:  "/v1/messages",
-			body:  `{"model":"gemini-2.5-flash","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
+			body:  `{"model":"gemini-3.6-flash","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
 			call:  func(h *GatewayHandler) func(*gin.Context) { return h.Messages },
 		},
 	}
@@ -65,7 +65,11 @@ func TestGeminiGroupRequestsDoNotReadAntigravityBucket(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newGeminiClientCancelFixture(t)
 
-			f.serve(t, tt.route, tt.path, tt.body, tt.call(f.handler))
+			rec, _ := f.serve(t, tt.route, tt.path, tt.body, tt.call(f.handler))
+			// The fixture cancels only after transport is reached. Its offline price
+			// catalogue contains 3.6 Flash; unpriced models must remain fail-closed.
+			require.Equal(t, statusClientClosedRequest, rec.Code)
+			require.Empty(t, rec.Body.String())
 
 			require.Equal(t, int32(1), f.upstream.calls.Load(), "请求应完成选号并到达上游")
 			platforms := f.schedulerCache.readPlatforms()

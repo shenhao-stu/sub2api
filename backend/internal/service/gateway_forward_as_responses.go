@@ -207,7 +207,12 @@ func (s *GatewayService) ForwardAsResponses(
 		var sseErr *sseStreamErrorEventError
 		switch {
 		case errors.As(handleErr, &sseErr):
-			return nil, s.sseStreamErrorEventFailover(ctx, c, account, resp, sseErr.RawData, mappedModel, c.Writer.Size() != writerSizeBeforeStream)
+			terminal := result != nil || c.Writer.Size() != writerSizeBeforeStream || IsResponseCommitted(c)
+			failure := s.sseStreamErrorEventFailover(ctx, c, account, resp, sseErr.RawData, mappedModel, terminal)
+			if terminal {
+				return result, handleErr
+			}
+			return nil, failure
 		case errors.Is(handleErr, errAnthropicNativeStreamIdle) && s.rateLimitService != nil:
 			s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 		}
@@ -638,8 +643,8 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 	finalizeStream := func() (*ForwardResult, error) {
 		if failure := stream.failure(); failure != nil {
-			return finishAnthropicCompatStreamFailure(c, writerSizeBeforeStream, failure, resultWithUsage(), func() {
-				writeAnthropicCompatResponsesStreamFailure(c, state, clientToolRestorer, failure)
+			return finishAnthropicCompatStreamFailure(c, writerSizeBeforeStream, stream.sawGenerationProgress, failure, resultWithUsage(), func() {
+				writeAnthropicCompatResponsesStreamFailure(c, state, clientToolRestorer, failure, &usage)
 			})
 		}
 		if stream.clientDisconnected {
