@@ -121,27 +121,3 @@ func (e AnthropicUsageEvidence) ResponsesUsage(u AnthropicUsage) *ResponsesUsage
 	}
 	return result
 }
-
-func (u *AnthropicUsage) UnmarshalJSON(data []byte) error {
-	type plain AnthropicUsage
-	var value plain
-	if err := json.Unmarshal(data, &value); err != nil {
-		return err
-	}
-	*u = AnthropicUsage(value)
-	u.evidence = (AnthropicUsageEvidence{}).observeUsage(data, true)
-	return nil
-}
-
-func (r *AnthropicResponse) UnmarshalJSON(data []byte) error {
-	type plain AnthropicResponse
-	var value plain
-	if err := json.Unmarshal(data, &value); err != nil {
-		return err
-	}
-	*r = AnthropicResponse(value)
-	if _, valid := uniqueUsageObject(data); !valid {
-		r.Usage.evidence.invalid = true
-	}
-	return nil
-}

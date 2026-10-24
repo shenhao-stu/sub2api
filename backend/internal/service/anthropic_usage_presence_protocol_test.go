@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -119,4 +120,13 @@ func TestAnthropicUsagePresenceAcrossProtocols(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestGeminiSyntheticAnthropicZeroRemainsUnknown(t *testing.T) {
+	raw := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"fixture answer"}]},"finishReason":"STOP"}]}`)
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(raw, &response))
+	converted, _, err := geminiResponseToChatCompletions(response, "gemini-fixture", raw, nil)
+	require.NoError(t, err)
+	require.Nil(t, converted.Usage)
 }

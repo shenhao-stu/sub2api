@@ -126,10 +126,9 @@ func AnthropicToResponsesResponse(resp *AnthropicResponse) *ResponsesResponse {
 		out.IncompleteDetails = &ResponsesIncompleteDetails{Reason: "max_output_tokens"}
 	}
 
-	// Usage
-	evidence := resp.Usage.evidence
-	evidence.finalOutput = evidence.finalOutput && resp.StopReason != nil && *resp.StopReason != ""
-	out.Usage = evidence.ResponsesUsage(resp.Usage)
+	// A typed response can be internally synthesized. Only the provider reader
+	// may certify zero usage from original wire evidence. Preserve positive counts.
+	out.Usage = (AnthropicUsageEvidence{}).ResponsesUsage(resp.Usage)
 
 	return out
 }
