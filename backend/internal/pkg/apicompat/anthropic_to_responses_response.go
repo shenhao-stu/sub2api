@@ -127,23 +127,9 @@ func AnthropicToResponsesResponse(resp *AnthropicResponse) *ResponsesResponse {
 	}
 
 	// Usage
-	// Anthropic's input_tokens excludes cache_read/cache_creation, while OpenAI
-	// Responses' input_tokens is the total including cached tokens. Add them back
-	// when converting so downstream consumers see OpenAI semantics.
-	totalInputTokens := resp.Usage.InputTokens +
-		resp.Usage.CacheReadInputTokens +
-		resp.Usage.CacheCreationInputTokens
-	out.Usage = &ResponsesUsage{
-		InputTokens:              totalInputTokens,
-		OutputTokens:             resp.Usage.OutputTokens,
-		TotalTokens:              totalInputTokens + resp.Usage.OutputTokens,
-		CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
-	}
-	if resp.Usage.CacheReadInputTokens > 0 {
-		out.Usage.InputTokensDetails = &ResponsesInputTokensDetails{
-			CachedTokens: resp.Usage.CacheReadInputTokens,
-		}
-	}
+	evidence := resp.Usage.evidence
+	evidence.finalOutput = evidence.finalOutput && resp.StopReason != nil && *resp.StopReason != ""
+	out.Usage = evidence.ResponsesUsage(resp.Usage)
 
 	return out
 }
@@ -218,6 +204,8 @@ type AnthropicEventToResponsesState struct {
 	OutputTokens             int
 	CacheReadInputTokens     int
 	CacheCreationInputTokens int
+
+	UsageEvidence AnthropicUsageEvidence
 
 	StopReason string
 }
@@ -686,20 +674,11 @@ func makeResponsesCompletedEvent(
 	seq := state.SequenceNumber
 	state.SequenceNumber++
 
-	// Anthropic's input_tokens excludes cache_read/cache_creation; add them
-	// back to match OpenAI Responses semantics where input_tokens is the total.
-	totalInputTokens := state.InputTokens + state.CacheReadInputTokens + state.CacheCreationInputTokens
-	usage := &ResponsesUsage{
-		InputTokens:              totalInputTokens,
-		OutputTokens:             state.OutputTokens,
-		TotalTokens:              totalInputTokens + state.OutputTokens,
+	usage := state.UsageEvidence.ResponsesUsage(AnthropicUsage{
+		InputTokens: state.InputTokens, OutputTokens: state.OutputTokens,
+		CacheReadInputTokens:     state.CacheReadInputTokens,
 		CacheCreationInputTokens: state.CacheCreationInputTokens,
-	}
-	if state.CacheReadInputTokens > 0 {
-		usage.InputTokensDetails = &ResponsesInputTokensDetails{
-			CachedTokens: state.CacheReadInputTokens,
-		}
-	}
+	})
 
 	eventType := "response.completed"
 	if status == "incomplete" {

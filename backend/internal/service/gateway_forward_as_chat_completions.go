@@ -254,6 +254,7 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
 
 	var finalResp *apicompat.AnthropicResponse
+	var usageEvidence apicompat.AnthropicUsageEvidence
 	var usage ClaudeUsage
 
 	for scanner.Scan() {
@@ -272,6 +273,7 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 			continue
 		}
 
+		usageEvidence = usageEvidence.ObserveEventJSON([]byte(payload))
 		var event apicompat.AnthropicStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			continue
@@ -325,7 +327,7 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 	}
 
 	// Update usage from accumulated delta
-	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
+	if usage.hasObservedTokens() {
 		finalResp.Usage = apicompat.AnthropicUsage{
 			InputTokens:              usage.InputTokens,
 			OutputTokens:             usage.OutputTokens,
@@ -336,6 +338,7 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 
 	// Chain: Anthropic → Responses → Chat Completions
 	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
+	responsesResp.Usage = usageEvidence.ResponsesUsage(finalResp.Usage)
 	ccResp := apicompat.ResponsesToChatCompletions(responsesResp, originalModel)
 
 	if s.responseHeaderFilter != nil {
@@ -503,6 +506,7 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 			continue
 		}
 
+		anthState.UsageEvidence = anthState.UsageEvidence.ObserveEventJSON([]byte(payload))
 		var event apicompat.AnthropicStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			continue

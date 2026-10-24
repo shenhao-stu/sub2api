@@ -169,6 +169,7 @@ type AnthropicPromptTokensDetails struct {
 
 // AnthropicUsage holds token counts in Anthropic format.
 type AnthropicUsage struct {
+	evidence                 AnthropicUsageEvidence
 	InputTokens              int `json:"input_tokens"`
 	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
