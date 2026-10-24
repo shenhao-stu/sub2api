@@ -1268,20 +1268,36 @@ func (s *OpenAIGatewayService) parseSSEUsageBytesWithType(data []byte, eventType
 	if !ok {
 		return
 	}
+	mergeOpenAIUsageNonZero(usage, parsedUsage)
 	if openAIStreamEventTypeIsTerminal(effectiveOpenAISSEEventType(data, eventType)) {
-		if !openAIUsageHasTokens(&parsedUsage) && openAIUsageHasTokens(usage) {
-			return
-		}
-		*usage = parsedUsage
+		applyOpenAITerminalCacheCorrections(data, usage)
+	}
+}
+
+func applyOpenAITerminalCacheCorrections(data []byte, usage *OpenAIUsage) {
+	if !apicompat.MeteringEnvelopeUnambiguous(data) {
 		return
 	}
-	mergeOpenAIUsageNonZero(usage, parsedUsage)
+	_, rawUsage, ok := extractOpenAIUsageAndRawFromJSONBytes(data)
+	if !ok {
+		return
+	}
+	var raw apicompat.ResponsesUsage
+	if json.Unmarshal(rawUsage, &raw) != nil {
+		return
+	}
+	readZero, writeZero := raw.TerminalCacheCorrections()
+	if readZero {
+		usage.CacheReadInputTokens = 0
+	}
+	if writeZero {
+		usage.CacheCreationInputTokens = 0
+	}
 }
 
 // Compatible Responses upstreams may report usage before the terminal event.
-// Retain those non-zero fields as a fallback. A terminal usage with any billed
-// tokens is authoritative as a whole; an all-zero terminal does not erase a
-// non-zero progressive observation from the same turn.
+// Retain those non-zero fields through the terminal receipt. Missing or zero
+// fields cannot erase already-reported consumption from the same turn.
 func mergeOpenAIUsageNonZero(dst *OpenAIUsage, src OpenAIUsage) {
 	if dst == nil {
 		return
@@ -1362,6 +1378,12 @@ func logOpenAISuccessMissingUsage(ctx context.Context, c *gin.Context, account *
 	if c != nil && c.Request != nil && c.Request.URL != nil {
 		inboundEndpoint = c.Request.URL.Path
 	}
+	usageState := "unknown"
+	if c != nil {
+		if state := c.GetString("openai_responses_usage_state"); state != "" {
+			usageState = state
+		}
+	}
 	logger.FromContext(ctx).With(
 		zap.String("component", "service.openai_gateway"),
 		zap.Int64("account_id", accountID),
@@ -1370,6 +1392,7 @@ func logOpenAISuccessMissingUsage(ctx context.Context, c *gin.Context, account *
 		zap.String("upstream_request_id", strings.TrimSpace(resp.Header.Get("x-request-id"))),
 		zap.Int("upstream_status_code", resp.StatusCode),
 		zap.String("terminal_event", terminalEvent),
+		zap.String("usage_state", usageState),
 		zap.Bool("client_disconnected", clientDisconnected),
 		zap.Uint64("missing_usage_total", total),
 		zap.Uint64("suppressed_since_last", suppressed),
@@ -1377,8 +1400,13 @@ func logOpenAISuccessMissingUsage(ctx context.Context, c *gin.Context, account *
 }
 
 func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
+	usage, _, ok := extractOpenAIUsageAndRawFromJSONBytes(body)
+	return usage, ok
+}
+
+func extractOpenAIUsageAndRawFromJSONBytes(body []byte) (OpenAIUsage, json.RawMessage, bool) {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
-		return OpenAIUsage{}, false
+		return OpenAIUsage{}, nil, false
 	}
 	// 部分 OpenAI 兼容上游（例如 Cline API）会将标准响应包在 data 字段中：
 	// {"data":{"choices": [...], "usage": {...}}, "success":true}。
@@ -1393,13 +1421,21 @@ func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 		{usagePath: "data.usage", imageUsagePath: "data.tool_usage.image_gen"},
 		{usagePath: "data.response.usage", imageUsagePath: "data.response.tool_usage.image_gen"},
 	}
+	var fallback OpenAIUsage
+	var fallbackRaw json.RawMessage
 	for _, candidate := range candidates {
 		if usage, ok := openAIUsageFromGJSON(gjson.GetBytes(body, candidate.usagePath)); ok {
 			mergeHostedImageGenToolUsage(gjson.GetBytes(body, candidate.imageUsagePath), &usage)
-			return usage, true
+			raw := json.RawMessage(gjson.GetBytes(body, candidate.usagePath).Raw)
+			if openAIUsageHasTokens(&usage) {
+				return usage, raw, true
+			}
+			if fallbackRaw == nil {
+				fallback, fallbackRaw = usage, raw
+			}
 		}
 	}
-	return OpenAIUsage{}, false
+	return fallback, fallbackRaw, fallbackRaw != nil
 }
 
 // openAIResponsesCompletedEventIsEmpty reports whether a response.completed /

@@ -1,6 +1,7 @@
 package apicompat
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -88,6 +89,9 @@ func ResponsesToChatCompletions(resp *ResponsesResponse, model string) *ChatComp
 	}}
 
 	out.Usage = chatUsageFromResponsesUsage(resp.Usage)
+	if !chatUsageHasTokens(out.Usage) && (resp.ambiguousUsage || (resp.Status != "completed" && resp.Status != "incomplete" && resp.Status != "failed")) {
+		out.Usage = nil
+	}
 
 	return out
 }
@@ -149,6 +153,16 @@ func NewResponsesEventToChatState() *ResponsesEventToChatState {
 // ResponsesEventToChatChunks converts a single Responses SSE event into zero
 // or more Chat Completions chunks, updating state as it goes.
 func ResponsesEventToChatChunks(evt *ResponsesStreamEvent, state *ResponsesEventToChatState) []ChatCompletionsChunk {
+	// Progressive positive counters remain evidence even when the terminal receipt is empty.
+	if u := chatUsageFromResponsesUsage(evt.Usage); chatUsageHasTokens(u) {
+		state.Usage = retainChatUsage(state.Usage, u)
+	}
+	if evt.Response != nil {
+		if u := chatUsageFromResponsesUsage(evt.Response.Usage); chatUsageHasTokens(u) {
+			state.Usage = retainChatUsage(state.Usage, u)
+		}
+	}
+
 	switch evt.Type {
 	case "response.created":
 		return resToChatHandleCreated(evt, state)
@@ -348,11 +362,11 @@ func resToChatHandleCompleted(evt *ResponsesStreamEvent, state *ResponsesEventTo
 	finishReason := "stop"
 
 	if evt.Usage != nil {
-		state.Usage = chatUsageFromResponsesUsage(evt.Usage)
+		state.Usage = retainTerminalResponsesUsage(state.Usage, evt.Usage, !evt.ambiguousUsage)
 	}
 	if evt.Response != nil {
 		if evt.Response.Usage != nil {
-			state.Usage = chatUsageFromResponsesUsage(evt.Response.Usage)
+			state.Usage = retainTerminalResponsesUsage(state.Usage, evt.Response.Usage, !evt.ambiguousUsage && !evt.Response.ambiguousUsage)
 		}
 		if evt.Response.ServiceTier != "" {
 			state.ServiceTier = evt.Response.ServiceTier
@@ -377,6 +391,13 @@ func resToChatHandleCompleted(evt *ResponsesStreamEvent, state *ResponsesEventTo
 		finishReason = "tool_calls"
 	}
 
+	if !chatUsageHasTokens(state.Usage) && evt.Usage != nil && evt.Response != nil && evt.Response.Usage != nil && (evt.Usage.MeteringState() == "incomplete" || evt.Response.Usage.MeteringState() == "incomplete") {
+		state.Usage = nil
+	}
+
+	if !chatUsageHasTokens(state.Usage) && (evt.ambiguousUsage || (evt.Response != nil && evt.Response.ambiguousUsage)) {
+		state.Usage = nil
+	}
 	var chunks []ChatCompletionsChunk
 	chunks = append(chunks, makeChatFinishChunk(state, finishReason))
 
@@ -395,6 +416,101 @@ func resToChatHandleCompleted(evt *ResponsesStreamEvent, state *ResponsesEventTo
 	return chunks
 }
 
+// Complete terminal receipts may correct cache classification without erasing
+// already observed inclusive input or output consumption.
+func retainTerminalResponsesUsage(previous *ChatUsage, raw *ResponsesUsage, unambiguous bool) *ChatUsage {
+	retained := retainChatUsage(previous, chatUsageFromResponsesUsage(raw))
+	readZero, writeZero := raw.TerminalCacheCorrections()
+	if retained == nil || !unambiguous || (!readZero && !writeZero) {
+		return retained
+	}
+	if retained.PromptTokensDetails != nil {
+		details := *retained.PromptTokensDetails
+		if readZero {
+			details.CachedTokens = 0
+		}
+		if writeZero {
+			details.CacheCreationTokens = 0
+			details.CacheWriteTokens = 0
+		}
+		retained.PromptTokensDetails = &details
+	}
+	return retained
+}
+
+// TerminalCacheCorrections identifies explicit cache reclassification in a
+// complete positive-input receipt. Callers must separately require a terminal event.
+func (u *ResponsesUsage) TerminalCacheCorrections() (readZero, writeZero bool) {
+	if u == nil || !u.explicitTokenTotals || u.InputTokens <= 0 {
+		return false, false
+	}
+	return u.cacheReadExplicitZero, u.cacheWriteExplicitZero
+}
+
+func retainChatUsage(previous, next *ChatUsage) *ChatUsage {
+	if chatUsageHasTokens(previous) && !chatUsageHasTokens(next) {
+		return previous
+	}
+	if next == nil {
+		return nil
+	}
+	if previous == nil {
+		return next
+	}
+	retained := *next
+	if retained.PromptTokens == 0 {
+		retained.PromptTokens = previous.PromptTokens
+	}
+	if retained.CompletionTokens == 0 {
+		retained.CompletionTokens = previous.CompletionTokens
+	}
+	retained.PromptTokensDetails = retainChatTokenDetails(previous.PromptTokensDetails, retained.PromptTokensDetails)
+	retained.CompletionTokensDetails = retainChatTokenDetails(previous.CompletionTokensDetails, retained.CompletionTokensDetails)
+	retained.TotalTokens = chatTokenTotal(retained.PromptTokens, retained.CompletionTokens)
+	return &retained
+}
+
+func retainChatTokenDetails(previous, next *ChatTokenDetails) *ChatTokenDetails {
+	if previous == nil {
+		return next
+	}
+	retained := *previous
+	if next != nil {
+		// These are cumulative raw counters, not already-priced billing buckets.
+		if next.CachedTokens != 0 {
+			retained.CachedTokens = next.CachedTokens
+		}
+		if next.CacheCreationTokens != 0 || next.CacheWriteTokens != 0 {
+			// These names are aliases for one bucket, not independent consumption.
+			retained.CacheCreationTokens = next.CacheCreationTokens
+			retained.CacheWriteTokens = next.CacheWriteTokens
+		}
+		if next.ReasoningTokens != 0 {
+			retained.ReasoningTokens = next.ReasoningTokens
+		}
+		if next.AudioTokens != 0 {
+			retained.AudioTokens = next.AudioTokens
+		}
+		if next.AcceptedPredictionTokens != 0 {
+			retained.AcceptedPredictionTokens = next.AcceptedPredictionTokens
+		}
+		if next.RejectedPredictionTokens != 0 {
+			retained.RejectedPredictionTokens = next.RejectedPredictionTokens
+		}
+	}
+	return &retained
+}
+
+func chatUsageHasTokens(u *ChatUsage) bool {
+	if u == nil {
+		return false
+	}
+	if u.PromptTokens > 0 || u.CompletionTokens > 0 {
+		return true
+	}
+	return u.PromptTokensDetails != nil && (u.PromptTokensDetails.CachedTokens > 0 || u.PromptTokensDetails.CacheWriteTokens > 0 || u.PromptTokensDetails.CacheCreationTokens > 0)
+}
+
 func chatUsageFromResponsesUsage(u *ResponsesUsage) *ChatUsage {
 	if u == nil {
 		return nil
@@ -402,7 +518,7 @@ func chatUsageFromResponsesUsage(u *ResponsesUsage) *ChatUsage {
 	usage := &ChatUsage{
 		PromptTokens:     u.InputTokens,
 		CompletionTokens: u.OutputTokens,
-		TotalTokens:      u.InputTokens + u.OutputTokens,
+		TotalTokens:      chatTokenTotal(u.InputTokens, u.OutputTokens),
 	}
 	usage.PromptTokensDetails = promptDetailsFromResponses(u.InputTokensDetails)
 	if u.CacheCreationInputTokens > 0 {
@@ -414,7 +530,151 @@ func chatUsageFromResponsesUsage(u *ResponsesUsage) *ChatUsage {
 		}
 	}
 	usage.CompletionTokensDetails = completionDetailsFromResponses(u.OutputTokensDetails)
+	if !chatUsageHasTokens(usage) && !u.explicitZeroTokenTotals() {
+		return nil
+	}
 	return usage
+}
+
+// A decoder's zero defaults must not become a downstream zero-cost receipt.
+func (u *ResponsesUsage) explicitZeroTokenTotals() bool {
+	return u.explicitTokenTotals && u.zeroTokenCountersValid && u.InputTokens == 0 && u.OutputTokens == 0 && u.TotalTokens == 0 && u.CacheCreationInputTokens == 0 &&
+		(u.InputTokensDetails == nil || *u.InputTokensDetails == (ResponsesInputTokensDetails{})) &&
+		(u.OutputTokensDetails == nil || *u.OutputTokensDetails == (ResponsesOutputTokensDetails{}))
+}
+
+func responsesZeroCountersValid(data []byte) bool {
+	return responsesZeroCountersValidObject(data, false, true)
+}
+
+// Decode fields in wire order: map decoding would hide duplicate counters.
+func responsesZeroCountersValidObject(data []byte, details, requireZero bool) bool {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return false
+	}
+	seen := make(map[string]bool)
+	for decoder.More() {
+		token, err = decoder.Token()
+		if err != nil {
+			return false
+		}
+		name, ok := token.(string)
+		if !ok {
+			return false
+		}
+		name = strings.ToLower(name)
+		if seen[name] {
+			return false
+		}
+		seen[name] = true
+		var raw json.RawMessage
+		if decoder.Decode(&raw) != nil {
+			return false
+		}
+		if strings.HasSuffix(name, "_tokens_details") {
+			if !responsesZeroCountersValidObject(raw, true, requireZero) {
+				return false
+			}
+		} else if details || strings.HasSuffix(name, "_tokens") {
+			var count *int
+			if json.Unmarshal(raw, &count) != nil || count == nil || *count < 0 || (requireZero && *count != 0) {
+				return false
+			}
+		}
+	}
+	_, err = decoder.Token()
+	return err == nil
+}
+
+// Validate only the cache bucket when accepting a complete terminal correction.
+func responsesExplicitCacheZero(data []byte, write bool) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(data, &fields) != nil {
+		return false
+	}
+	selected := make(map[string]json.RawMessage)
+	for name, raw := range fields {
+		lower := strings.ToLower(name)
+		if strings.HasSuffix(lower, "_tokens_details") && (strings.HasPrefix(lower, "input_") || strings.HasPrefix(lower, "prompt_")) {
+			var nested map[string]json.RawMessage
+			if json.Unmarshal(raw, &nested) != nil {
+				return false
+			}
+			for key, value := range nested {
+				if (!write && strings.EqualFold(key, "cached_tokens")) || (write && (strings.EqualFold(key, "cache_write_tokens") || strings.EqualFold(key, "cache_creation_tokens"))) {
+					selected[lower+"."+strings.ToLower(key)] = value
+				}
+			}
+		} else if responsesCacheField(lower, write) {
+			selected[lower] = raw
+		}
+	}
+	if len(selected) == 0 {
+		return false
+	}
+	// Reject duplicate or invalid fields in this usage object before trusting a correction.
+	if !responsesZeroCountersValidObject(data, false, false) {
+		return false
+	}
+	for _, raw := range selected {
+		var n *int
+		if json.Unmarshal(raw, &n) != nil || n == nil || *n != 0 {
+			return false
+		}
+	}
+	return true
+}
+func responsesCacheField(name string, write bool) bool {
+	name = strings.ToLower(name)
+	if write {
+		return name == "cache_write_tokens" || name == "cache_creation_tokens" || name == "cache_write_input_tokens" || name == "cache_creation_input_tokens"
+	}
+	return name == "cached_tokens" || name == "cache_read_tokens" || name == "cache_read_input_tokens" || name == "prompt_cache_hit_tokens"
+}
+func responsesUniqueUsageFields(data []byte) bool {
+	return responsesZeroCountersValidObject(data, false, false)
+}
+
+// TerminalMeteringState includes both possible locations in one receipt.
+func (evt *ResponsesStreamEvent) TerminalMeteringState() string {
+	if evt == nil {
+		return "missing"
+	}
+	outer := evt.Usage.MeteringState()
+	inner := "missing"
+	if evt.Response != nil {
+		inner = evt.Response.Usage.MeteringState()
+	}
+	if outer == "positive" || inner == "positive" {
+		return "positive"
+	}
+	if outer == "incomplete" || inner == "incomplete" {
+		return "incomplete"
+	}
+	if evt.ambiguousUsage || (evt.Response != nil && evt.Response.ambiguousUsage) {
+		return "incomplete"
+	}
+	if outer == "explicit_zero" || inner == "explicit_zero" {
+		return "explicit_zero"
+	}
+	return "missing"
+}
+
+// MeteringState describes only counters and their presence, never response content.
+func (u *ResponsesUsage) MeteringState() string {
+	if u == nil {
+		return "missing"
+	}
+	converted := chatUsageFromResponsesUsage(u)
+	if converted == nil {
+		return "incomplete"
+	}
+	if chatUsageHasTokens(converted) {
+		return "positive"
+	}
+	return "explicit_zero"
 }
 
 // promptDetailsFromResponses maps Responses-API input_tokens_details into a
@@ -711,4 +971,40 @@ func fillResponsesOutputText(output []ResponsesOutput, text string) bool {
 		return true
 	}
 	return false
+}
+
+// MeteringEnvelopeUnambiguous rejects duplicate receipt locations for new zero/correction evidence.
+func MeteringEnvelopeUnambiguous(data []byte) bool {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return false
+	}
+	seen := map[string]bool{}
+	for decoder.More() {
+		token, err = decoder.Token()
+		if err != nil {
+			return false
+		}
+		name, ok := token.(string)
+		if !ok {
+			return false
+		}
+		name = strings.ToLower(name)
+		var raw json.RawMessage
+		if decoder.Decode(&raw) != nil {
+			return false
+		}
+		if name != "usage" && name != "response" {
+			continue
+		}
+		if seen[name] {
+			return false
+		}
+		seen[name] = true
+		if name == "response" && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) && !MeteringEnvelopeUnambiguous(raw) {
+			return false
+		}
+	}
+	return true
 }

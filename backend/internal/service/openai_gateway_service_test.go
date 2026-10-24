@@ -3706,7 +3706,7 @@ func TestParseSSEUsage_NonTerminalUsageMergesNonZeroFields(t *testing.T) {
 	require.Equal(t, 3, usage.CacheCreationInputTokens)
 }
 
-func TestParseSSEUsage_TerminalUsageReplacesFallback(t *testing.T) {
+func TestParseSSEUsage_TerminalUsageRetainsKnownCache(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	usage := &OpenAIUsage{}
 
@@ -3715,7 +3715,7 @@ func TestParseSSEUsage_TerminalUsageReplacesFallback(t *testing.T) {
 
 	require.Equal(t, 19, usage.InputTokens)
 	require.Equal(t, 7, usage.OutputTokens)
-	require.Zero(t, usage.CacheReadInputTokens)
+	require.Equal(t, 4, usage.CacheReadInputTokens)
 }
 
 func TestParseSSEUsage_TerminalWithoutUsageKeepsFallback(t *testing.T) {
