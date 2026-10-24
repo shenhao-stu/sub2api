@@ -4,6 +4,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,10 +22,18 @@ import (
 
 type chatHandlerReceiptRepo struct {
 	openAIWSUsageHandlerUsageLogRepoStub
-	mu        sync.Mutex
-	claim     *service.ChatUsageReceiptClaim
-	receipt   *service.UsageReceipt
-	billingID string
+	mu           sync.Mutex
+	claim        *service.ChatUsageReceiptClaim
+	receipt      *service.UsageReceipt
+	billingID    string
+	prepareError error
+}
+
+func (r *chatHandlerReceiptRepo) PrepareChatUsageReceipt(context.Context, *service.ChatUsageReceiptClaim) error {
+	return r.prepareError
+}
+func (r *chatHandlerReceiptRepo) ReleaseChatUsageReceipt(context.Context, *service.ChatUsageReceiptClaim) error {
+	return nil
 }
 
 func (r *chatHandlerReceiptRepo) ClaimChatUsageReceipt(_ context.Context, c *service.ChatUsageReceiptClaim) (bool, error) {
@@ -57,7 +66,7 @@ func (r *chatHandlerReceiptRepo) GetUsageReceipt(_ context.Context, key int64, i
 
 func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, mode := range []string{"normal", "queue_headers_committed", "no_account", "invalid_id", "kimi_unsupported"} {
+	for _, mode := range []string{"normal", "queue_headers_committed", "no_account", "invalid_id", "kimi_unsupported", "journal_capacity"} {
 		t.Run(mode, func(t *testing.T) {
 			accounts := []service.Account{{ID: 19930, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"api_key": "synthetic"}, Extra: map[string]any{"openai_responses_supported": true}}}
 			if mode == "kimi_unsupported" {
@@ -69,6 +78,9 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 			}
 			accountRepo := &grokPartialUsageAccountRepo{grokStreamFailoverAccountRepo: grokStreamFailoverAccountRepo{openAIWSFailoverHandlerAccountRepoStub: openAIWSFailoverHandlerAccountRepoStub{accounts: accounts}}}
 			repo := &chatHandlerReceiptRepo{openAIWSUsageHandlerUsageLogRepoStub: openAIWSUsageHandlerUsageLogRepoStub{created: make(chan *service.UsageLog, 3)}}
+			if mode == "journal_capacity" {
+				repo.prepareError = errors.New("synthetic full durable journal")
+			}
 			billing := &monitorCyberBillingRepo{commands: make(chan *service.UsageBillingCommand, 3)}
 			users := &monitorCyberUserRepo{}
 			cfg := &config.Config{}
@@ -130,6 +142,17 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 				return resp
 			}
 			resp := send()
+			if mode == "journal_capacity" {
+				require.Equal(t, 503, resp.StatusCode)
+				require.Empty(t, resp.Header.Get(service.ChatReceiptVersionHeader))
+				require.Empty(t, resp.Header.Get(service.ChatReceiptIDHeader))
+				require.Nil(t, repo.claim)
+				require.Nil(t, repo.receipt)
+				require.Zero(t, upstream.calls)
+				require.Zero(t, len(billing.commands))
+				require.Zero(t, len(repo.created))
+				return
+			}
 			if mode == "kimi_unsupported" {
 				require.Equal(t, 400, resp.StatusCode)
 				require.Contains(t, lastBody, "unsupported_metering_protocol")

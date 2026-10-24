@@ -8,6 +8,26 @@ import (
 )
 
 func (r *usageLogRepository) GetUsageReceipt(ctx context.Context, apiKeyID int64, requestID string) (*service.UsageReceipt, error) {
+	if apiKeyID <= 0 || !service.ValidUsageReceiptID(requestID) {
+		return nil, service.ErrUsageLogNotFound
+	}
+	// This runs only behind the existing authenticated key-scoped endpoint.
+	// Recovery performs the original immutable CAS; it never dispatches a model,
+	// creates a claim, changes prices or invokes the usage billing pipeline.
+	if r.chatJournal != nil {
+		final, err := r.chatJournal.load(apiKeyID, requestID)
+		if err != nil {
+			return nil, err
+		}
+		if final != nil {
+			if err = r.completeChatReceiptEnvelope(ctx, *final); err != nil {
+				return nil, err
+			}
+			if err = r.chatJournal.remove(*final); err != nil {
+				return nil, err
+			}
+		}
+	}
 	var payload []byte
 	rows, err := r.sql.QueryContext(ctx, `SELECT payload FROM provider_usage_receipts WHERE api_key_id=$1 AND request_id=$2`, apiKeyID, requestID)
 	if err != nil {
