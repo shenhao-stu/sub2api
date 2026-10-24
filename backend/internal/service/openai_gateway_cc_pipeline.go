@@ -270,6 +270,8 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	if err := applyCommandCodeClientPolicy(upstreamReq, c, account); err != nil {
 		return nil, err
 	}
+	c.Set(kimiCacheMeteringContextKey, account.Platform == PlatformKimi)
+	c.Set(kimiCacheUsageStateKey, kimiCacheUsageState{})
 	resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account)
 	if err != nil {
 		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
@@ -329,7 +331,7 @@ func (s *OpenAIGatewayService) scanCCStream(
 		}
 
 		if u := extractCCStreamUsage(payload); u != nil {
-			st.Usage = *u
+			st.Usage = applyKimiCacheWriteHeaders(c, resp.Header, *u, []byte(payload))
 		}
 
 		var chunk apicompat.ChatCompletionsChunk
@@ -396,6 +398,7 @@ func (s *OpenAIGatewayService) readCCUpstreamJSONResponse(
 	if parsed, ok := extractOpenAIUsageFromJSONBytes(respBody); ok {
 		usage = parsed
 	}
+	usage = applyKimiCacheWriteHeaders(c, resp.Header, usage, respBody)
 	return &ccResp, usage, nil
 }
 

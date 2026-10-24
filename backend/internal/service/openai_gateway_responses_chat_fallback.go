@@ -170,7 +170,11 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
-	c.JSON(http.StatusOK, responsesResp)
+	encoded, err := json.Marshal(responsesResp)
+	if err != nil {
+		return nil, fmt.Errorf("marshal Responses response: %w", err)
+	}
+	c.Data(http.StatusOK, "application/json", injectKimiCacheWriteUsage(c, encoded))
 
 	return &OpenAIForwardResult{
 		RequestID:                   requestID,
@@ -225,6 +229,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 				)
 				continue
 			}
+			sse = injectKimiCacheWriteSSE(c, sse)
 			if _, err := fmt.Fprint(c.Writer, sse); err != nil {
 				clientDisconnected = true
 				logger.L().Debug("openai responses chat fallback: client disconnected, continuing to drain upstream for billing",

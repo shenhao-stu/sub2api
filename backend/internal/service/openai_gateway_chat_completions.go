@@ -61,6 +61,11 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	promptCacheKey string,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	if account != nil && account.Platform == PlatformKimi && (c.GetHeader(ChatReceiptVersionHeader) != "" || c.GetHeader(ChatReceiptIDHeader) != "" || chatReceiptFromContext(ctx) != nil) {
+		err := fmt.Errorf("usage receipt v2 does not support cache-write TTL metering for this account")
+		writeRequestAdmissionError(c, http.StatusBadRequest, "invalid_request_error", "unsupported_metering_protocol", err.Error())
+		return nil, err
+	}
 	if err := s.requireOpenAIForwardPricing(ctx, c, account, body, defaultMappedModel); err != nil {
 		return nil, err
 	}
