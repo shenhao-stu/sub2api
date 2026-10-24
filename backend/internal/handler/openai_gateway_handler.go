@@ -3662,6 +3662,9 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 		h.handleStreamingAwareErrorWithCode(c, http.StatusTooManyRequests, "rate_limit_error", "insufficient_quota", service.UpstreamQuotaExhaustedMessage, streamStarted, false)
 		return
 	}
+	if service.WriteOpenAIUpstreamUnavailableError(c, statusCode, responseBody, streamStarted) {
+		return
+	}
 
 	// 使用默认的错误映射
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
