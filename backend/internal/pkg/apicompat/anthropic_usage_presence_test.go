@@ -34,19 +34,32 @@ func TestAnthropicInternalJSONRoundtripDoesNotCertifyZero(t *testing.T) {
 }
 
 func TestAnthropicStandaloneLateZeroRetainsObservedOutput(t *testing.T) {
-	state := NewAnthropicEventToResponsesState()
-	for _, raw := range []string{
-		`{"type":"message_start","message":{"id":"msg_fixture","usage":{"input_tokens":10}}}`,
-		`{"type":"message_delta","delta":{},"usage":{"output_tokens":4}}`,
-		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"output_tokens":0}}`,
+	for _, tc := range []struct {
+		name, start, delta string
+		output             int
+	}{
+		{"delta", `{"input_tokens":10}`, `{"type":"message_delta","delta":{},"usage":{"output_tokens":4}}`, 4},
+		{"initial", `{"input_tokens":10,"output_tokens":1}`, "", 1},
 	} {
-		state.UsageEvidence = state.UsageEvidence.ObserveEventJSON([]byte(raw))
-		var event AnthropicStreamEvent
-		require.NoError(t, json.Unmarshal([]byte(raw), &event))
-		AnthropicEventToResponsesEvents(&event, state)
+		t.Run(tc.name, func(t *testing.T) {
+			state := NewAnthropicEventToResponsesState()
+			for _, raw := range []string{
+				`{"type":"message_start","message":{"id":"msg_fixture","usage":` + tc.start + `}}`,
+				tc.delta,
+				`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"output_tokens":0}}`,
+			} {
+				if raw == "" {
+					continue
+				}
+				state.UsageEvidence = state.UsageEvidence.ObserveEventJSON([]byte(raw))
+				var event AnthropicStreamEvent
+				require.NoError(t, json.Unmarshal([]byte(raw), &event))
+				AnthropicEventToResponsesEvents(&event, state)
+			}
+			events := AnthropicEventToResponsesEvents(&AnthropicStreamEvent{Type: "message_stop"}, state)
+			require.NotEmpty(t, events)
+			require.NotNil(t, events[len(events)-1].Response.Usage)
+			require.Equal(t, tc.output, events[len(events)-1].Response.Usage.OutputTokens)
+		})
 	}
-	events := AnthropicEventToResponsesEvents(&AnthropicStreamEvent{Type: "message_stop"}, state)
-	require.NotEmpty(t, events)
-	require.NotNil(t, events[len(events)-1].Response.Usage)
-	require.Equal(t, 4, events[len(events)-1].Response.Usage.OutputTokens)
 }

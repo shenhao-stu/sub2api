@@ -279,6 +279,9 @@ func anthToResHandleMessageStart(evt *AnthropicStreamEvent, state *AnthropicEven
 		if evt.Message.Usage.InputTokens > 0 {
 			state.InputTokens = evt.Message.Usage.InputTokens
 		}
+		if evt.Message.Usage.OutputTokens > 0 {
+			state.OutputTokens = evt.Message.Usage.OutputTokens
+		}
 		if evt.Message.Usage.CacheReadInputTokens > 0 {
 			state.CacheReadInputTokens = evt.Message.Usage.CacheReadInputTokens
 		}
