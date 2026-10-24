@@ -7,6 +7,7 @@ package apicompat
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 )
 
 // ---------------------------------------------------------------------------
@@ -366,8 +367,9 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 
 // ResponsesResponse is the non-streaming response from POST /v1/responses.
 type ResponsesResponse struct {
-	ID     string `json:"id"`
-	Object string `json:"object"` // "response"
+	ambiguousUsage bool
+	ID             string `json:"id"`
+	Object         string `json:"object"` // "response"
 	// CreatedAt is the unix creation timestamp. Strict Responses clients declare
 	// it non-optional and abort with `missing field 'created_at'` when it is
 	// absent, so it is always emitted — no omitempty. Same rule as ID (see the
@@ -512,6 +514,11 @@ type ResponsesSummary struct {
 
 // ResponsesUsage holds token counts in Responses API format.
 type ResponsesUsage struct {
+	explicitTokenTotals    bool
+	zeroTokenCountersValid bool
+	cacheReadExplicitZero  bool
+	cacheWriteExplicitZero bool
+
 	InputTokens              int `json:"input_tokens"`
 	OutputTokens             int `json:"output_tokens"`
 	TotalTokens              int `json:"total_tokens"`
@@ -542,6 +549,10 @@ func (u *ResponsesUsage) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var nestedPresence struct {
+		InputTokens         *int                `json:"input_tokens"`
+		OutputTokens        *int                `json:"output_tokens"`
+		PromptTokens        *int                `json:"prompt_tokens"`
+		CompletionTokens    *int                `json:"completion_tokens"`
 		InputTokensDetails  *cacheTokenPresence `json:"input_tokens_details"`
 		PromptTokensDetails *cacheTokenPresence `json:"prompt_tokens_details"`
 	}
@@ -549,6 +560,10 @@ func (u *ResponsesUsage) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*u = ResponsesUsage(aux.responsesUsageAlias)
+	u.explicitTokenTotals = (nestedPresence.InputTokens != nil || nestedPresence.PromptTokens != nil) && (nestedPresence.OutputTokens != nil || nestedPresence.CompletionTokens != nil)
+	u.zeroTokenCountersValid = responsesZeroCountersValid(data)
+	u.cacheReadExplicitZero = responsesExplicitCacheZero(data, false)
+	u.cacheWriteExplicitZero = responsesExplicitCacheZero(data, true)
 	if u.InputTokens == 0 && aux.PromptTokens != 0 {
 		u.InputTokens = aux.PromptTokens
 	}
@@ -614,7 +629,8 @@ type ResponsesOutputTokensDetails struct {
 // ResponsesStreamEvent is a single SSE event in the Responses streaming protocol.
 // The Type field corresponds to the "type" in the JSON payload.
 type ResponsesStreamEvent struct {
-	Type string `json:"type"`
+	ambiguousUsage bool
+	Type           string `json:"type"`
 
 	// response.created / response.completed / response.done / response.failed / response.incomplete
 	Response *ResponsesResponse `json:"response,omitempty"`
@@ -796,6 +812,26 @@ type ChatUsage struct {
 	CompletionTokensDetails *ChatTokenDetails `json:"completion_tokens_details,omitempty"`
 }
 
+func chatTokenTotal(input, output int) int {
+	if input < 0 || output < 0 || output > math.MaxInt-input {
+		return 0
+	}
+	return input + output
+}
+
+// A derived total that cannot fit in int must not wrap and invalidate the real
+// input/output counters. Omit only that derived field; ordinary zero is retained.
+func (u ChatUsage) MarshalJSON() ([]byte, error) {
+	type plain ChatUsage
+	if u.PromptTokens >= 0 && u.CompletionTokens >= 0 && u.CompletionTokens > math.MaxInt-u.PromptTokens {
+		return json.Marshal(struct {
+			plain
+			TotalTokens *int `json:"total_tokens,omitempty"`
+		}{plain: plain(u)})
+	}
+	return json.Marshal(plain(u))
+}
+
 // ChatTokenDetails provides a breakdown of token usage. The same type is
 // reused for both prompt_tokens_details and completion_tokens_details;
 // unset fields are omitted so each side only emits the fields that apply.
@@ -867,3 +903,25 @@ func (d ChatDelta) reasoningText() *string {
 const DefaultMinMaxOutputTokens = 128
 
 const minMaxOutputTokens = DefaultMinMaxOutputTokens
+
+func (r *ResponsesResponse) UnmarshalJSON(data []byte) error {
+	type plain ResponsesResponse
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*r = ResponsesResponse(decoded)
+	r.ambiguousUsage = !MeteringEnvelopeUnambiguous(data)
+	return nil
+}
+
+func (evt *ResponsesStreamEvent) UnmarshalJSON(data []byte) error {
+	type plain ResponsesStreamEvent
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*evt = ResponsesStreamEvent(decoded)
+	evt.ambiguousUsage = !MeteringEnvelopeUnambiguous(data)
+	return nil
+}

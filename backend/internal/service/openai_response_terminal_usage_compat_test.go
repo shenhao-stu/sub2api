@@ -56,7 +56,7 @@ func TestParseSSEUsageEffectiveTerminalRules(t *testing.T) {
 	require.Equal(t, OpenAIUsage{InputTokens: 17, OutputTokens: 5, CacheReadInputTokens: 3}, *usage)
 
 	svc.parseSSEUsageBytesWithType([]byte(`{"response":{"usage":{"input_tokens":2,"output_tokens":0,"input_tokens_details":{"cached_tokens":0}}}}`), "response.completed", usage)
-	require.Equal(t, OpenAIUsage{InputTokens: 2}, *usage)
+	require.Equal(t, OpenAIUsage{InputTokens: 2, OutputTokens: 5}, *usage)
 }
 
 func BenchmarkParseSSEUsageNoUsageDelta(b *testing.B) {
@@ -112,4 +112,11 @@ func TestSampleOpenAIMissingUsageLogRateLimitsAndCounts(t *testing.T) {
 	require.True(t, logNow)
 	require.Equal(t, uint64(3), total)
 	require.Equal(t, uint64(1), suppressed)
+}
+
+func TestParseSSEUsageOuterZeroCannotEraseNestedPositive(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	usage := &OpenAIUsage{}
+	svc.parseSSEUsageBytesWithType([]byte(`{"usage":{"input_tokens":0,"output_tokens":0},"response":{"usage":{"input_tokens":100,"output_tokens":2}}}`), "response.completed", usage)
+	require.Equal(t, OpenAIUsage{InputTokens: 100, OutputTokens: 2}, *usage)
 }

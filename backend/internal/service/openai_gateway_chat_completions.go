@@ -765,6 +765,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 		return partialResult(), fmt.Errorf("upstream response failed: %s", message)
 	}
 	if strings.TrimSpace(finalResponse.Status) == "completed" {
+		c.Set("openai_responses_usage_state", finalResponse.Usage.MeteringState())
 		logOpenAISuccessMissingUsage(c.Request.Context(), c, account, resp, &usage, "response.completed", false)
 	}
 
@@ -1013,6 +1014,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		}
 		if isTerminalEvent {
 			terminalEventType = strings.TrimSpace(event.Type)
+			c.Set("openai_responses_usage_state", event.TerminalMeteringState())
 		}
 		if strings.TrimSpace(event.Type) == "response.failed" || strings.TrimSpace(event.Type) == "error" {
 			payloadBytes := []byte(payload)
