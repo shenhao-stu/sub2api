@@ -59,5 +59,13 @@ func WriteConversationGuardError(c *gin.Context, status int, body []byte, stream
 	if c == nil || c.GetBool(clientErrorSemanticOutputKey) || !isConversationGuardError(status, body) {
 		return false
 	}
-	return writeOpenAIErrorFields(c, boundedOpenAIClientError(body, status), streamStarted)
+	fields := boundedOpenAIClientError(body, status)
+	if fields.Code == "proxy_unavailable" || (fields.Code == "" && fields.Type == "proxy_unavailable") {
+		// This pre-admission guard has one public cause. Do not expose transport
+		// diagnostics or origin identifiers from either producer envelope shape.
+		fields.Type = "proxy_unavailable"
+		fields.Code = "proxy_unavailable"
+		fields.Message = "账号出口暂不可达，已暂停调度并自动复检；恢复后可继续原会话。"
+	}
+	return writeOpenAIErrorFields(c, fields, streamStarted)
 }

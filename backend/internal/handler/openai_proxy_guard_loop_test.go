@@ -148,10 +148,10 @@ func testOpenAIHTTP503HandlerWithHeartbeat(t *testing.T, responseBody string, te
 						require.Equal(t, 503, rec.Code, response)
 					}
 					if terminalGuard {
-						require.Equal(t, gjson.Get(responseBody, "error.type").String(), gjson.Get(response, prefix+"type").String())
-						require.Equal(t, gjson.Get(responseBody, "error.code").String(), gjson.Get(response, prefix+"code").String())
+						require.Equal(t, "proxy_unavailable", gjson.Get(response, prefix+"type").String())
+						require.Equal(t, "proxy_unavailable", gjson.Get(response, prefix+"code").String())
 						require.Equal(t, int64(503), gjson.Get(response, prefix+"status_code").Int())
-						require.Contains(t, gjson.Get(response, prefix+"message").String(), strings.Split(gjson.Get(responseBody, "error.message").String(), " https://")[0])
+						require.Equal(t, "账号出口暂不可达，已暂停调度并自动复检；恢复后可继续原会话。", gjson.Get(response, prefix+"message").String())
 					} else {
 						require.Equal(t, "upstream_error", gjson.Get(response, prefix+"type").String())
 						require.Equal(t, "Upstream service temporarily unavailable", gjson.Get(response, prefix+"message").String())
