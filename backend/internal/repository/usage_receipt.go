@@ -23,11 +23,7 @@ func (r *usageLogRepository) GetUsageReceipt(ctx context.Context, apiKeyID int64
 	if err = rows.Scan(&payload); err != nil {
 		return nil, err
 	}
-	var result service.UsageReceipt
-	if err = json.Unmarshal(payload, &result); err != nil {
-		return nil, err
-	}
-	return &result, nil
+	return decodeProviderReceipt(payload, apiKeyID, requestID)
 }
 
 func (r *usageLogRepository) SaveUsageReceipt(ctx context.Context, apiKeyID int64, receipt *service.UsageReceipt) error {

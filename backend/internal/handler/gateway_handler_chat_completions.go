@@ -21,6 +21,11 @@ import (
 // This converts Chat Completions requests to Anthropic format (via Responses format chain),
 // forwards to Anthropic upstream, and converts responses back to Chat Completions format.
 func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
+	if c.GetHeader(service.ChatReceiptVersionHeader) != "" || c.GetHeader(service.ChatReceiptIDHeader) != "" {
+		h.chatCompletionsErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "Usage receipt negotiation is unavailable for this protocol")
+		return
+	}
+
 	streamStarted := false
 
 	requestStart := time.Now()

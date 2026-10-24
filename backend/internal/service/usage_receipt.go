@@ -15,6 +15,9 @@ import (
 // It deliberately contains no account identity, credentials, prompts, or prices.
 // A missing record is unknown; it must never be converted into a zero-usage bill.
 type UsageReceipt struct {
+	ReasoningTokens       int       `json:"reasoning_tokens"`
+	TerminalState         string    `json:"terminal_state,omitempty"`
+	HTTPStatus            int       `json:"http_status,omitempty"`
 	WebSearchCalls        int       `json:"web_search_calls"`
 	Object                string    `json:"object"`
 	Version               int       `json:"version"`
@@ -62,7 +65,13 @@ func (s *UsageService) GetAPIKeyUsageReceipt(ctx context.Context, apiKeyID int64
 		receipt.CacheCreation5mTokens < 0 || receipt.CacheCreation1hTokens < 0 || receipt.RecordedAt.IsZero() {
 		return nil, ErrUsageReceiptUnavailable
 	}
-	receipt.Object, receipt.Version, receipt.Source = "sub2api.usage_receipt", 1, "wire_final"
+	if receipt.Version != 2 {
+		receipt.Version = 1
+	}
+	if receipt.Version == 2 && (!ValidateChatUsageReceipt(receipt) || receipt.RequestID != id) {
+		return nil, ErrUsageReceiptUnavailable
+	}
+	receipt.Object, receipt.Source = "sub2api.usage_receipt", "wire_final"
 	receipt.RequestID = id
 	return receipt, nil
 }
