@@ -978,6 +978,8 @@ func (s *BillingService) initFallbackPricing() {
 	grok47Fast.FlexMultiplier = &fixedTier
 	s.fallbackPrices["grok-4.7-build-fast"] = &grok47Fast
 
+	s.fallbackPrices["grok-4.7-fast"] = &grok47Fast
+
 	// xAI Grok 4.3: $1.25 input / $0.20 cached / $2.50 output below 200k;
 	// long-context rates are $2.50 / $0.40 / $5.
 	s.fallbackPrices["grok-4.3"] = &ModelPricing{

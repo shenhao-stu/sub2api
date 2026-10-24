@@ -64,6 +64,9 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	if err := rejectDisabledModels(c, s.disabledModelsConfig(), originalModel, mappedModel); err != nil {
 		return nil, err
 	}
+	if geminiImageGenerationDenied(c, nil, originalModel, mappedModel) {
+		return nil, s.writeClaudeError(c, http.StatusBadRequest, "invalid_request_error", ImageGenerationPermissionMessage())
+	}
 	billingModel := mappedModel
 
 	// 获取 access_token
