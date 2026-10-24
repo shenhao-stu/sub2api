@@ -53,7 +53,7 @@ func (e AnthropicUsageEvidence) observeUsage(data []byte, terminal bool) Anthrop
 		e.invalid = true
 	}
 	e.nonzeroSeen = e.nonzeroSeen || !responsesZeroCountersValid(data)
-	e.inputSeen = e.inputSeen || fields["input_tokens"] != nil || fields["prompt_tokens"] != nil
+	e.inputSeen = e.inputSeen || fields["input_tokens"] != nil
 	e.finalOutput = e.finalOutput || (terminal && fields["output_tokens"] != nil)
 	return e
 }
