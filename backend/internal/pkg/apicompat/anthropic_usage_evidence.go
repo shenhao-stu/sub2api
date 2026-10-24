@@ -73,6 +73,8 @@ func (e AnthropicUsageEvidence) ObserveEventJSON(data []byte) AnthropicUsageEvid
 	}
 	switch kind {
 	case "message_start":
+		e.inputSeen = false
+		e.finalOutput = false
 		message, ok := uniqueUsageObject(fields["message"])
 		if !ok {
 			e.invalid = true

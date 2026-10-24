@@ -63,3 +63,33 @@ func TestAnthropicStandaloneLateZeroRetainsObservedOutput(t *testing.T) {
 		})
 	}
 }
+
+func TestAnthropicUsageEvidenceStartsNewReceipt(t *testing.T) {
+	prefix := []string{
+		`{"type":"message_start","message":{"usage":{"input_tokens":0}}}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}`,
+	}
+	for _, tc := range []struct {
+		name     string
+		frames   []string
+		wantZero bool
+	}{
+		{"missing_new_terminal", []string{`{"type":"message_start","message":{"usage":{"input_tokens":0}}}`}, false},
+		{"missing_new_input", []string{`{"type":"message_start","message":{"usage":{}}}`, `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}`}, false},
+		{"complete_new_receipt", []string{`{"type":"message_start","message":{"usage":{"input_tokens":0}}}`, `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}`}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var evidence AnthropicUsageEvidence
+			for _, raw := range append(append([]string{}, prefix...), tc.frames...) {
+				evidence = evidence.ObserveEventJSON([]byte(raw))
+			}
+			usage := evidence.ResponsesUsage(AnthropicUsage{})
+			if tc.wantZero {
+				require.NotNil(t, usage)
+				require.Equal(t, "explicit_zero", usage.MeteringState())
+			} else {
+				require.Nil(t, usage)
+			}
+		})
+	}
+}
