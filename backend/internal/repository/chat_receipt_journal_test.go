@@ -1,12 +1,15 @@
 package repository
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +20,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
 
 func journalFixture(t *testing.T) (*chatReceiptJournal, chatReceiptEnvelope) {
@@ -60,14 +64,16 @@ func TestChatReceiptJournalRestartRecoversFailedAndUnknownCommit(t *testing.T) {
 			require.NoError(t, err)
 			restarted := newUsageLogRepositoryWithSQL(nil, db)
 			restarted.chatJournal = j2
-			rows := int64(0)
+			stored := e
 			if mode == "write_failed" {
-				rows = 1
+				stored = chatReceiptEnvelope{State: "pending", Claim: e.Claim}
 			}
-			m.ExpectExec("UPDATE provider_usage_receipts").WillReturnResult(sqlmock.NewResult(0, rows))
-			m.ExpectQuery("SELECT payload=").WillReturnRows(sqlmock.NewRows([]string{"equal"}).AddRow(true))
-			payload, _ := json.Marshal(e)
+			payload, _ := json.Marshal(stored)
 			m.ExpectQuery("SELECT payload FROM provider_usage_receipts").WillReturnRows(sqlmock.NewRows([]string{"payload"}).AddRow(payload))
+			if mode == "write_failed" {
+				m.ExpectExec("UPDATE provider_usage_receipts").WillReturnResult(sqlmock.NewResult(0, 1))
+			}
+			m.ExpectQuery("SELECT payload=").WillReturnRows(sqlmock.NewRows([]string{"equal"}).AddRow(true))
 			got, err := restarted.GetUsageReceipt(context.Background(), e.Claim.APIKeyID, e.Claim.RequestID)
 			require.NoError(t, err)
 			require.Equal(t, e.Receipt, got)
@@ -89,7 +95,27 @@ func TestChatReceiptJournalConflictNeverResurrectsOrRebinds(t *testing.T) {
 			defer db.Close()
 			r := newUsageLogRepositoryWithSQL(nil, db)
 			r.chatJournal = j
-			m.ExpectExec("UPDATE provider_usage_receipts").WillReturnResult(sqlmock.NewResult(0, 0))
+			initialRows := sqlmock.NewRows([]string{"payload"})
+			if mode != "deleted" {
+				stored := e
+				if mode == "different_claim" {
+					c := *e.Claim
+					c.Token = uuid.NewString()
+					stored = chatReceiptEnvelope{State: "pending", Claim: &c}
+				} else if mode == "different_account" {
+					stored.AccountID++
+				} else {
+					r := *e.Receipt
+					r.OutputTokens++
+					stored.Receipt = &r
+				}
+				p, _ := json.Marshal(stored)
+				initialRows.AddRow(p)
+			}
+			m.ExpectQuery("SELECT payload FROM provider_usage_receipts").WillReturnRows(initialRows)
+			if mode == "deleted" || mode == "different_claim" {
+				m.ExpectExec("UPDATE provider_usage_receipts").WillReturnResult(sqlmock.NewResult(0, 0))
+			}
 			rows := sqlmock.NewRows([]string{"equal"})
 			if mode != "deleted" {
 				rows.AddRow(false)
@@ -261,4 +287,117 @@ func TestChatReceiptJournalStartupCrashLeavesNoExclusiveProbe(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(j.dir, ".lock"))
 	require.NoError(t, err)
 	require.Equal(t, "unrelated data", string(data))
+}
+
+func TestChatReceiptJournalIOFailurePreservesHealthyPGWriteAndRead(t *testing.T) {
+	for _, version := range []int{1, 2} {
+		t.Run(strconv.Itoa(version), func(t *testing.T) {
+			j, e := journalFixture(t)
+			require.NoError(t, j.reserve(e.Claim))
+			require.NoError(t, os.Chmod(j.dir, 0750))
+			t.Cleanup(func() { _ = os.Chmod(j.dir, 0700) })
+			db, m, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+			r := newUsageLogRepositoryWithSQL(nil, db)
+			r.chatJournal = j
+			m.ExpectExec("UPDATE provider_usage_receipts").WillReturnResult(sqlmock.NewResult(0, 1))
+			m.ExpectQuery("SELECT payload=").WillReturnRows(sqlmock.NewRows([]string{"equal"}).AddRow(true))
+			require.NoError(t, r.CompleteChatUsageReceipt(context.Background(), e.Claim, e.AccountID, e.BillingRequestID, e.Receipt))
+			var payload []byte
+			if version == 1 {
+				v := *e.Receipt
+				v.Version = 1
+				payload, _ = json.Marshal(v)
+			} else {
+				payload, _ = json.Marshal(e)
+			}
+			m.ExpectQuery("SELECT payload FROM provider_usage_receipts").WillReturnRows(sqlmock.NewRows([]string{"payload"}).AddRow(payload))
+			got, err := r.GetUsageReceipt(context.Background(), e.Claim.APIKeyID, e.Claim.RequestID)
+			require.NoError(t, err)
+			require.Equal(t, 7, got.OutputTokens)
+			require.Equal(t, version, got.Version)
+			require.NoError(t, m.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestChatReceiptJournalLockCannotConsumePGFallbackBudget(t *testing.T) {
+	j, e := journalFixture(t)
+	require.NoError(t, j.reserve(e.Claim))
+	holdJournalLockInProcess(t, j.dir)
+	db, m, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	r := newUsageLogRepositoryWithSQL(nil, db)
+	r.chatJournal = j
+	m.ExpectExec("UPDATE provider_usage_receipts").WillReturnResult(sqlmock.NewResult(0, 1))
+	m.ExpectQuery("SELECT payload=").WillReturnRows(sqlmock.NewRows([]string{"equal"}).AddRow(true))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	require.NoError(t, r.CompleteChatUsageReceipt(ctx, e.Claim, e.AccountID, e.BillingRequestID, e.Receipt))
+	require.NoError(t, ctx.Err())
+	require.Less(t, time.Since(start), 3*time.Second)
+	require.NoError(t, m.ExpectationsWereMet())
+}
+
+func TestChatReceiptJournalLockHelper(t *testing.T) {
+	if os.Getenv("SUB_CHAT_JOURNAL_LOCK_HELPER") != "1" {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(os.Getenv("SUB_CHAT_JOURNAL_LOCK_DIR"), ".lock"), os.O_RDWR, 0)
+	if err != nil {
+		os.Exit(82)
+	}
+	if unix.Flock(int(f.Fd()), unix.LOCK_EX) != nil {
+		os.Exit(83)
+	}
+	_, _ = os.Stdout.WriteString("locked\n")
+	done := make(chan struct{})
+	go func() { _, _ = io.Copy(io.Discard, os.Stdin); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		os.Exit(84)
+	}
+	_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
+	_ = f.Close()
+}
+
+func holdJournalLockInProcess(t *testing.T, dir string) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestChatReceiptJournalLockHelper$", "-test.count=1")
+	cmd.Env = append(os.Environ(), "SUB_CHAT_JOURNAL_LOCK_HELPER=1", "SUB_CHAT_JOURNAL_LOCK_DIR="+dir)
+	in, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	out, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = in.Close()
+		if err := cmd.Wait(); err != nil {
+			t.Errorf("lock helper did not exit cleanly: %v", err)
+		}
+	})
+	line, err := bufio.NewReader(out).ReadString('\n')
+	require.NoError(t, err)
+	require.Equal(t, "locked\n", line)
+}
+
+func TestChatReceiptJournalConcurrentConsumerRereadsPGAfterSlotRemoval(t *testing.T) {
+	j, e := journalFixture(t)
+	db, m, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	r := newUsageLogRepositoryWithSQL(nil, db)
+	r.chatJournal = j
+	pending, _ := json.Marshal(chatReceiptEnvelope{State: "pending", Claim: e.Claim})
+	final, _ := json.Marshal(e)
+	m.ExpectQuery("SELECT payload FROM provider_usage_receipts").WillReturnRows(sqlmock.NewRows([]string{"payload"}).AddRow(pending))
+	m.ExpectQuery("SELECT payload FROM provider_usage_receipts").WillReturnRows(sqlmock.NewRows([]string{"payload"}).AddRow(final))
+	got, err := r.GetUsageReceipt(context.Background(), e.Claim.APIKeyID, e.Claim.RequestID)
+	require.NoError(t, err)
+	require.Equal(t, e.Receipt, got)
+	require.NoError(t, m.ExpectationsWereMet())
 }

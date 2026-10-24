@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
+	"log/slog"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
@@ -44,24 +44,33 @@ func (r *usageLogRepository) CompleteChatUsageReceipt(ctx context.Context, claim
 		return service.ErrChatReceiptConflict
 	}
 	final := chatReceiptEnvelope{State: "final", Claim: claim, AccountID: accountID, BillingRequestID: billingRequestID, Receipt: receipt}
-	if r.chatJournalErr != nil {
-		return r.chatJournalErr
-	}
+	journalErr := r.chatJournalErr
 	if r.chatJournal != nil {
-		if err := r.chatJournal.finalize(final); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return r.confirmChatReceiptEnvelope(ctx, final)
-			}
-			return err
-		}
+		journalErr = r.chatJournal.finalize(final)
+	}
+	if errors.Is(journalErr, service.ErrChatReceiptConflict) {
+		return journalErr
 	}
 	if err := r.completeChatReceiptEnvelope(ctx, final); err != nil {
-		return err
+		return errors.Join(err, journalErr)
 	}
-	if r.chatJournal != nil {
-		return r.chatJournal.remove(final)
+	if journalErr != nil {
+		// The immutable in-memory final is still valid when storage has an I/O
+		// failure. Preserve the pre-existing healthy PG path; never turn a local
+		// disk outage into a lost meter. Conflicting valid evidence never gets here.
+		slog.Error("provider_chat_usage_receipt_journal_failed_pg_confirmed", "api_key_id", claim.APIKeyID, "request_id", claim.RequestID)
+	} else {
+		r.removeConfirmedChatJournal(final)
 	}
 	return nil
+}
+
+func (r *usageLogRepository) removeConfirmedChatJournal(final chatReceiptEnvelope) {
+	if r.chatJournal != nil {
+		if err := r.chatJournal.remove(final); err != nil {
+			slog.Error("provider_chat_usage_receipt_journal_cleanup_failed", "api_key_id", final.Claim.APIKeyID, "request_id", final.Claim.RequestID)
+		}
+	}
 }
 
 func (r *usageLogRepository) PrepareChatUsageReceipt(_ context.Context, claim *service.ChatUsageReceiptClaim) error {

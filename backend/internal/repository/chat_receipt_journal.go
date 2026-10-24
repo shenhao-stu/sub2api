@@ -18,8 +18,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// A slot is physically allocated before dispatch. The same inode holds the
-// final meter, so a full filesystem cannot require another data allocation.
+// A slot is physically allocated before dispatch. Reusing that inode reduces
+// late capacity risk; CoW/snapshots or device failures can still require new
+// allocation or fail I/O. The healthy PG path remains available in that case.
 // Unknown crash remnants count toward the limit and are never aged out.
 const chatReceiptSlotBytes = 32 * 1024
 const chatReceiptSlotLimit = 1024
@@ -129,7 +130,9 @@ func (j *chatReceiptJournal) locked(fn func(*os.Root, *os.File) error) error {
 	if err != nil || !privateJournalFile(st, -1) {
 		return errors.New("invalid receipt journal lock")
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	// Leave most of the existing five-second completion budget for the
+	// authoritative PG path even when another process holds the file lock.
+	deadline := time.Now().Add(time.Second)
 	for {
 		err = unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
 		if err == nil {

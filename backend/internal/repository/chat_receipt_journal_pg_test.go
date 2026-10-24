@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/migrations"
@@ -72,6 +73,9 @@ func TestChatReceiptJournalPostgresRecoveryAndDeletion(t *testing.T) {
 	for _, mode := range []string{"write_failure", "commit_ack_lost", "claim_deleted", "claim_replaced", "conflicting_final"} {
 		t.Run(mode, func(t *testing.T) {
 			db := receiptJournalPostgres(t)
+			if mode == "commit_ack_lost" {
+				db.SetMaxOpenConns(1)
+			}
 			j, e := journalFixture(t)
 			fault := &receiptJournalFailOnceSQL{sqlExecutor: db, afterCommit: mode == "commit_ack_lost"}
 			fault.fail.Store(true)
@@ -146,4 +150,27 @@ func TestChatReceiptJournalPostgresRecoveryAndDeletion(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestChatReceiptJournalPostgresHeldLockPreservesKnownFinal(t *testing.T) {
+	db := receiptJournalPostgres(t)
+	j, e := journalFixture(t)
+	r := newUsageLogRepositoryWithSQL(nil, db)
+	r.chatJournal = j
+	won, err := r.ClaimChatUsageReceipt(context.Background(), e.Claim)
+	require.NoError(t, err)
+	require.True(t, won)
+	holdJournalLockInProcess(t, j.dir)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, r.CompleteChatUsageReceipt(ctx, e.Claim, e.AccountID, e.BillingRequestID, e.Receipt))
+	require.NoError(t, ctx.Err())
+	var exact bool
+	payload, _ := json.Marshal(e)
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT payload=$1::jsonb FROM provider_usage_receipts", string(payload)).Scan(&exact))
+	require.True(t, exact)
+	got, err := r.GetUsageReceipt(ctx, e.Claim.APIKeyID, e.Claim.RequestID)
+	require.NoError(t, err)
+	require.Equal(t, e.Receipt, got)
+	require.NoError(t, ctx.Err())
 }
