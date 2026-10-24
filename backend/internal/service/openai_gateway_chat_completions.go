@@ -923,6 +923,26 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	var streamFailoverErr *UpstreamFailoverError
 	var streamNonFailoverErr error
 	terminalEventType := ""
+	geminiActivityStarted, geminiActivityCommitted := false, false
+	var lastGeminiActivity time.Time
+	writeGeminiActivity := func() {
+		if !gemini.enabled || !geminiActivityStarted || terminalEventType != "" || clientDisconnected ||
+			(!lastGeminiActivity.IsZero() && time.Since(lastGeminiActivity) < time.Second) {
+			return
+		}
+		// Forward evidence of upstream activity, never its private comment or
+		// an invented answer/usage. No timer creates activity during silence.
+		writeStreamHeaders()
+		if _, err := fmt.Fprint(c.Writer, ": upstream-activity\n\n"); err != nil {
+			clientDisconnected = true
+			logger.L().Info("openai chat_completions stream: client disconnected during upstream activity",
+				zap.String("request_id", requestID))
+			return
+		}
+		c.Writer.Flush()
+		lastGeminiActivity = time.Now()
+		geminiActivityCommitted = true
+	}
 	// Grok chat bridge reuses Responses SSE; count native search tools for surcharge.
 	searchCount := 0
 	streamSearchSeen := make(map[string]struct{})
@@ -1072,13 +1092,21 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				}
 				defaultStatus, defaultErrType, defaultMsg = status, errType, errMsg
 				MarkResponseCommitted(c)
+			} else if geminiActivityCommitted {
+				defaultStatus = geminiActivityFailureStatus(payloadBytes, message)
 			}
-			errorPayload, _ := json.Marshal(openAIMeteredErrorMetadata(c, openAIErrorBodyWithUsage(gin.H{
-				"error": gin.H{
-					"type":    defaultErrType,
-					"message": defaultMsg,
-				},
-			}, &usage)))
+			errorFields := gin.H{"type": defaultErrType, "message": defaultMsg}
+			if geminiActivityCommitted {
+				errorFields["code"] = openAIStreamFailedEventErrorCode(payloadBytes)
+				normalized, _ := json.Marshal(gin.H{"error": errorFields})
+				fields := boundedOpenAIClientError(normalized, defaultStatus)
+				errorFields = gin.H{"type": fields.Type, "message": fields.Message, "status_code": fields.StatusCode}
+				if fields.Code != "" {
+					errorFields["code"] = fields.Code
+				}
+				MarkOpsStreamErrorValue(c, OpsStreamError{ErrType: fields.Type, Code: fields.Code, Message: fields.Message, IntendedStatus: fields.StatusCode})
+			}
+			errorPayload, _ := json.Marshal(openAIMeteredErrorMetadata(c, openAIErrorBodyWithUsage(gin.H{"error": errorFields}, &usage)))
 			if c != nil && c.Writer != nil && !c.Writer.Written() {
 				writeChatCompletionsErrorWithUsage(c, defaultStatus, defaultErrType, defaultMsg, &usage)
 				clientOutputStarted = true
@@ -1144,6 +1172,13 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		}
 		if len(chunks) > 0 && !clientDisconnected && clientOutputStarted {
 			c.Writer.Flush()
+		}
+		if gemini.enabled && !isTerminalEvent {
+			var activity bool
+			geminiActivityStarted, activity = geminiResponsesActivity(&event, geminiActivityStarted)
+			if activity && (!clientOutputStarted || len(chunks) == 0) {
+				writeGeminiActivity()
+			}
 		}
 		return isTerminalEvent
 	}
@@ -1275,6 +1310,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		var parser openAICompatSSEFrameParser
 		for scanner.Scan() {
 			line := scanner.Text()
+			if strings.HasPrefix(line, ":") && parser.eventType == "" && len(parser.dataLines) == 0 {
+				writeGeminiActivity()
+			}
 			frame, ok := parser.AddLine(line)
 			if !ok {
 				continue
@@ -1370,6 +1408,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			}
 			lastDataAt = time.Now()
 			line := ev.line
+			if strings.HasPrefix(line, ":") && parser.eventType == "" && len(parser.dataLines) == 0 {
+				writeGeminiActivity()
+			}
 			frame, ok := parser.AddLine(line)
 			if !ok {
 				continue

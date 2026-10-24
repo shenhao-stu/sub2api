@@ -23,9 +23,9 @@ func TestGeminiResponsesChatDelivery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, stream := range []bool{true, false} {
 		for _, tc := range []struct {
-			name, events, output, model string
-			empty, noUsage, committed   bool
-			outputTokens                int
+			name, events, output, model         string
+			empty, noUsage, committed, activity bool
+			outputTokens                        int
 		}{
 			{name: "role_usage_only", output: `[]`, empty: true},
 			{name: "heartbeat_already_committed", output: `[]`, empty: true, committed: true},
@@ -33,7 +33,7 @@ func TestGeminiResponsesChatDelivery(t *testing.T) {
 			{name: "opaque_output_usage", output: `[{"type":"reasoning","encrypted_content":"synthetic","summary":[]}]`, empty: true, outputTokens: 13},
 			{name: "unrelated_model_unchanged", model: "gpt-5.5", output: `[]`},
 			{name: "empty_reasoning", events: `data: {"type":"response.reasoning_summary_text.delta","delta":""}` + "\n\n", output: `[]`, empty: true},
-			{name: "encrypted_reasoning", events: `data: {"type":"response.output_item.added","item":{"type":"reasoning","id":"rs_test","encrypted_content":"synthetic","summary":[]}}` + "\n\n", output: `[{"type":"reasoning","id":"rs_test","encrypted_content":"synthetic","summary":[]}]`, empty: true},
+			{name: "encrypted_reasoning", activity: true, events: `data: {"type":"response.output_item.added","item":{"type":"reasoning","id":"rs_test","encrypted_content":"synthetic","summary":[]}}` + "\n\n", output: `[{"type":"reasoning","id":"rs_test","encrypted_content":"synthetic","summary":[]}]`, empty: true},
 			{name: "text", events: `data: {"type":"response.output_text.delta","delta":"synthetic answer"}` + "\n\n", output: `[{"type":"message","content":[{"type":"output_text","text":"synthetic answer"}]}]`},
 			{name: "reasoning_text", events: `data: {"type":"response.reasoning_summary_text.delta","delta":"synthetic reasoning"}` + "\n\n", output: `[{"type":"reasoning","summary":[{"type":"summary_text","text":"synthetic reasoning"}]}]`},
 			{name: "tool", events: `data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_test","name":"clock","arguments":"{}"}}` + "\n\n", output: `[{"type":"function_call","call_id":"call_test","name":"clock","arguments":"{}"}]`},
@@ -73,7 +73,7 @@ func TestGeminiResponsesChatDelivery(t *testing.T) {
 					require.Error(t, err)
 					var failover *UpstreamFailoverError
 					require.NotErrorAs(t, err, &failover)
-					if tc.committed {
+					if tc.committed || (stream && tc.activity) {
 						require.Equal(t, http.StatusOK, rec.Code)
 						require.Contains(t, rec.Body.String(), `"status_code":502`)
 					} else {
