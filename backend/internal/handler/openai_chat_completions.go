@@ -101,6 +101,13 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		return
 	}
 
+	receiptRequested := c.GetHeader(service.ChatReceiptVersionHeader) != "" || c.GetHeader(service.ChatReceiptIDHeader) != ""
+	receiptClaimed := false
+	if receiptRequested && (len(c.Request.Header.Values(service.ChatReceiptVersionHeader)) != 1 || len(c.Request.Header.Values(service.ChatReceiptIDHeader)) != 1 || c.GetHeader(service.ChatReceiptVersionHeader) != "v2" || !service.ValidUsageReceiptID(c.GetHeader(service.ChatReceiptIDHeader)) || !gjson.GetBytes(body, "messages").IsArray() || c.Request.URL.Path != service.ChatReceiptEndpoint) {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Unsupported usage receipt negotiation")
+		return
+	}
+
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
 
 	setOpsRequestContext(c, reqModel, reqStream)
@@ -248,13 +255,39 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			return
 		}
 
-		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
-		forwardStart := time.Now()
-
 		forwardBody := body
 		if channelMapping.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
 		}
+		if receiptRequested && !h.gatewayService.SupportsChatUsageReceipt(c.Request.Context(), account, forwardBody) {
+			if accountReleaseFunc != nil {
+				accountReleaseFunc()
+			}
+			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "usage_receipt_error", "Usage receipts are unavailable for the selected protocol", streamStarted)
+			return
+		}
+		if receiptRequested && !receiptClaimed {
+			receiptCtx, receiptErr := h.gatewayService.BeginChatUsageReceipt(c.Request.Context(), apiKey.ID, c.GetHeader(service.ChatReceiptIDHeader), reqModel, body)
+			if receiptErr != nil {
+				if accountReleaseFunc != nil {
+					accountReleaseFunc()
+				}
+				status := http.StatusServiceUnavailable
+				if errors.Is(receiptErr, service.ErrChatReceiptConflict) {
+					status = http.StatusConflict
+				}
+				h.handleStreamingAwareError(c, status, "usage_receipt_error", "Usage receipt identity is unavailable", streamStarted)
+				return
+			}
+			c.Request = c.Request.WithContext(receiptCtx)
+			c.Header(service.ChatReceiptVersionHeader, "v2")
+			c.Header(service.ChatReceiptIDHeader, c.GetHeader(service.ChatReceiptIDHeader))
+			receiptClaimed = true
+		}
+
+		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
+		forwardStart := time.Now()
+
 		writerSizeBeforeForward := openAIForwardWrittenSize(c)
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer func() {

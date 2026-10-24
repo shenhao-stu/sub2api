@@ -1008,3 +1008,55 @@ func MeteringEnvelopeUnambiguous(data []byte) bool {
 	}
 	return true
 }
+
+// CompleteReceiptMetering requires complete, unambiguous source totals before a
+// durable receipt can expose the converter's final downstream wire counters.
+func (u *ResponsesUsage) completeReceiptMetering() bool {
+	return u != nil && u.explicitTokenTotals && u.receiptCountersValid && chatUsageFromResponsesUsage(u) != nil
+}
+func (evt *ResponsesStreamEvent) CompleteReceiptMetering() bool {
+	if evt == nil || evt.ambiguousUsage {
+		return false
+	}
+	switch evt.Type {
+	case "response.completed", "response.done", "response.incomplete", "response.failed":
+	default:
+		return false
+	}
+	inner := (*ResponsesUsage)(nil)
+	if evt.Response != nil && evt.Response.Status != "" {
+		expected := strings.TrimPrefix(evt.Type, "response.")
+		if expected == "done" {
+			expected = "completed"
+		}
+		if evt.Response.Status != expected {
+			return false
+		}
+	}
+	if evt.Response != nil {
+		if evt.Response.ambiguousUsage {
+			return false
+		}
+		inner = evt.Response.Usage
+	}
+	if evt.Usage != nil && !evt.Usage.completeReceiptMetering() {
+		return false
+	}
+	if inner != nil && !inner.completeReceiptMetering() {
+		return false
+	}
+	if evt.Usage != nil && inner != nil {
+		outerJSON, _ := json.Marshal(evt.Usage)
+		innerJSON, _ := json.Marshal(inner)
+		if !bytes.Equal(outerJSON, innerJSON) {
+			return false
+		}
+	}
+	return evt.Usage != nil || inner != nil
+}
+func (r *ResponsesResponse) CompleteReceiptMetering() bool {
+	if r == nil || r.ambiguousUsage || !r.Usage.completeReceiptMetering() {
+		return false
+	}
+	return r.Status == "completed" || r.Status == "incomplete" || r.Status == "failed"
+}

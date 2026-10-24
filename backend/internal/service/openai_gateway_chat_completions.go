@@ -64,7 +64,12 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	if err := s.requireOpenAIForwardPricing(ctx, c, account, body, defaultMappedModel); err != nil {
 		return nil, err
 	}
-	return s.forwardAsChatCompletions(ctx, c, account, body, promptCacheKey, defaultMappedModel, false)
+	if capture := chatReceiptFromContext(ctx); capture != nil {
+		*capture = chatReceiptCapture{claim: capture.claim}
+	}
+	result, err := s.forwardAsChatCompletions(ctx, c, account, body, promptCacheKey, defaultMappedModel, false)
+	s.completeChatUsageReceipt(ctx, c, account, result, err)
+	return result, err
 }
 
 func (s *OpenAIGatewayService) forwardAsChatCompletions(
@@ -386,6 +391,7 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	if resp.StatusCode >= 400 {
 		respBody, upstreamMsg, completeErrorBody := s.readOpenAIUpstreamErrorWithCompleteness(resp)
 		if result, meteredErr := s.handleMeteredOpenAIHTTPError(ctx, c, account, resp, respBody, responsesBody, originalModel, billingModel, upstreamModel, clientStream, startTime); result != nil {
+			observeChatHTTPErrorReceipt(c, respBody, resp.StatusCode, result)
 			return result, meteredErr
 		}
 
@@ -721,6 +727,10 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	}
 	observer.Observe(finalResponse.Model, true)
 	observer.ObserveServiceTier(finalResponse.ServiceTier, true)
+	if finalResponse.CompleteReceiptMetering() {
+		wire := apicompat.ResponsesToChatCompletions(finalResponse, originalModel)
+		observeChatReceiptMeter(c, wire.Usage, wire.ServiceTier, finalResponse.Status)
+	}
 	if strings.TrimSpace(finalResponse.Status) == "failed" {
 		payload, _ := json.Marshal(gin.H{"type": "response.failed", "response": finalResponse})
 		// cyber_policy 致命不可重试：不 failover，以 Chat Completions 错误格式回写（F4），
@@ -798,6 +808,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	// text/event-stream，会经 WriteFilteredHeaders 透传进来；而 c.JSON 走 Gin 的
 	// writeContentType 仅在头不存在时才设置，无法覆盖。这里显式 Set 强制改回 JSON，
 	// 否则下游"看头判流式"的中间层（如 new-api）会把本应聚合的 JSON 当成 SSE 处理。
+	writeChatReceiptAck(c)
 	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	c.JSON(http.StatusOK, chatResp)
 
@@ -1032,6 +1043,15 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			// processing. A later error without usage is not safe to replay.
 			geminiResponseStarted = true
 		}
+		if isTerminalEvent && event.CompleteReceiptMetering() {
+			receiptState := *state
+			apicompat.ResponsesEventToChatChunks(&event, &receiptState)
+			terminal := strings.TrimPrefix(event.Type, "response.")
+			if terminal == "done" {
+				terminal = "completed"
+			}
+			observeChatReceiptMeter(c, receiptState.Usage, receiptState.ServiceTier, terminal)
+		}
 		if isTerminalEvent {
 			terminalEventType = strings.TrimSpace(event.Type)
 			c.Set("openai_responses_usage_state", event.TerminalMeteringState())
@@ -1094,6 +1114,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				MarkResponseCommitted(c)
 			} else if geminiActivityCommitted {
 				defaultStatus = geminiActivityFailureStatus(payloadBytes, message)
+			}
+			if capture := chatReceiptFromContext(c.Request.Context()); capture != nil {
+				capture.status = defaultStatus
 			}
 			errorFields := gin.H{"type": defaultErrType, "message": defaultMsg}
 			if geminiActivityCommitted {

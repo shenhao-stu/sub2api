@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/url"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -20,7 +20,8 @@ func TestUsageReceiptPostgresScopesRecordedUsage(t *testing.T) {
 	if dsn == "" {
 		t.Skip("PG_TEST_DSN is required for isolated PostgreSQL coverage")
 	}
-	if !strings.Contains(dsn, "/plan_evidence_test") {
+	parsed, parseErr := url.Parse(dsn)
+	if parseErr != nil || (parsed.Path != "/plan_evidence_test" && parsed.Path != "/relay_status_test") {
 		t.Fatal("use the owned throwaway database")
 	}
 	db, err := sql.Open("postgres", dsn)

@@ -515,6 +515,7 @@ type ResponsesSummary struct {
 // ResponsesUsage holds token counts in Responses API format.
 type ResponsesUsage struct {
 	explicitTokenTotals    bool
+	receiptCountersValid   bool
 	zeroTokenCountersValid bool
 	cacheReadExplicitZero  bool
 	cacheWriteExplicitZero bool
@@ -562,6 +563,7 @@ func (u *ResponsesUsage) UnmarshalJSON(data []byte) error {
 	*u = ResponsesUsage(aux.responsesUsageAlias)
 	u.explicitTokenTotals = (nestedPresence.InputTokens != nil || nestedPresence.PromptTokens != nil) && (nestedPresence.OutputTokens != nil || nestedPresence.CompletionTokens != nil)
 	u.zeroTokenCountersValid = responsesZeroCountersValid(data)
+	u.receiptCountersValid = responsesZeroCountersValidObject(data, false, false)
 	u.cacheReadExplicitZero = responsesExplicitCacheZero(data, false)
 	u.cacheWriteExplicitZero = responsesExplicitCacheZero(data, true)
 	if u.InputTokens == 0 && aux.PromptTokens != 0 {

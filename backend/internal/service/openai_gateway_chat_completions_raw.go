@@ -226,6 +226,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletionsWithStartTime(
 	if resp.StatusCode >= 400 {
 		respBody, upstreamMsg := s.readOpenAIUpstreamError(resp)
 		if result, meteredErr := s.handleMeteredOpenAIHTTPError(ctx, c, account, resp, respBody, upstreamBody, originalModel, billingModel, upstreamModel, clientStream, startTime); result != nil {
+			observeChatHTTPErrorReceipt(c, respBody, resp.StatusCode, result)
 			return result, meteredErr
 		}
 
@@ -408,6 +409,9 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		line = stripEmptyChatToolCallIdentityFromSSELine(line)
 
 		line = s.replaceModelInSSELine(line, upstreamModel, originalModel)
+		if payload, ok := extractOpenAISSEDataLine(line); ok {
+			observeRawChatReceipt(c, []byte(payload), true)
+		}
 		writeLine(line)
 		if line == "" {
 			if !clientDisconnected && clientOutputStarted {
@@ -608,6 +612,7 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		Stream:                        false,
 		Duration:                      time.Since(startTime),
 	}
+	observeRawChatReceipt(c, respBody, false)
 	gemini := newGeminiChatDelivery(originalModel, upstreamModel)
 	gemini.observe(respBody)
 	if gemini.empty() {
@@ -624,6 +629,7 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
+	writeChatReceiptAck(c)
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		c.Writer.Header().Set("Content-Type", ct)
 	} else {
