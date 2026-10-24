@@ -54,7 +54,7 @@ func TestConversationGuardStopsRetriesWithoutPoisoningPool(t *testing.T) {
 		"conversation_route_unavailable": 503, "conversation_account_paused": 503,
 		"conversation_account_unavailable": 403, "conversation_account_restricted": 403,
 		"conversation_model_disabled": 403, "conversation_quota_exhausted": 429,
-		"conversation_rate_limited": 429,
+		"conversation_rate_limited": 429, "proxy_unavailable": 503,
 	} {
 		t.Run(code, func(t *testing.T) {
 			body := []byte(fmt.Sprintf(`{"error":{"code":%q,"message":"original conversation is unavailable"}}`, code))
@@ -80,6 +80,9 @@ func TestConversationGuardDoesNotDisableOrdinaryRecovery(t *testing.T) {
 	}{
 		{429, `{"error":{"type":"concurrency","message":"busy"}}`},
 		{503, `{"error":{"code":"overloaded"}}`},
+		{429, `{"error":{"code":"proxy_unavailable"}}`},
+		{503, `{"error":{"message":"proxy_unavailable"}}`},
+		{503, `{"metadata":{"error":{"code":"proxy_unavailable"}}}`},
 		{503, `{"error":{"message":"conversation_account_paused"}}`},
 		{429, `{"error":{"code":"conversation_account_paused"}}`},
 		{503, `{"metadata":{"error":{"code":"conversation_account_paused"}}}`},
