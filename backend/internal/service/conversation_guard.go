@@ -9,8 +9,8 @@ import (
 
 const conversationGuardReason GatewayFailureReason = "conversation_guard"
 
-// A pinned conversation's admission guard is terminal for this request. It
-// does not describe the health of the aggregator account or its other users.
+// A pinned conversation or account route guard is terminal for this request.
+// It does not describe the health of the aggregator account or its other users.
 func isConversationGuardError(status int, body []byte) bool {
 	if len(body) > 64<<10 || (status != 403 && status != 429 && status != 503) {
 		return false
@@ -28,7 +28,7 @@ func isConversationGuardError(status int, body []byte) bool {
 		return status == http.StatusForbidden
 	case "conversation_quota_exhausted", "conversation_rate_limited":
 		return status == http.StatusTooManyRequests
-	case "conversation_route_unavailable", "conversation_account_paused":
+	case "conversation_route_unavailable", "conversation_account_paused", "proxy_unavailable":
 		return status == http.StatusServiceUnavailable
 	default:
 		return false

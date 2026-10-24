@@ -13,7 +13,7 @@ import (
 
 func TestConversationGuardPreservesStatusAndRootCause(t *testing.T) {
 	h := &OpenAIGatewayHandler{}
-	for code, status := range map[string]int{"conversation_account_paused": 503, "conversation_quota_exhausted": 429, "conversation_account_restricted": 403} {
+	for code, status := range map[string]int{"proxy_unavailable": 503, "conversation_account_paused": 503, "conversation_quota_exhausted": 429, "conversation_account_restricted": 403} {
 		for _, path := range []string{"/v1/responses", "/v1/chat/completions", "/v1/messages"} {
 			for _, committed := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s%s/%t", code, path, committed), func(t *testing.T) {

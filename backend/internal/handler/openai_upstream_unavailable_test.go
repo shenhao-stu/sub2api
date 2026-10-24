@@ -56,15 +56,16 @@ func TestOpenAIUpstreamUnavailable_FailoverKeepsStatusAndRootCause(t *testing.T)
 	}
 }
 
-func TestOpenAIUpstreamUnavailable_DoesNotChangeOther503Mapping(t *testing.T) {
+func TestOpenAIUpstreamUnavailable_Unknown503RetainsStatusWithSafeMessage(t *testing.T) {
 	c, rec := newGinContextForEndpoint(t, "/v1/responses")
 	h := &OpenAIGatewayHandler{}
 	h.handleFailoverExhausted(c, &service.UpstreamFailoverError{
 		StatusCode:   http.StatusServiceUnavailable,
 		ResponseBody: []byte(`{"error":{"type":"server_error","message":"unclassified service error"}}`),
 	}, false)
-	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	require.Equal(t, "upstream_error", gjson.Get(rec.Body.String(), "error.type").String())
+	require.Equal(t, "Upstream service temporarily unavailable", gjson.Get(rec.Body.String(), "error.message").String())
 }
 
 type upstreamUnavailableRuleRepo struct {

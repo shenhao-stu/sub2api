@@ -922,7 +922,9 @@ func mapGeminiUpstreamError(statusCode int) (int, string) {
 		return http.StatusTooManyRequests, "Upstream rate limit exceeded, please retry later"
 	case 529:
 		return http.StatusServiceUnavailable, "Upstream service overloaded, please retry later"
-	case 500, 502, 503, 504:
+	case 503:
+		return http.StatusServiceUnavailable, "Upstream service temporarily unavailable"
+	case 500, 502, 504:
 		return http.StatusBadGateway, "Upstream service temporarily unavailable"
 	default:
 		return http.StatusBadGateway, "Upstream request failed"

@@ -2009,7 +2009,9 @@ func (h *GatewayHandler) mapUpstreamError(statusCode int) (int, string, string) 
 		return http.StatusTooManyRequests, "rate_limit_error", "Upstream rate limit exceeded, please retry later"
 	case 529:
 		return http.StatusServiceUnavailable, "overloaded_error", "Upstream service overloaded, please retry later"
-	case 500, 502, 503, 504:
+	case 503:
+		return http.StatusServiceUnavailable, "upstream_error", "Upstream service temporarily unavailable"
+	case 500, 502, 504:
 		return http.StatusBadGateway, "upstream_error", "Upstream service temporarily unavailable"
 	default:
 		return http.StatusBadGateway, "upstream_error", "Upstream request failed"
@@ -2023,7 +2025,7 @@ func (h *GatewayHandler) handleStreamingAwareError(c *gin.Context, status int, e
 
 func (h *GatewayHandler) handleStreamingAwareErrorWithCode(c *gin.Context, status int, errType, code, message string, streamStarted bool) {
 	if service.AnthropicJSONKeepaliveCommitted(c) {
-		errorBody := gin.H{"type": errType, "message": message}
+		errorBody := gin.H{"type": errType, "message": message, "status_code": status}
 		if code != "" {
 			errorBody["code"] = code
 		}
@@ -2053,7 +2055,7 @@ func (h *GatewayHandler) handleStreamingAwareErrorWithCode(c *gin.Context, statu
 			if code != "" {
 				errorCode = `,"code":` + strconv.Quote(code)
 			}
-			errorEvent := `data: {"type":"error","error":{"type":` + strconv.Quote(errType) + errorCode + `,"message":` + strconv.Quote(message) + `}}` + "\n\n"
+			errorEvent := `data: {"type":"error","error":{"type":` + strconv.Quote(errType) + errorCode + `,"message":` + strconv.Quote(message) + `,"status_code":` + strconv.Itoa(status) + `}}` + "\n\n"
 			if inboundIsMessages(c) {
 				errorEvent = "event: error\n" + errorEvent
 			}
