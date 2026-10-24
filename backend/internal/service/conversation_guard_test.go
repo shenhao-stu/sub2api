@@ -147,7 +147,7 @@ func TestConversationGuardProxyUsesFixedSafeReason(t *testing.T) {
 						require.NoError(t, err)
 						c.Writer.Flush()
 					}
-					body := []byte(fmt.Sprintf(`{"error":{%s,"message":"private name@example.invalid 10.12.34.56 https://origin.private.example/x Bearer synthetic-secret","status_code":418},"usage":{"total_tokens":99}}`, identity))
+					body := []byte(fmt.Sprintf(`{"error":{%s,"message":"private name@example.invalid 10.12.34.56 https://origin.private.example/x Bearer synthetic-secret","status_code":418,"param":"private_account_identifier"},"usage":{"total_tokens":99}}`, identity))
 					require.True(t, WriteConversationGuardError(c, 503, body, heartbeat))
 					payload, prefix := rec.Body.String(), "error."
 					if heartbeat {
@@ -165,7 +165,7 @@ func TestConversationGuardProxyUsesFixedSafeReason(t *testing.T) {
 					require.Equal(t, "proxy_unavailable", gjson.Get(payload, prefix+"code").String())
 					require.Equal(t, int64(503), gjson.Get(payload, prefix+"status_code").Int())
 					require.Equal(t, "账号出口暂不可达，已暂停调度并自动复检；恢复后可继续原会话。", gjson.Get(payload, prefix+"message").String())
-					for _, private := range []string{"name@example", "10.12.34.56", "origin.private", "synthetic-secret", "418", "total_tokens"} {
+					for _, private := range []string{"name@example", "10.12.34.56", "origin.private", "synthetic-secret", "private_account_identifier", "418", "total_tokens"} {
 						require.NotContains(t, payload, private)
 					}
 				})
