@@ -8,14 +8,16 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
 // responsesFailedError 对齐 OpenAI Responses 协议 error 子对象。
 type responsesFailedError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	StatusCode int    `json:"status_code,omitempty"`
 }
 
 // responsesFailedBody 对齐 apicompat.makeResponsesCompletedEvent 输出的 response 子对象字段集。
@@ -64,6 +66,12 @@ func writeResponsesFailedSSE(c *gin.Context, errType, code, message string) bool
 		return false
 	}
 
+	// HTTP status is already committed. Preserve only the logical status recorded
+	// by the handler, never an untrusted status field from an upstream body.
+	status := 0
+	if streamErr, ok := service.GetOpsStreamError(c); ok && streamErr.IntendedStatus >= 400 && streamErr.IntendedStatus <= 599 {
+		status = streamErr.IntendedStatus
+	}
 	payload, err := json.Marshal(responsesFailedEvent{
 		Type: "response.failed",
 		Response: responsesFailedBody{
@@ -74,8 +82,9 @@ func writeResponsesFailedSSE(c *gin.Context, errType, code, message string) bool
 			Status:    "failed",
 			Output:    []any{},
 			Error: responsesFailedError{
-				Code:    mapResponsesErrorCode(errType, code),
-				Message: message,
+				Code:       mapResponsesErrorCode(errType, code),
+				Message:    message,
+				StatusCode: status,
 			},
 		},
 	})

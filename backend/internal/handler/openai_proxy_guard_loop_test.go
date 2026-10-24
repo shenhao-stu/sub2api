@@ -28,6 +28,7 @@ type proxyGuardLoopUpstream struct {
 	calls           atomic.Int32
 	reservationSeen atomic.Bool
 	cache           *handlerInflightCache
+	body            string
 }
 
 func (u *proxyGuardLoopUpstream) Do(*http.Request, string, int64, int) (*http.Response, error) {
@@ -35,7 +36,7 @@ func (u *proxyGuardLoopUpstream) Do(*http.Request, string, int64, int) (*http.Re
 	if u.cache.count() > 0 {
 		u.reservationSeen.Store(true)
 	}
-	return &http.Response{StatusCode: 503, Header: http.Header{"Content-Type": {"application/json"}, "Retry-After": {"60"}, "X-Request-Id": {"synthetic-upstream-ref"}}, Body: io.NopCloser(bytes.NewBufferString(proxyGuardBody))}, nil
+	return &http.Response{StatusCode: 503, Header: http.Header{"Content-Type": {"application/json"}, "Retry-After": {"60"}, "X-Request-Id": {"synthetic-upstream-ref"}}, Body: io.NopCloser(bytes.NewBufferString(u.body))}, nil
 }
 
 type proxyGuardBillingSpy struct {
@@ -49,6 +50,15 @@ func (s *proxyGuardBillingSpy) Apply(context.Context, *service.UsageBillingComma
 }
 
 func TestOpenAIProxyGuardHTTPHandlerPreserves503WithoutReplayOrCharge(t *testing.T) {
+	testOpenAIHTTP503Handler(t, proxyGuardBody, true)
+}
+
+func TestOpenAIUnknown503HTTPHandlerPreservesStatusAndAttemptBudget(t *testing.T) {
+	testOpenAIHTTP503Handler(t, `{"error":{"type":"server_error","message":"opaque failure https://private.fixture.invalid/path sk-privatefixture","status_code":418}}`, false)
+}
+
+func testOpenAIHTTP503Handler(t *testing.T, responseBody string, terminalGuard bool) {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	for _, path := range []string{"/v1/responses", "/v1/chat/completions", "/v1/messages"} {
 		for _, pool := range []bool{false, true} {
@@ -69,7 +79,7 @@ func TestOpenAIProxyGuardHTTPHandlerPreserves503WithoutReplayOrCharge(t *testing
 					t.Cleanup(billingCache.Stop)
 					bills := &proxyGuardBillingSpy{}
 					logs := &openAIWSUsageHandlerUsageLogRepoStub{created: make(chan *service.UsageLog, 8)}
-					upstream := &proxyGuardLoopUpstream{cache: cache}
+					upstream := &proxyGuardLoopUpstream{cache: cache, body: responseBody}
 					gateway := service.NewOpenAIGatewayService(repo, logs, bills, nil, nil, nil, testutil.StubGatewayCache{}, cfg, nil, nil, service.NewBillingService(cfg, nil), nil, billingCache, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
 					h := NewOpenAIGatewayHandler(gateway, service.NewConcurrencyService(nil), billingCache, service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
 					apiKey := &service.APIKey{ID: 99, GroupID: &groupID, User: &service.User{ID: 100, Status: service.StatusActive, Balance: 100}, Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive, RateMultiplier: 1, AllowMessagesDispatch: true}}
@@ -91,13 +101,25 @@ func TestOpenAIProxyGuardHTTPHandlerPreserves503WithoutReplayOrCharge(t *testing
 					router.ServeHTTP(rec, req)
 					t.Logf("response_status=%d upstream_attempts=%d reservation_seen=%t active_reservations=%d billing_calls=%d", rec.Code, upstream.calls.Load(), upstream.reservationSeen.Load(), cache.count(), bills.calls.Load())
 					require.Equal(t, 503, rec.Code, rec.Body.String())
-					require.Equal(t, "proxy_unavailable", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
-					require.Equal(t, int64(503), gjson.GetBytes(rec.Body.Bytes(), "error.status_code").Int())
-					require.Contains(t, gjson.GetBytes(rec.Body.Bytes(), "error.message").String(), "账号出口暂不可用")
+					if terminalGuard {
+						require.Equal(t, "proxy_unavailable", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+						require.Equal(t, int64(503), gjson.GetBytes(rec.Body.Bytes(), "error.status_code").Int())
+						require.Contains(t, gjson.GetBytes(rec.Body.Bytes(), "error.message").String(), "账号出口暂不可用")
+					} else {
+						require.Equal(t, "upstream_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+						require.Equal(t, "Upstream service temporarily unavailable", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+					}
 					require.NotContains(t, rec.Body.String(), "private.fixture.invalid")
 					require.NotContains(t, rec.Body.String(), "sk-privatefixture")
 					require.Equal(t, "60", rec.Header().Get("Retry-After"))
-					require.Equal(t, int32(1), upstream.calls.Load(), "a request-local route guard must not replay or select a sibling bridge")
+					wantAttempts := int32(1)
+					if !terminalGuard {
+						wantAttempts = 2
+						if pool {
+							wantAttempts = 4
+						}
+					}
+					require.Equal(t, wantAttempts, upstream.calls.Load(), "only a structured route guard terminates; ordinary 503 keeps the existing retry budget")
 					require.True(t, upstream.reservationSeen.Load(), "exercise an actual in-flight reservation")
 					require.Zero(t, cache.count())
 					require.Zero(t, bills.calls.Load())

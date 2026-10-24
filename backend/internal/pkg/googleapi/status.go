@@ -14,6 +14,8 @@ func HTTPStatusToGoogleStatus(status int) string {
 		return "PERMISSION_DENIED"
 	case http.StatusNotFound:
 		return "NOT_FOUND"
+	case http.StatusServiceUnavailable:
+		return "UNAVAILABLE"
 	case http.StatusTooManyRequests:
 		return "RESOURCE_EXHAUSTED"
 	case 499: // client closed request

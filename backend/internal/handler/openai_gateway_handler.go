@@ -1599,13 +1599,15 @@ func (h *OpenAIGatewayHandler) anthropicErrorResponse(c *gin.Context, status int
 // using Anthropic SSE error format.
 func (h *OpenAIGatewayHandler) anthropicStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
 	if streamStarted {
+		service.MarkOpsStreamError(c, errType, message, status)
 		flusher, ok := c.Writer.(http.Flusher)
 		if ok {
 			errPayload, _ := json.Marshal(gin.H{
 				"type": "error",
 				"error": gin.H{
-					"type":    errType,
-					"message": message,
+					"type":        errType,
+					"message":     message,
+					"status_code": status,
 				},
 			})
 			fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", errPayload) //nolint:errcheck
@@ -3735,7 +3737,9 @@ func (h *OpenAIGatewayHandler) mapUpstreamError(statusCode int) (int, string, st
 		return http.StatusTooManyRequests, "rate_limit_error", "Upstream rate limit exceeded, please retry later"
 	case 529:
 		return http.StatusServiceUnavailable, "upstream_error", "Upstream service overloaded, please retry later"
-	case 500, 502, 503, 504:
+	case 503:
+		return http.StatusServiceUnavailable, "upstream_error", "Upstream service temporarily unavailable"
+	case 500, 502, 504:
 		return http.StatusBadGateway, "upstream_error", "Upstream service temporarily unavailable"
 	default:
 		return http.StatusBadGateway, "upstream_error", "Upstream request failed"
@@ -3779,7 +3783,7 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareErrorWithCode(
 		// Stream already started, send error as SSE event then close
 		flusher, ok := c.Writer.(http.Flusher)
 		if ok {
-			errorObject := gin.H{"type": errType, "message": message}
+			errorObject := gin.H{"type": errType, "message": message, "status_code": status}
 			if code != "" {
 				errorObject["code"] = code
 			}

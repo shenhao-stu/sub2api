@@ -17,7 +17,7 @@ func TestHTTPStatusToGoogleStatus(t *testing.T) {
 		{http.StatusTooManyRequests, "RESOURCE_EXHAUSTED"},
 		{499, "CANCELLED"},
 		{http.StatusBadGateway, "INTERNAL"},
-		{http.StatusServiceUnavailable, "INTERNAL"},
+		{http.StatusServiceUnavailable, "UNAVAILABLE"},
 		{http.StatusConflict, "UNKNOWN"},
 	}
 	for _, tc := range cases {
