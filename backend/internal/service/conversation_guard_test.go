@@ -93,3 +93,40 @@ func TestConversationGuardDoesNotDisableOrdinaryRecovery(t *testing.T) {
 		require.True(t, e.ShouldRetryNextAccount(), tc.body)
 	}
 }
+
+func TestConversationGuardRecognizesOnlyExactC2AProxyType(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   bool
+	}{
+		{"missing_code", 503, `{"error":{"type":"proxy_unavailable"}}`, true},
+		{"empty_code", 503, `{"error":{"type":"proxy_unavailable","code":""}}`, true},
+		{"valid_code_ignores_invalid_type", 503, `{"error":{"type":503,"code":"proxy_unavailable"}}`, true},
+		{"matching_code", 503, `{"error":{"type":"proxy_unavailable","code":"proxy_unavailable"}}`, true},
+		{"different_known_code", 503, `{"error":{"type":"proxy_unavailable","code":"conversation_account_paused"}}`, true},
+		{"conflicting_unknown_code", 503, `{"error":{"type":"proxy_unavailable","code":"overloaded"}}`, false},
+		{"conflicting_quota_code", 503, `{"error":{"type":"proxy_unavailable","code":"conversation_quota_exhausted"}}`, false},
+		{"quota_code_keeps_429", 429, `{"error":{"type":"proxy_unavailable","code":"conversation_quota_exhausted"}}`, true},
+		{"null_code", 503, `{"error":{"type":"proxy_unavailable","code":null}}`, false},
+		{"numeric_code", 503, `{"error":{"type":"proxy_unavailable","code":503}}`, false},
+		{"object_code", 503, `{"error":{"type":"proxy_unavailable","code":{}}}`, false},
+		{"whitespace_code", 503, `{"error":{"type":"proxy_unavailable","code":" "}}`, false},
+		{"wrong_case", 503, `{"error":{"type":"Proxy_unavailable"}}`, false},
+		{"type_substring", 503, `{"error":{"type":"upstream_proxy_unavailable"}}`, false},
+		{"message_only", 503, `{"error":{"message":"proxy_unavailable"}}`, false},
+		{"nested_metadata", 503, `{"metadata":{"error":{"type":"proxy_unavailable"}}}`, false},
+		{"wrong_status_200", 200, `{"error":{"type":"proxy_unavailable"}}`, false},
+		{"wrong_status_400", 400, `{"error":{"type":"proxy_unavailable"}}`, false},
+		{"wrong_status_403", 403, `{"error":{"type":"proxy_unavailable"}}`, false},
+		{"wrong_status_429", 429, `{"error":{"type":"proxy_unavailable"}}`, false},
+		{"wrong_status_500", 500, `{"error":{"type":"proxy_unavailable"}}`, false},
+		{"wrong_status_502", 502, `{"error":{"type":"proxy_unavailable"}}`, false},
+		{"wrong_status_504", 504, `{"error":{"type":"proxy_unavailable"}}`, false},
+		{"other_guard_type", 503, `{"error":{"type":"conversation_account_paused"}}`, false},
+		{"malformed", 503, `{"error":{"type":"proxy_unavailable"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) { require.Equal(t, tc.want, isConversationGuardError(tc.status, []byte(tc.body))) })
+	}
+}

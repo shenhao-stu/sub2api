@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -57,13 +59,36 @@ func TestOpenAIUnknown503HTTPHandlerPreservesStatusAndAttemptBudget(t *testing.T
 	testOpenAIHTTP503Handler(t, `{"error":{"type":"server_error","message":"opaque failure https://private.fixture.invalid/path sk-privatefixture","status_code":418}}`, false)
 }
 
+// This fixture is emitted by C2A b952014's real writeProxyUnavailable/openAIErr
+// producer. It intentionally has error.type and no error.code.
+func TestC2AProxyTypeHTTPHandlerPreservesRootCauseWithoutReplayOrCharge(t *testing.T) {
+	body, err := os.ReadFile("testdata/c2a_proxy_unavailable.json")
+	require.NoError(t, err)
+	require.Equal(t, "proxy_unavailable", gjson.GetBytes(body, "error.type").String())
+	require.False(t, gjson.GetBytes(body, "error.code").Exists())
+	for _, heartbeat := range []bool{false, true} {
+		testOpenAIHTTP503HandlerWithHeartbeat(t, string(body), true, heartbeat)
+	}
+}
+
+func TestC2AProxyTypeConflictHTTPHandlerRetainsOriginalRetryBudget(t *testing.T) {
+	testOpenAIHTTP503Handler(t, `{"error":{"type":"proxy_unavailable","code":"overloaded","message":"private https://private.fixture.invalid sk-privatefixture"}}`, false)
+}
+
 func testOpenAIHTTP503Handler(t *testing.T, responseBody string, terminalGuard bool) {
+	testOpenAIHTTP503HandlerWithHeartbeat(t, responseBody, terminalGuard, false)
+}
+
+func testOpenAIHTTP503HandlerWithHeartbeat(t *testing.T, responseBody string, terminalGuard, heartbeat bool) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	for _, path := range []string{"/v1/responses", "/v1/chat/completions", "/v1/messages"} {
 		for _, pool := range []bool{false, true} {
 			for _, stream := range []bool{false, true} {
-				t.Run(fmt.Sprintf("%s/pool=%t/stream=%t", path, pool, stream), func(t *testing.T) {
+				if heartbeat && !stream {
+					continue
+				}
+				t.Run(fmt.Sprintf("%s/pool=%t/stream=%t/heartbeat=%t", path, pool, stream, heartbeat), func(t *testing.T) {
 					groupID := int64(3131)
 					accounts := []service.Account{}
 					for i := 0; i < 2; i++ {
@@ -89,6 +114,12 @@ func testOpenAIHTTP503Handler(t *testing.T, responseBody string, terminalGuard b
 						ops = c
 						c.Set(string(middleware.ContextKeyAPIKey), apiKey)
 						c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 100, Concurrency: 0})
+						if heartbeat {
+							c.Header("Content-Type", "text/event-stream")
+							_, err := c.Writer.WriteString(": ping\n\n")
+							require.NoError(t, err)
+							c.Writer.Flush()
+						}
 						c.Next()
 					})
 					router.POST("/v1/responses", h.Responses)
@@ -100,18 +131,36 @@ func testOpenAIHTTP503Handler(t *testing.T, responseBody string, terminalGuard b
 					rec := httptest.NewRecorder()
 					router.ServeHTTP(rec, req)
 					t.Logf("response_status=%d upstream_attempts=%d reservation_seen=%t active_reservations=%d billing_calls=%d", rec.Code, upstream.calls.Load(), upstream.reservationSeen.Load(), cache.count(), bills.calls.Load())
-					require.Equal(t, 503, rec.Code, rec.Body.String())
-					if terminalGuard {
-						require.Equal(t, "proxy_unavailable", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
-						require.Equal(t, int64(503), gjson.GetBytes(rec.Body.Bytes(), "error.status_code").Int())
-						require.Contains(t, gjson.GetBytes(rec.Body.Bytes(), "error.message").String(), "账号出口暂不可用")
+					response, prefix := rec.Body.String(), "error."
+					if heartbeat {
+						require.Equal(t, 200, rec.Code)
+						streamErr, ok := service.GetOpsStreamError(ops)
+						require.True(t, ok)
+						require.Equal(t, 503, streamErr.IntendedStatus)
+						if path == "/v1/responses" {
+							require.Equal(t, 1, strings.Count(response, "event: response.failed\n"))
+							response = strings.Split(response, "event: response.failed\ndata: ")[1]
+							prefix = "response.error."
+						} else {
+							response = strings.Split(response, "data: ")[1]
+						}
 					} else {
-						require.Equal(t, "upstream_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
-						require.Equal(t, "Upstream service temporarily unavailable", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+						require.Equal(t, 503, rec.Code, response)
+					}
+					if terminalGuard {
+						require.Equal(t, gjson.Get(responseBody, "error.type").String(), gjson.Get(response, prefix+"type").String())
+						require.Equal(t, gjson.Get(responseBody, "error.code").String(), gjson.Get(response, prefix+"code").String())
+						require.Equal(t, int64(503), gjson.Get(response, prefix+"status_code").Int())
+						require.Contains(t, gjson.Get(response, prefix+"message").String(), strings.Split(gjson.Get(responseBody, "error.message").String(), " https://")[0])
+					} else {
+						require.Equal(t, "upstream_error", gjson.Get(response, prefix+"type").String())
+						require.Equal(t, "Upstream service temporarily unavailable", gjson.Get(response, prefix+"message").String())
 					}
 					require.NotContains(t, rec.Body.String(), "private.fixture.invalid")
 					require.NotContains(t, rec.Body.String(), "sk-privatefixture")
-					require.Equal(t, "60", rec.Header().Get("Retry-After"))
+					if !heartbeat {
+						require.Equal(t, "60", rec.Header().Get("Retry-After"))
+					}
 					wantAttempts := int32(1)
 					if !terminalGuard {
 						wantAttempts = 2

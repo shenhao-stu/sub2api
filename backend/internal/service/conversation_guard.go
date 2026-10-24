@@ -17,13 +17,30 @@ func isConversationGuardError(status int, body []byte) bool {
 	}
 	var doc struct {
 		Error struct {
-			Code string `json:"code"`
+			Code json.RawMessage `json:"code"`
+			Type json.RawMessage `json:"type"`
 		} `json:"error"`
 	}
 	if json.Unmarshal(body, &doc) != nil {
 		return false
 	}
-	switch doc.Error.Code {
+	// A present code must be a string. In particular, null is not an omitted
+	// identifier and must not allow type to override an explicit code field.
+	code := ""
+	if len(doc.Error.Code) != 0 {
+		var value *string
+		if json.Unmarshal(doc.Error.Code, &value) != nil || value == nil {
+			return false
+		}
+		code = *value
+	}
+	// C2A's proxy guard uses the OpenAI error.type field without error.code.
+	// Only this exact producer contract is a fallback; explicit codes keep priority.
+	if code == "" && status == http.StatusServiceUnavailable {
+		var errorType string
+		return json.Unmarshal(doc.Error.Type, &errorType) == nil && errorType == "proxy_unavailable"
+	}
+	switch code {
 	case "conversation_account_unavailable", "conversation_account_restricted", "conversation_model_disabled":
 		return status == http.StatusForbidden
 	case "conversation_quota_exhausted", "conversation_rate_limited":
