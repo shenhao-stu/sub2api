@@ -34,14 +34,27 @@ func TestAnthropicChatStreamAuthoritativeUsage(t *testing.T) {
 				{"kimi_full_cache", `,"usage":{"input_tokens":173306,"prompt_tokens":173306}`, `,"usage":{"input_tokens":0,"output_tokens":49,"prompt_tokens":173306,"cache_read_input_tokens":173306}`, "", true, 173306, 0, 173306, 49, 173306, 0},
 				{"kimi_full_cache_cached_tokens", `,"usage":{"input_tokens":173306,"prompt_tokens":173306}`, `,"usage":{"input_tokens":0,"output_tokens":49,"prompt_tokens":173306,"cached_tokens":173306}`, "", true, 173306, 0, 173306, 49, 173306, 0},
 				{"kimi_full_cache_prompt_details", `,"usage":{"input_tokens":173306,"prompt_tokens":173306}`, `,"usage":{"input_tokens":0,"output_tokens":49,"prompt_tokens":173306,"prompt_tokens_details":{"cached_tokens":173306}}`, "", true, 173306, 0, 173306, 49, 173306, 0},
-				{"zero_start", `,"usage":{"input_tokens":0,"output_tokens":0}`, "", "", true, 0, 0, 0, 0, 0, 0},
+				{"zero_start", `,"usage":{"input_tokens":0,"output_tokens":0}`, "", "", false, 0, 0, 0, 0, 0, 0},
 				{"zero_delta", "", `,"usage":{"input_tokens":0,"output_tokens":0}`, "", true, 0, 0, 0, 0, 0, 0},
+				{"zero_split", `,"usage":{"input_tokens":0}`, `,"usage":{"output_tokens":0}`, "", true, 0, 0, 0, 0, 0, 0},
+				{"input_only", `,"usage":{"input_tokens":0}`, "", "", false, 0, 0, 0, 0, 0, 0},
+				{"output_only", "", `,"usage":{"output_tokens":0}`, "", false, 0, 0, 0, 0, 0, 0},
+				{"empty", `,"usage":{}`, `,"usage":{}`, "", false, 0, 0, 0, 0, 0, 0},
+				{"null_counter", `,"usage":{"input_tokens":null}`, `,"usage":{"output_tokens":0}`, "", false, 0, 0, 0, 0, 0, 0},
+				{"negative_counter", `,"usage":{"input_tokens":0}`, `,"usage":{"output_tokens":-1}`, "", false, 0, 0, 0, 0, 0, 0},
+				{"overflow_counter", `,"usage":{"input_tokens":0}`, `,"usage":{"output_tokens":9223372036854775808}`, "", false, 0, 0, 0, 0, 0, 0},
+				{"string_counter", `,"usage":{"input_tokens":0}`, `,"usage":{"output_tokens":"0"}`, "", false, 0, 0, 0, 0, 0, 0},
+				{"duplicate_counter", "", `,"usage":{"input_tokens":0,"input_tokens":0,"output_tokens":0}`, "", false, 0, 0, 0, 0, 0, 0},
+				{"case_duplicate_counter", "", `,"usage":{"input_tokens":0,"INPUT_TOKENS":0,"output_tokens":0}`, "", false, 0, 0, 0, 0, 0, 0},
+				{"duplicate_usage", "", `,"usage":{"input_tokens":0,"output_tokens":0},"usage":{"input_tokens":0,"output_tokens":0}`, "", false, 0, 0, 0, 0, 0, 0},
+				{"positive_then_zero", `,"usage":{"input_tokens":10}`, `,"usage":{"output_tokens":4}`, `,"usage":{"input_tokens":0,"output_tokens":0}`, true, 10, 10, 10, 4, 0, 0},
 				{"absent", "", "", "", false, 0, 0, 0, 0, 0, 0},
 				{"null", `,"usage":null`, `,"usage":null`, "", false, 0, 0, 0, 0, 0, 0},
 			} {
 				for _, terminal := range []string{"stop", "eof"} {
 					t.Run(adapter+"/"+options+"/"+tc.name+"/"+terminal, func(t *testing.T) {
 						sse := fmt.Sprintf("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"k3\",\"content\":[]%s}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}%s}\n\n", tc.start, tc.delta)
+						sse = strings.Replace(sse, "event: message_delta", anthropicUsageTextSSE+"event: message_delta", 1)
 						if tc.repeatDelta != "" {
 							sse += fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}%s}\n\n", tc.repeatDelta)
 						}
@@ -70,12 +83,22 @@ func TestAnthropicChatStreamAuthoritativeUsage(t *testing.T) {
 							svc := &GatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
 							account := &Account{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "sk-test"}}
 							result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, nil)
+							if terminal == "eof" && (tc.name == "overflow_counter" || tc.name == "string_counter") {
+								require.ErrorContains(t, err, "missing terminal event")
+								require.Nil(t, result)
+								require.Contains(t, rec.Body.String(), "fixture answer")
+								require.Contains(t, rec.Body.String(), `"error"`)
+								require.NotContains(t, rec.Body.String(), `"usage":`)
+								require.NotContains(t, rec.Body.String(), "[DONE]")
+								return
+							}
 							require.NoError(t, err)
 							require.Equal(t, tc.billableInput, result.Usage.InputTokens)
 							require.Equal(t, tc.output, result.Usage.OutputTokens)
 							require.Equal(t, tc.cached, result.Usage.CacheReadInputTokens)
 							require.Equal(t, tc.created, result.Usage.CacheCreationInputTokens)
 						}
+						require.Contains(t, rec.Body.String(), "fixture answer")
 						count, done := 0, 0
 						var last *apicompat.ChatCompletionsChunk
 						for _, line := range strings.Split(rec.Body.String(), "\n") {
