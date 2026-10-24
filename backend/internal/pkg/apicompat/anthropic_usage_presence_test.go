@@ -49,3 +49,21 @@ func TestAnthropicBufferedUsageWireEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestAnthropicStandaloneLateZeroRetainsObservedOutput(t *testing.T) {
+	state := NewAnthropicEventToResponsesState()
+	for _, raw := range []string{
+		`{"type":"message_start","message":{"id":"msg_fixture","usage":{"input_tokens":10}}}`,
+		`{"type":"message_delta","delta":{},"usage":{"output_tokens":4}}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"output_tokens":0}}`,
+	} {
+		state.UsageEvidence = state.UsageEvidence.ObserveEventJSON([]byte(raw))
+		var event AnthropicStreamEvent
+		require.NoError(t, json.Unmarshal([]byte(raw), &event))
+		AnthropicEventToResponsesEvents(&event, state)
+	}
+	events := AnthropicEventToResponsesEvents(&AnthropicStreamEvent{Type: "message_stop"}, state)
+	require.NotEmpty(t, events)
+	require.NotNil(t, events[len(events)-1].Response.Usage)
+	require.Equal(t, 4, events[len(events)-1].Response.Usage.OutputTokens)
+}
