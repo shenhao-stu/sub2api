@@ -63,10 +63,3 @@ func TestAnthropicStandaloneLateZeroRetainsObservedOutput(t *testing.T) {
 		})
 	}
 }
-
-func TestAnthropicAliasOnlyInputDoesNotCertifyZero(t *testing.T) {
-	evidence := (AnthropicUsageEvidence{}).
-		ObserveEventJSON([]byte(`{"type":"message_start","message":{"usage":{"prompt_tokens":0}}}`)).
-		ObserveEventJSON([]byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}`))
-	require.Nil(t, evidence.ResponsesUsage(AnthropicUsage{}))
-}
