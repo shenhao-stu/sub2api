@@ -45,7 +45,11 @@ func TestConversationGuardPreservesStatusAndRootCause(t *testing.T) {
 					}
 					require.Equal(t, code, gjson.Get(body, prefix+"code").String())
 					require.Equal(t, int64(status), gjson.Get(body, prefix+"status_code").Int())
-					require.Equal(t, "原会话保护生效；本次未切换账号", gjson.Get(body, prefix+"message").String())
+					message := "原会话保护生效；本次未切换账号"
+					if code == "proxy_unavailable" {
+						message = "账号出口暂不可达，已暂停调度并自动复检；恢复后可继续原会话。"
+					}
+					require.Equal(t, message, gjson.Get(body, prefix+"message").String())
 					require.NotContains(t, body, "usage")
 				})
 			}

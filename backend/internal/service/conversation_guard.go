@@ -17,13 +17,30 @@ func isConversationGuardError(status int, body []byte) bool {
 	}
 	var doc struct {
 		Error struct {
-			Code string `json:"code"`
+			Code json.RawMessage `json:"code"`
+			Type json.RawMessage `json:"type"`
 		} `json:"error"`
 	}
 	if json.Unmarshal(body, &doc) != nil {
 		return false
 	}
-	switch doc.Error.Code {
+	// A present code must be a string. In particular, null is not an omitted
+	// identifier and must not allow type to override an explicit code field.
+	code := ""
+	if len(doc.Error.Code) != 0 {
+		var value *string
+		if json.Unmarshal(doc.Error.Code, &value) != nil || value == nil {
+			return false
+		}
+		code = *value
+	}
+	// C2A's proxy guard uses the OpenAI error.type field without error.code.
+	// Only this exact producer contract is a fallback; explicit codes keep priority.
+	if code == "" && status == http.StatusServiceUnavailable {
+		var errorType string
+		return json.Unmarshal(doc.Error.Type, &errorType) == nil && errorType == "proxy_unavailable"
+	}
+	switch code {
 	case "conversation_account_unavailable", "conversation_account_restricted", "conversation_model_disabled":
 		return status == http.StatusForbidden
 	case "conversation_quota_exhausted", "conversation_rate_limited":
@@ -42,5 +59,14 @@ func WriteConversationGuardError(c *gin.Context, status int, body []byte, stream
 	if c == nil || c.GetBool(clientErrorSemanticOutputKey) || !isConversationGuardError(status, body) {
 		return false
 	}
-	return writeOpenAIErrorFields(c, boundedOpenAIClientError(body, status), streamStarted)
+	fields := boundedOpenAIClientError(body, status)
+	if fields.Code == "proxy_unavailable" || (fields.Code == "" && fields.Type == "proxy_unavailable") {
+		// This pre-admission guard has one public cause. Do not expose transport
+		// diagnostics or origin identifiers from either producer envelope shape.
+		fields = openAIClientErrorFields{
+			Type: "proxy_unavailable", Code: "proxy_unavailable", StatusCode: status,
+			Message: "账号出口暂不可达，已暂停调度并自动复检；恢复后可继续原会话。",
+		}
+	}
+	return writeOpenAIErrorFields(c, fields, streamStarted)
 }

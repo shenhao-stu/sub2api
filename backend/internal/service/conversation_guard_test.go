@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestConversationGuardForwardDispatchesOnceAcrossProtocols(t *testing.T) {
@@ -91,5 +93,83 @@ func TestConversationGuardDoesNotDisableOrdinaryRecovery(t *testing.T) {
 		e := newOpenAIUpstreamFailoverError(tc.status, nil, []byte(tc.body), "", true)
 		require.True(t, e.RetryableOnSameAccount, tc.body)
 		require.True(t, e.ShouldRetryNextAccount(), tc.body)
+	}
+}
+
+func TestConversationGuardRecognizesOnlyExactC2AProxyType(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   bool
+	}{
+		{"missing_code", 503, `{"error":{"type":"proxy_unavailable"}}`, true},
+		{"empty_code", 503, `{"error":{"type":"proxy_unavailable","code":""}}`, true},
+		{"valid_code_ignores_invalid_type", 503, `{"error":{"type":503,"code":"proxy_unavailable"}}`, true},
+		{"matching_code", 503, `{"error":{"type":"proxy_unavailable","code":"proxy_unavailable"}}`, true},
+		{"different_known_code", 503, `{"error":{"type":"proxy_unavailable","code":"conversation_account_paused"}}`, true},
+		{"conflicting_unknown_code", 503, `{"error":{"type":"proxy_unavailable","code":"overloaded"}}`, false},
+		{"conflicting_quota_code", 503, `{"error":{"type":"proxy_unavailable","code":"conversation_quota_exhausted"}}`, false},
+		{"quota_code_keeps_429", 429, `{"error":{"type":"proxy_unavailable","code":"conversation_quota_exhausted"}}`, true},
+		{"null_code", 503, `{"error":{"type":"proxy_unavailable","code":null}}`, false},
+		{"numeric_code", 503, `{"error":{"type":"proxy_unavailable","code":503}}`, false},
+		{"object_code", 503, `{"error":{"type":"proxy_unavailable","code":{}}}`, false},
+		{"whitespace_code", 503, `{"error":{"type":"proxy_unavailable","code":" "}}`, false},
+		{"wrong_case", 503, `{"error":{"type":"Proxy_unavailable"}}`, false},
+		{"type_substring", 503, `{"error":{"type":"upstream_proxy_unavailable"}}`, false},
+		{"message_only", 503, `{"error":{"message":"proxy_unavailable"}}`, false},
+		{"nested_metadata", 503, `{"metadata":{"error":{"type":"proxy_unavailable"}}}`, false},
+		{"wrong_status_200", 200, `{"error":{"type":"proxy_unavailable"}}`, false},
+		{"wrong_status_400", 400, `{"error":{"type":"proxy_unavailable"}}`, false},
+		{"wrong_status_403", 403, `{"error":{"type":"proxy_unavailable"}}`, false},
+		{"wrong_status_429", 429, `{"error":{"type":"proxy_unavailable"}}`, false},
+		{"wrong_status_500", 500, `{"error":{"type":"proxy_unavailable"}}`, false},
+		{"wrong_status_502", 502, `{"error":{"type":"proxy_unavailable"}}`, false},
+		{"wrong_status_504", 504, `{"error":{"type":"proxy_unavailable"}}`, false},
+		{"other_guard_type", 503, `{"error":{"type":"conversation_account_paused"}}`, false},
+		{"malformed", 503, `{"error":{"type":"proxy_unavailable"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) { require.Equal(t, tc.want, isConversationGuardError(tc.status, []byte(tc.body))) })
+	}
+}
+
+func TestConversationGuardProxyUsesFixedSafeReason(t *testing.T) {
+	for _, path := range []string{"/v1/responses", "/v1/chat/completions", "/v1/messages"} {
+		for _, heartbeat := range []bool{false, true} {
+			for _, identity := range []string{`"type":"proxy_unavailable"`, `"type":"proxy_unavailable","code":""`, `"type":"server_error","code":"proxy_unavailable"`, `"code":"proxy_unavailable"`} {
+				t.Run(fmt.Sprintf("%s/heartbeat=%t/code=%s", path, heartbeat, identity), func(t *testing.T) {
+					rec := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(rec)
+					c.Request = httptest.NewRequest(http.MethodPost, path, nil)
+					if heartbeat {
+						c.Header("Content-Type", "text/event-stream")
+						_, err := c.Writer.WriteString(": ping\n\n")
+						require.NoError(t, err)
+						c.Writer.Flush()
+					}
+					body := []byte(fmt.Sprintf(`{"error":{%s,"message":"private name@example.invalid 10.12.34.56 https://origin.private.example/x Bearer synthetic-secret","status_code":418,"param":"private_account_identifier"},"usage":{"total_tokens":99}}`, identity))
+					require.True(t, WriteConversationGuardError(c, 503, body, heartbeat))
+					payload, prefix := rec.Body.String(), "error."
+					if heartbeat {
+						require.Equal(t, 200, rec.Code)
+						if path == "/v1/responses" {
+							payload = strings.Split(payload, "event: response.failed\ndata: ")[1]
+							prefix = "response.error."
+						} else {
+							payload = strings.Split(payload, "data: ")[1]
+						}
+					} else {
+						require.Equal(t, 503, rec.Code)
+					}
+					require.Equal(t, "proxy_unavailable", gjson.Get(payload, prefix+"type").String())
+					require.Equal(t, "proxy_unavailable", gjson.Get(payload, prefix+"code").String())
+					require.Equal(t, int64(503), gjson.Get(payload, prefix+"status_code").Int())
+					require.Equal(t, "账号出口暂不可达，已暂停调度并自动复检；恢复后可继续原会话。", gjson.Get(payload, prefix+"message").String())
+					for _, private := range []string{"name@example", "10.12.34.56", "origin.private", "synthetic-secret", "private_account_identifier", "418", "total_tokens"} {
+						require.NotContains(t, payload, private)
+					}
+				})
+			}
+		}
 	}
 }
