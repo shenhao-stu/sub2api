@@ -120,6 +120,15 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	if h.rejectIfCyberSessionBlocked(c, apiKey, body, reqModel, cyberBlockFormatChat) {
 		return
 	}
+	if receiptRequested {
+		prepared, err := h.gatewayService.PrepareChatUsageReceipt(c.Request.Context(), apiKey.ID, c.GetHeader(service.ChatReceiptIDHeader), reqModel, body)
+		if err != nil {
+			h.errorResponse(c, http.StatusServiceUnavailable, "usage_receipt_error", "Usage receipt storage is unavailable")
+			return
+		}
+		c.Request = c.Request.WithContext(prepared)
+		defer h.gatewayService.ReleaseChatUsageReceipt(prepared)
+	}
 
 	// 解析渠道级模型映射
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)

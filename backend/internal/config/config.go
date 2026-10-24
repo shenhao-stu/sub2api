@@ -980,6 +980,9 @@ const (
 
 // GatewayConfig API网关相关配置
 type GatewayConfig struct {
+	// Must be on persistent storage; no receipt/request bodies or provider keys
+	// are stored. An unavailable journal blocks new v2 dispatch only.
+	ChatUsageReceiptJournalDir string `mapstructure:"chat_usage_receipt_journal_dir"`
 	// MinOutputTokens is the minimum max_output_tokens used when
 	// converting Chat Completions or Anthropic requests to Responses.
 	MinOutputTokens int `mapstructure:"min_output_tokens"`
@@ -2049,6 +2052,7 @@ func configureConfigSource(setConfigFile, addConfigPath func(string)) {
 func setDefaults() {
 	viper.SetDefault("run_mode", RunModeStandard)
 	viper.SetDefault("gateway.min_output_tokens", 128)
+	viper.SetDefault("gateway.chat_usage_receipt_journal_dir", "/app/data/usage-receipt-journal")
 	viper.SetDefault("gateway.disabled_models", []string{})
 	viper.SetDefault("simple_mode.auto_create_default_groups", true)
 	viper.SetDefault("simple_mode_key_rate_limit_enabled", false)

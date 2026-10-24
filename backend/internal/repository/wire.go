@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 
 	entsql "entgo.io/ent/dialect/sql"
 	"github.com/Wei-Shaw/sub2api/ent"
@@ -70,6 +71,21 @@ func ProvideHTTPUpstream(cfg *config.Config, versions *service.GrokCLIVersionSyn
 	return upstream
 }
 
+// Production receipt negotiation requires a durable, explicitly configured
+// directory. Initialization failure rejects only new v2 requests before dispatch.
+func ProvideUsageLogRepository(client *ent.Client, db *sql.DB, cfg *config.Config) service.UsageLogRepository {
+	r := newUsageLogRepositoryWithSQL(client, db)
+	if cfg == nil {
+		r.chatJournalErr = errors.New("missing receipt journal configuration")
+	} else {
+		r.chatJournal, r.chatJournalErr = newChatReceiptJournal(cfg.Gateway.ChatUsageReceiptJournalDir)
+	}
+	if r.chatJournalErr != nil {
+		slog.Error("provider_chat_usage_receipt_journal_unavailable")
+	}
+	return r
+}
+
 var ProviderSet = wire.NewSet(
 	NewUserRepository,
 	NewAPIKeyRepository,
@@ -85,7 +101,7 @@ var ProviderSet = wire.NewSet(
 	NewPromoCodeRepository,
 	NewAnnouncementRepository,
 	NewAnnouncementReadRepository,
-	NewUsageLogRepository,
+	ProvideUsageLogRepository,
 	NewUsageBillingRepository,
 	NewBatchImageRepository,
 	NewGeminiCachedContentRepository,

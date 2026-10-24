@@ -36,6 +36,11 @@ type ChatUsageReceiptRepository interface {
 	CompleteChatUsageReceipt(context.Context, *ChatUsageReceiptClaim, int64, string, *UsageReceipt) error
 }
 
+type ChatUsageReceiptPreparation interface {
+	PrepareChatUsageReceipt(context.Context, *ChatUsageReceiptClaim) error
+	ReleaseChatUsageReceipt(context.Context, *ChatUsageReceiptClaim) error
+}
+
 var ErrChatReceiptConflict = errors.New("usage receipt identity already claimed")
 var ErrChatReceiptUnsupported = errors.New("usage receipt protocol unavailable")
 
@@ -76,6 +81,13 @@ func (s *OpenAIGatewayService) BeginChatUsageReceipt(ctx context.Context, key in
 		return ctx, ErrChatReceiptUnsupported
 	}
 	claim := &ChatUsageReceiptClaim{APIKeyID: key, RequestID: id, Model: model, Endpoint: ChatReceiptEndpoint, PayloadHash: HashUsageRequestPayload(body), Token: uuid.NewString()}
+	if prepared := chatReceiptFromContext(ctx); prepared != nil {
+		previous := prepared.claim
+		if previous == nil || previous.APIKeyID != key || previous.RequestID != id || previous.Model != model || previous.Endpoint != ChatReceiptEndpoint || previous.PayloadHash != claim.PayloadHash {
+			return ctx, ErrChatReceiptConflict
+		}
+		claim = previous
+	}
 	claimed, err := repo.ClaimChatUsageReceipt(ctx, claim)
 	if err != nil {
 		return ctx, err
@@ -84,6 +96,33 @@ func (s *OpenAIGatewayService) BeginChatUsageReceipt(ctx context.Context, key in
 		return ctx, ErrChatReceiptConflict
 	}
 	return context.WithValue(ctx, chatReceiptContextKey{}, &chatReceiptCapture{claim: claim}), nil
+}
+
+// Reserve disk capacity before any concurrency queue can commit HTTP 200/SSE.
+// Failure has no ACK or database claim and no upstream request has been sent.
+func (s *OpenAIGatewayService) PrepareChatUsageReceipt(ctx context.Context, key int64, id, model string, body []byte) (context.Context, error) {
+	if key <= 0 || !ValidUsageReceiptID(id) || strings.TrimSpace(model) == "" {
+		return ctx, ErrChatReceiptUnsupported
+	}
+	claim := &ChatUsageReceiptClaim{APIKeyID: key, RequestID: id, Model: model, Endpoint: ChatReceiptEndpoint, PayloadHash: HashUsageRequestPayload(body), Token: uuid.NewString()}
+	if repo, ok := s.usageLogRepo.(ChatUsageReceiptPreparation); ok {
+		if err := repo.PrepareChatUsageReceipt(ctx, claim); err != nil {
+			return ctx, err
+		}
+	}
+	return context.WithValue(ctx, chatReceiptContextKey{}, &chatReceiptCapture{claim: claim}), nil
+}
+
+func (s *OpenAIGatewayService) ReleaseChatUsageReceipt(ctx context.Context) {
+	capture := chatReceiptFromContext(ctx)
+	if capture == nil || capture.claim == nil {
+		return
+	}
+	if repo, ok := s.usageLogRepo.(ChatUsageReceiptPreparation); ok {
+		if err := repo.ReleaseChatUsageReceipt(context.WithoutCancel(ctx), capture.claim); err != nil {
+			slog.Error("provider_chat_usage_receipt_reservation_release_failed", "api_key_id", capture.claim.APIKeyID, "request_id", capture.claim.RequestID)
+		}
+	}
 }
 
 func chatReceiptFromContext(ctx context.Context) *chatReceiptCapture {
