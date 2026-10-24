@@ -110,7 +110,7 @@ func TestGoogleConcurrencyError(t *testing.T) {
 			name:        "acquire backend error is 503",
 			err:         errors.New("redis unavailable"),
 			wantStatus:  http.StatusServiceUnavailable,
-			wantGStatus: "INTERNAL",
+			wantGStatus: "UNAVAILABLE",
 			wantMessage: "Service temporarily unavailable, please retry later",
 		},
 	}
