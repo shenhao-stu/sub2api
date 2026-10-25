@@ -17,12 +17,12 @@ import (
 
 func TestConversationGuardForwardDispatchesOnceAcrossProtocols(t *testing.T) {
 	for _, path := range []string{"/v1/responses", "/v1/chat/completions", "/v1/messages"} {
-		for _, status := range []int{403, 429, 503} {
+		for _, status := range []int{403, 409, 429, 503} {
 			t.Run(fmt.Sprintf("%s/%d", path, status), func(t *testing.T) {
 				body := []byte(`{"model":"gpt-5.4","max_tokens":32,"input":"synthetic","messages":[{"role":"user","content":"synthetic"}],"stream":false}`)
 				c, _ := gin.CreateTestContext(httptest.NewRecorder())
 				c.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
-				code := map[int]string{403: "conversation_account_restricted", 429: "conversation_quota_exhausted", 503: "conversation_account_paused"}[status]
+				code := map[int]string{403: "conversation_account_restricted", 409: "conversation_session_stale", 429: "conversation_quota_exhausted", 503: "conversation_account_paused"}[status]
 				upstream := &httpUpstreamRecorder{resp: newOpenAIUpstreamErrorResponse(status, fmt.Sprintf(`{"error":{"code":%q,"message":"pinned conversation unavailable"}}`, code))}
 				repo := &tempUnschedulableOpenAIAccountRepo{}
 				s := &OpenAIGatewayService{cfg: &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{AllowInsecureHTTP: true}}}, httpUpstream: upstream, rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil)}
@@ -56,7 +56,7 @@ func TestConversationGuardStopsRetriesWithoutPoisoningPool(t *testing.T) {
 		"conversation_route_unavailable": 503, "conversation_account_paused": 503,
 		"conversation_account_unavailable": 403, "conversation_account_restricted": 403,
 		"conversation_model_disabled": 403, "conversation_quota_exhausted": 429,
-		"conversation_rate_limited": 429, "proxy_unavailable": 503,
+		"conversation_rate_limited": 429, "proxy_unavailable": 503, "conversation_session_stale": 409,
 	} {
 		t.Run(code, func(t *testing.T) {
 			body := []byte(fmt.Sprintf(`{"error":{"code":%q,"message":"original conversation is unavailable"}}`, code))
@@ -171,5 +171,69 @@ func TestConversationGuardProxyUsesFixedSafeReason(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestConversationGuardSessionStaleBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   bool
+	}{
+		{"canonical", 409, `{"error":{"code":"conversation_session_stale"}}`, true},
+		{"casefold_fields", 409, `{"Error":{"Code":"conversation_session_stale"}}`, true},
+		{"wrong_status", 503, `{"error":{"code":"conversation_session_stale"}}`, false},
+		{"wrong_code", 409, `{"error":{"code":"state_conflict"}}`, false},
+		{"type_only", 409, `{"error":{"type":"conversation_session_stale"}}`, false},
+		{"null", 409, `{"error":{"code":null}}`, false},
+		{"numeric", 409, `{"error":{"code":409}}`, false},
+		{"array", 409, `{"error":{"code":["conversation_session_stale"]}}`, false},
+		{"nested_metadata", 409, `{"metadata":{"error":{"code":"conversation_session_stale"}}}`, false},
+		{"message_only", 409, `{"error":{"message":"conversation_session_stale"}}`, false},
+		{"malformed", 409, `{"error":{"code":"conversation_session_stale"}`, false},
+		{"trailing", 409, `{"error":{"code":"conversation_session_stale"}}{}`, false},
+		{"duplicate_code", 409, `{"error":{"code":"state_conflict","code":"conversation_session_stale"}}`, false},
+		{"duplicate_casefold", 409, `{"error":{"Code":"state_conflict","code":"conversation_session_stale"}}`, false},
+		{"duplicate_error", 409, `{"error":{"code":"state_conflict"},"error":{"code":"conversation_session_stale"}}`, false},
+		{"oversize", 409, `{"error":{"code":"conversation_session_stale","message":"` + strings.Repeat("x", 64<<10) + `"}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(tc.body)
+			require.Equal(t, tc.want, isConversationGuardError(tc.status, body))
+			if tc.status == 409 {
+				svc := &OpenAIGatewayService{}
+				a := newOpenAIUpstreamErrorTestAccount()
+				require.Equal(t, tc.want, svc.shouldFailoverOpenAIUpstreamResponse(a, 409, "", body))
+				require.Equal(t, tc.want, shouldFailoverOpenAIPassthroughResponse(a, 409, body))
+			}
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+			require.Equal(t, tc.want, WriteConversationGuardError(c, tc.status, body, false))
+			if tc.want {
+				require.Equal(t, 409, rec.Code)
+				require.Equal(t, "conversation_session_stale", gjson.Get(rec.Body.String(), "error.code").String())
+			}
+		})
+	}
+}
+func TestConversationGuardSessionStaleNeverOverwritesSemanticOutput(t *testing.T) {
+	for _, path := range []string{"/v1/responses", "/v1/chat/completions", "/v1/messages"} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest("POST", path, nil)
+			c.Header("Content-Type", "text/event-stream")
+			_, err := c.Writer.WriteString("data: synthetic content already delivered\n\n")
+			require.NoError(t, err)
+			c.Writer.Flush()
+			MarkOpenAIClientErrorSemanticOutput(c)
+			before := rec.Body.String()
+			require.False(t, WriteConversationGuardError(c, 409, []byte(`{"error":{"code":"conversation_session_stale"}}`), true))
+			require.Equal(t, before, rec.Body.String())
+			_, marked := GetOpsStreamError(c)
+			require.False(t, marked)
+		})
 	}
 }

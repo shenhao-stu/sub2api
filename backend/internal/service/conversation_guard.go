@@ -12,8 +12,19 @@ const conversationGuardReason GatewayFailureReason = "conversation_guard"
 // A pinned conversation or account route guard is terminal for this request.
 // It does not describe the health of the aggregator account or its other users.
 func isConversationGuardError(status int, body []byte) bool {
-	if len(body) > 64<<10 || (status != 403 && status != 429 && status != 503) {
+	if len(body) > 64<<10 || (status != 403 && status != 409 && status != 429 && status != 503) {
 		return false
+	}
+	if status == http.StatusConflict {
+		// Only C2A's exact stale-owner contract is terminal here. Reject duplicate
+		// envelope/identifier keys instead of allowing parser precedence to decide.
+		envelope, ok := receiptObject(body)
+		if !ok {
+			return false
+		}
+		fields, ok := receiptObject(envelope["error"])
+		var code string
+		return ok && json.Unmarshal(fields["code"], &code) == nil && code == "conversation_session_stale"
 	}
 	var doc struct {
 		Error struct {
@@ -53,7 +64,7 @@ func isConversationGuardError(status int, body []byte) bool {
 }
 
 // WriteConversationGuardError preserves the pre-admission contract without
-// requiring a broad 403/429/503 passthrough rule. Public fields remain bounded
+// requiring a broad 403/409/429/503 passthrough rule. Public fields remain bounded
 // and redacted, and a committed heartbeat retains its logical error status.
 func WriteConversationGuardError(c *gin.Context, status int, body []byte, streamStarted bool) bool {
 	if c == nil || c.GetBool(clientErrorSemanticOutputKey) || !isConversationGuardError(status, body) {
@@ -66,6 +77,12 @@ func WriteConversationGuardError(c *gin.Context, status int, body []byte, stream
 		fields = openAIClientErrorFields{
 			Type: "proxy_unavailable", Code: "proxy_unavailable", StatusCode: status,
 			Message: "账号出口暂不可达，已暂停调度并自动复检；恢复后可继续原会话。",
+		}
+	}
+	if status == http.StatusConflict {
+		fields = openAIClientErrorFields{
+			Type: "invalid_request_error", Code: "conversation_session_stale", StatusCode: status,
+			Message: "原会话与账号当前授权或出口已不一致，请新建会话；本次未切换账号。",
 		}
 	}
 	return writeOpenAIErrorFields(c, fields, streamStarted)

@@ -794,6 +794,9 @@ func stripOpenAILegacyResponsesBeta(headers http.Header) {
 }
 
 func shouldFailoverOpenAIPassthroughResponse(account *Account, statusCode int, responseBody []byte) bool {
+	if statusCode == http.StatusConflict && isConversationGuardError(statusCode, responseBody) {
+		return true // Request-scoped terminal sentinel, never a retry permission.
+	}
 	if hit, _, _ := detectOpenAICyberPolicy(responseBody); hit {
 		return false
 	}
