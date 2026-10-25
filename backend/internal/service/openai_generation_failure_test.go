@@ -77,6 +77,7 @@ func TestOpenAIGenerationFailureExactContract(t *testing.T) {
 		match         bool
 	}{
 		{"known", base, true},
+		{"nested_response_status", strings.Replace(base, `"response":{`, `"response":{"status_code":429,`, 1), false},
 		{"direct_json", `{"object":"response","status":"failed","error":{"code":"upstream_malformed_response","status_code":502}}`, true},
 		{"direct_missing_object", `{"status":"failed","error":{"code":"upstream_malformed_response"}}`, false},
 		{"direct_wrong_state", `{"object":"response","status":"completed","error":{"code":"upstream_malformed_response"}}`, false},

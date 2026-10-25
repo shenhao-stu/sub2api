@@ -68,6 +68,11 @@ func openAIGenerationFailureFields(payload []byte) (openAIClientErrorFields, boo
 		}
 	}
 	// Conflicting status keeps the existing auth, quota and transient policy.
+	for _, object := range []map[string]json.RawMessage{doc, owner, fields} {
+		if raw, exists := object["status_code"]; exists && !bytes.Equal(bytes.TrimSpace(raw), []byte("502")) {
+			return empty, false
+		}
+	}
 	for _, path := range openAIStreamErrorStatusPaths {
 		// A direct Responses object's status is its terminal state, not an HTTP code.
 		if directResponse && path == "status" {
