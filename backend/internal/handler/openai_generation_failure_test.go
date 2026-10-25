@@ -23,8 +23,8 @@ func TestOpenAIGenerationFailureDoesNotReplay(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, code := range []string{"upstream_malformed_response", "upstream_malformed_function_call"} {
 		for _, tc := range []struct {
-			name                                      string
-			stream, measured, explicitZero, heartbeat bool
+			name                                                  string
+			stream, measured, explicitZero, heartbeat, directJSON bool
 		}{
 			{name: "stream_usage", stream: true, measured: true},
 			{name: "buffered_usage", measured: true},
@@ -35,6 +35,12 @@ func TestOpenAIGenerationFailureDoesNotReplay(t *testing.T) {
 			{name: "buffered_explicit_zero", explicitZero: true},
 			{name: "stream_explicit_zero", stream: true, explicitZero: true},
 			{name: "heartbeat_explicit_zero", stream: true, explicitZero: true, heartbeat: true},
+			{name: "responses_json_usage", measured: true, directJSON: true},
+			{name: "responses_json_missing", directJSON: true},
+			{name: "responses_json_explicit_zero", explicitZero: true, directJSON: true},
+			{name: "responses_json_heartbeat_usage", measured: true, directJSON: true, heartbeat: true},
+			{name: "responses_json_heartbeat_missing", directJSON: true, heartbeat: true},
+			{name: "responses_json_heartbeat_explicit_zero", explicitZero: true, directJSON: true, heartbeat: true},
 		} {
 			t.Run(code+"/"+tc.name, func(t *testing.T) {
 				setupOpsErrorLogTestQueue(t, 2)
@@ -63,6 +69,10 @@ func TestOpenAIGenerationFailureDoesNotReplay(t *testing.T) {
 					if tc.explicitZero {
 						usage = `,"usage":{"input_tokens":0,"output_tokens":0}`
 					}
+					if tc.directJSON {
+						body := `{"object":"response","status":"failed","model":"ultra/gemini-4-argon-high","error":{"type":"server_error","code":"` + code + `","status_code":502,"message":"https://private.invalid/ Bearer synthetic-secret 10.12.34.56","param":"private.invalid"}` + usage + `}`
+						return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}, nil
+					}
 					body := `data: {"type":"response.created","response":{"id":"resp_synthetic","model":"ultra/gemini-4-argon-high"}}` + "\n\n"
 					body += `data: {"type":"response.failed","response":{"id":"resp_synthetic","model":"ultra/gemini-4-argon-high","status":"failed","error":{"type":"server_error","code":"` + code + `","status_code":502,"message":"The upstream returned an invalid response."},"output":[]` + usage + "}}\n\n"
 					return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(body))}, nil
@@ -74,7 +84,11 @@ func TestOpenAIGenerationFailureDoesNotReplay(t *testing.T) {
 				ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 				router := gin.New()
 				router.Use(OpsErrorLoggerMiddleware(ops))
-				router.POST("/v1/chat/completions", func(c *gin.Context) {
+				endpoint := "/v1/chat/completions"
+				if tc.directJSON {
+					endpoint = "/v1/responses"
+				}
+				router.POST(endpoint, func(c *gin.Context) {
 					groupID := int64(14230)
 					c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{ID: 11830, UserID: 11730, GroupID: &groupID,
 						User:  &service.User{ID: 11730, Status: service.StatusActive, Balance: 100},
@@ -85,15 +99,34 @@ func TestOpenAIGenerationFailureDoesNotReplay(t *testing.T) {
 						_, _ = c.Writer.WriteString(": ping\n\n")
 						c.Writer.Flush()
 					}
-					h.ChatCompletions(c)
+					if tc.directJSON {
+						h.Responses(c)
+					} else {
+						h.ChatCompletions(c)
+					}
 				})
 				rec := httptest.NewRecorder()
 				body := fmt.Sprintf(`{"model":"gemini-4-argon","messages":[{"role":"user","content":"synthetic"}],"stream":%t}`, tc.stream)
-				router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+				if tc.directJSON {
+					body = `{"model":"gemini-4-argon","input":"synthetic","stream":false}`
+				}
+				router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, endpoint, strings.NewReader(body)))
 				require.Equal(t, 1, upstream.calls, "two eligible accounts must not cause replay")
 				require.Contains(t, rec.Body.String(), `"code":"`+code+`"`)
 				require.Contains(t, rec.Body.String(), `"status_code":502`)
 				require.Equal(t, 1, strings.Count(rec.Body.String(), `"error":`))
+				for _, secret := range []string{"private.invalid", "synthetic-secret", "10.12.34.56", `"param"`} {
+					require.NotContains(t, rec.Body.String(), secret)
+				}
+				if tc.directJSON {
+					if tc.explicitZero {
+						require.Contains(t, rec.Body.String(), `"input_tokens":0`)
+						require.Contains(t, rec.Body.String(), `"output_tokens":0`)
+					}
+					if !tc.measured && !tc.explicitZero {
+						require.NotContains(t, rec.Body.String(), `"usage":`)
+					}
+				}
 
 				if tc.heartbeat {
 					require.Equal(t, 200, rec.Code)

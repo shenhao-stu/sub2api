@@ -1707,6 +1707,15 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	if account.Type == AccountTypeOAuth && bodyLooksLikeSSE {
 		return s.handleSSEToJSON(resp, c, account, body, originalModel, mappedModel)
 	}
+	if _, known := openAIGenerationFailureFields(body); known {
+		usage := openAIGenerationFailureUsage(body)
+		s.recordOpenAIStreamUpstreamError(c, account, false, resp.Header.Get("x-request-id"), "stream_failed", body, extractOpenAISSEErrorMessage(body))
+		err := writeOpenAIGenerationFailure(c, body, usage)
+		if usage == nil {
+			return nil, err
+		}
+		return &openaiNonStreamingResult{OpenAIUsage: usage, usage: usage, responseID: extractOpenAIResponseIDFromJSONBytes(body)}, err
+	}
 	usageValue, usageOK := extractOpenAIUsageFromJSONBytes(body)
 	if !usageOK {
 		if bodyLooksLikeSSE {
@@ -1984,7 +1993,7 @@ func buildOpenAIResponseFailedSSE(responseID, model string, createdAt int64, sou
 	payload, err := marshalOpenAIUpstreamJSON(gin.H{
 		"type":            "response.failed",
 		"sequence_number": sequenceNumber,
-		"response":        openAIErrorBodyWithUsage(response, usage...),
+		"response":        openAIGenerationFailureBodyWithUsage(source, response, usage...),
 	})
 	if err != nil {
 		// All values above are JSON primitives, so this is only a defensive fallback.
@@ -2057,6 +2066,13 @@ func sanitizeOpenAIResponseFailedEventForClient(payload []byte, eventType string
 		updated = next
 	}
 	updated = openAIErrorSSEWithUsage(updated, usage...)
+	if _, known := openAIGenerationFailureFields(payload); known && !gjson.GetBytes(updated, "response.usage").Exists() {
+		if observed := openAIGenerationFailureUsage(payload); observed != nil {
+			if next, err := sjson.SetBytes(updated, "response.usage", observed); err == nil {
+				updated = next
+			}
+		}
+	}
 	return updated, !bytes.Equal(updated, payload)
 }
 

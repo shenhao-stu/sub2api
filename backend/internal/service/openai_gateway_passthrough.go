@@ -2442,6 +2442,16 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 		return s.handlePassthroughSSEToJSON(resp, c, account, body, originalModel, mappedModel)
 	}
 
+	if _, known := openAIGenerationFailureFields(body); known {
+		usage := openAIGenerationFailureUsage(body)
+		s.recordOpenAIStreamUpstreamError(c, account, true, resp.Header.Get("x-request-id"), "stream_failed", body, extractOpenAISSEErrorMessage(body))
+		err := writeOpenAIGenerationFailure(c, body, usage)
+		if usage == nil {
+			return nil, err
+		}
+		return &openaiNonStreamingResultPassthrough{OpenAIUsage: usage, usage: usage, responseID: extractOpenAIResponseIDFromJSONBytes(body)}, err
+	}
+
 	usage := &OpenAIUsage{}
 	usageParsed := false
 	if len(body) > 0 {
