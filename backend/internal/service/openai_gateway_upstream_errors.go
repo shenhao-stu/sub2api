@@ -310,6 +310,11 @@ func (s *OpenAIGatewayService) shouldFailoverUpstreamError(statusCode int) bool 
 }
 
 func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(account *Account, statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	if statusCode == http.StatusConflict && isConversationGuardError(statusCode, upstreamBody) {
+		// Return the existing request-scoped terminal sentinel; its handler writes
+		// the safe error without account rotation or a second model request.
+		return true
+	}
 	if isCommandCodeCreditExhausted(account, statusCode, upstreamBody) {
 		return true
 	}
