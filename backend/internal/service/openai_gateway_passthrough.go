@@ -1433,6 +1433,9 @@ var openAIStreamErrorStatusPaths = []string{
 }
 
 func openAIStreamFailedEventSemanticStatus(payload []byte, message string) int {
+	if _, ok := openAIGenerationFailureFields(payload); ok {
+		return http.StatusBadGateway
+	}
 	if isOpenAIStreamInvalidArguments(payload, message) {
 		return http.StatusBadRequest
 	}
@@ -1599,6 +1602,9 @@ func applyOpenAIStreamFailedErrorPassthroughRule(
 }
 
 func openAIStreamFailedEventShouldFailover(payload []byte, message string) bool {
+	if _, ok := openAIGenerationFailureFields(payload); ok {
+		return false
+	}
 	if isOpenAIStreamInvalidArguments(payload, message) {
 		return false
 	}
@@ -1651,6 +1657,9 @@ func openAIStreamFailedEventShouldFailover(payload []byte, message string) bool 
 }
 
 func openAIStreamErrorEventShouldFailover(payload []byte, message string) bool {
+	if _, ok := openAIGenerationFailureFields(payload); ok {
+		return false
+	}
 	if isOpenAIStreamInvalidArguments(payload, message) {
 		return false
 	}
@@ -2489,6 +2498,14 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 		msg := extractOpenAISSEErrorMessage(terminalPayload)
 		if msg == "" {
 			msg = "Upstream compact response failed"
+		}
+		if _, ok := openAIGenerationFailureFields(terminalPayload); ok {
+			s.recordOpenAIStreamUpstreamError(c, account, true, resp.Header.Get("x-request-id"), "stream_failed", terminalPayload, msg)
+			err := writeOpenAIGenerationFailure(c, terminalPayload, usage)
+			if !openAIUsageHasTokens(usage) {
+				return nil, err
+			}
+			return &openaiNonStreamingResultPassthrough{OpenAIUsage: usage, usage: usage, responseID: extractOpenAIResponseIDFromJSONBytes(terminalPayload)}, err
 		}
 		if isOpenAIStreamInvalidArguments(terminalPayload, msg) {
 			s.recordOpenAIStreamUpstreamError(c, account, true, resp.Header.Get("x-request-id"), "http_error", terminalPayload, msg)

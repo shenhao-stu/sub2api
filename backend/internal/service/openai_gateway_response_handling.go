@@ -1799,6 +1799,14 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		if msg == "" {
 			msg = "Upstream compact response failed"
 		}
+		if _, ok := openAIGenerationFailureFields(terminalPayload); ok {
+			s.recordOpenAIStreamUpstreamError(c, account, false, resp.Header.Get("x-request-id"), "stream_failed", terminalPayload, msg)
+			err := writeOpenAIGenerationFailure(c, terminalPayload, usage)
+			if !openAIUsageHasTokens(usage) {
+				return nil, err
+			}
+			return &openaiNonStreamingResult{OpenAIUsage: usage, usage: usage, responseID: extractOpenAIResponseIDFromJSONBytes(terminalPayload)}, err
+		}
 		if isOpenAIStreamInvalidArguments(terminalPayload, msg) {
 			s.recordOpenAIStreamUpstreamError(c, account, false, resp.Header.Get("x-request-id"), "http_error", terminalPayload, msg)
 			return &openaiNonStreamingResult{OpenAIUsage: usage, usage: usage, responseID: extractOpenAIResponseIDFromJSONBytes(terminalPayload)}, writeOpenAIStreamValidation(c, terminalPayload, msg, usage)
@@ -1955,6 +1963,9 @@ func buildOpenAIResponseFailedSSE(responseID, model string, createdAt int64, sou
 	if errorType != "" {
 		errorBody["type"] = errorType
 	}
+	if fields, ok := openAIGenerationFailureFields(source); ok {
+		errorBody = gin.H{"type": fields.Type, "code": fields.Code, "message": fields.Message, "status_code": fields.StatusCode}
+	}
 	if createdAt <= 0 {
 		createdAt = time.Now().Unix()
 	}
@@ -1990,7 +2001,7 @@ func sanitizeOpenAIResponseFailedEventForClient(payload []byte, eventType string
 	if (!isFailedEvent && eventType != "error") || len(payload) == 0 || !gjson.ValidBytes(payload) {
 		return payload, false
 	}
-	updated := normalizeOpenAIStreamValidation(payload)
+	updated := normalizeOpenAIStreamValidation(normalizeOpenAIGenerationFailure(payload))
 	// 容量降载码对 Codex CLI 是致命错误；事件既然要写给客户端（failover 已不可用），
 	// 就改写为客户端可重试的错误码。error 帧与 response.failed 都要改：上游降载
 	// 总是先推 error 帧再收 failed，两帧携带同一个错误。
