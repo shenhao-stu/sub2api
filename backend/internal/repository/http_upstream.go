@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
 	"sync"
@@ -301,10 +302,19 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 // caller's context (which may be detached for billing or reused for retries).
 func doUpstreamRequest(client *http.Client, req *http.Request) (*http.Response, error) {
 	ctx, cancel := context.WithCancel(req.Context())
+	var written, reused atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		WroteHeaders: func() { written.Store(true) },
+		GotConn:      func(info httptrace.GotConnInfo) { reused.Store(info.Reused) },
+	})
+	started := time.Now()
 	resp, err := servertiming.Do(client, req.WithContext(ctx))
 	if err != nil {
 		cancel()
-		return resp, err
+		return resp, &service.HTTPUpstreamAttemptError{
+			Err: err, RequestMayHaveBeenSent: written.Load(),
+			ConnectionReused: reused.Load(), Elapsed: time.Since(started),
+		}
 	}
 	decompressResponseBody(resp)
 	resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
