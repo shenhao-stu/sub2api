@@ -82,8 +82,8 @@ func TestChatReceiptPostgresClaimAndImmutableFinal(t *testing.T) {
 	if won.Load() != 1 {
 		t.Fatalf("duplicate generation admission: winners=%d", won.Load())
 	}
-	if _, err = repo.GetUsageReceipt(ctx, 11, claim.RequestID); !errors.Is(err, service.ErrUsageLogNotFound) {
-		t.Fatalf("pending must be unknown: %v", err)
+	if _, err = repo.GetUsageReceipt(ctx, 11, claim.RequestID); !errors.Is(err, service.ErrUsageReceiptPending) {
+		t.Fatalf("pending must be distinguished from missing: %v", err)
 	}
 	forged := *claim
 	forged.Token = uuid.NewString()

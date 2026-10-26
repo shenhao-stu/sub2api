@@ -41,7 +41,23 @@ type UsageReceiptReader interface {
 	GetUsageReceipt(context.Context, int64, string) (*UsageReceipt, error)
 }
 
-var ErrUsageReceiptUnavailable = errors.New("usage receipt unavailable")
+var (
+	ErrUsageReceiptUnavailable = errors.New("usage receipt unavailable")
+	// ErrUsageReceiptPending is distinct from a missing receipt. A pending
+	// claim reserves an identity but carries no authoritative meter yet, so it
+	// must remain unknown and must never be represented as a zero receipt.
+	ErrUsageReceiptPending = errors.New("usage receipt pending")
+)
+
+// PendingUsageReceipt is the safe wire representation for a durable claim
+// whose final meter has not arrived. It intentionally contains no account,
+// credential, prompt, or price fields.
+type PendingUsageReceipt struct {
+	Object    string `json:"object"`
+	Version   int    `json:"version"`
+	RequestID string `json:"request_id"`
+	State     string `json:"state"`
+}
 
 func ValidUsageReceiptID(id string) bool {
 	u, err := uuid.Parse(id)
