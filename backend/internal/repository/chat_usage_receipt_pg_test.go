@@ -85,6 +85,22 @@ func TestChatReceiptPostgresClaimAndImmutableFinal(t *testing.T) {
 	if _, err = repo.GetUsageReceipt(ctx, 11, claim.RequestID); !errors.Is(err, service.ErrUsageReceiptPending) {
 		t.Fatalf("pending must be distinguished from missing: %v", err)
 	}
+	for _, key := range []int64{12, 0} {
+		if _, e := repo.GetUsageReceipt(ctx, key, claim.RequestID); !errors.Is(e, service.ErrUsageLogNotFound) {
+			t.Fatalf("pending identity leaked across key scope: %d %v", key, e)
+		}
+	}
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fresh := newUsageLogRepositoryWithSQL(nil, scoped)
+			if _, e := fresh.GetUsageReceipt(ctx, 11, claim.RequestID); !errors.Is(e, service.ErrUsageReceiptPending) {
+				t.Errorf("concurrent pending read changed state: %v", e)
+			}
+		}()
+	}
+	wg.Wait()
 	forged := *claim
 	forged.Token = uuid.NewString()
 	receipt := &service.UsageReceipt{Version: 2, Object: "sub2api.usage_receipt", Source: "wire_final", RequestID: claim.RequestID, Model: claim.Model, InboundEndpoint: claim.Endpoint, InputTokens: 100, OutputTokens: 64000, CacheReadTokens: 900, ReasoningTokens: 1000, BillingMode: "token", TerminalState: "completed", HTTPStatus: 200, RecordedAt: time.Now().UTC().Truncate(time.Microsecond)}
