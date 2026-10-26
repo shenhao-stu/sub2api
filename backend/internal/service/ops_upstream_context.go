@@ -457,6 +457,10 @@ type OpsUpstreamErrorEvent struct {
 
 	// Kind: http_error | request_error | retry_exhausted | failover
 	Kind string `json:"kind,omitempty"`
+	// Transport evidence only; a dispatched request is not proof of billable usage.
+	DurationMs             int64 `json:"duration_ms,omitempty"`
+	RequestMayHaveBeenSent bool  `json:"request_may_have_been_sent,omitempty"`
+	ConnectionReused       bool  `json:"connection_reused,omitempty"`
 	// Stage/Scope/Reason distinguish credential acquisition from inference
 	// without overloading upstream_status_code with a synthetic HTTP status.
 	Stage  string `json:"stage,omitempty"`

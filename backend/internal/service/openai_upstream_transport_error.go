@@ -106,9 +106,8 @@ func isClientCanceledTransportError(ctx context.Context, err error) bool {
 //  2. for durable faults (expired/rejected proxy creds, dead proxy, DNS/routing)
 //     temporarily unschedules the account (DB + in-memory) and logs a stable
 //     warn event that alert rules can key on;
-//  3. returns an error that is *UpstreamFailoverError (so the handler fails over
-//     to a healthy account) for all non-canceled errors, or a plain error for
-//     context.Canceled (client gone — no failover, no eviction).
+//  3. allows failover for pre-dispatch failures; cancellation or evidence of
+//     dispatch returns the original error without replay or account eviction.
 //
 // It deliberately does NOT write to the response: the handler owns the response
 // (failover, or a protocol-correct error once failover is exhausted).
@@ -123,7 +122,7 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 	}
 	safeErr := sanitizeUpstreamErrorMessage(err.Error())
 	setOpsUpstreamError(c, 0, safeErr, "")
-	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+	event := OpsUpstreamErrorEvent{
 		ProxyID:            opsUpstreamProxyID(account),
 		ProxyName:          opsUpstreamProxyName(account),
 		Platform:           account.Platform,
@@ -133,7 +132,18 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 		Passthrough:        passthrough,
 		Kind:               "request_error",
 		Message:            safeErr,
-	})
+	}
+	var attempt *HTTPUpstreamAttemptError
+	if errors.As(err, &attempt) {
+		event.DurationMs = attempt.Elapsed.Milliseconds()
+		event.RequestMayHaveBeenSent = attempt.RequestMayHaveBeenSent
+		event.ConnectionReused = attempt.ConnectionReused
+		if attempt.RequestMayHaveBeenSent {
+			event.Stage = "awaiting_response_headers"
+			event.Reason = "dispatched_request_not_retried"
+		}
+	}
+	appendOpsUpstreamError(c, event)
 
 	// Client disconnected: do NOT fail over to another account and do NOT evict
 	// this one — the upstream never had a chance to exhibit a fault.
@@ -150,6 +160,12 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 	// 插件已把请求交给上游时，自动切换账号可能造成重复扣费或重复执行。
 	var pluginErr *PluginTransportError
 	if errors.As(err, &pluginErr) && pluginErr.RequestSent {
+		return err
+	}
+	// An EOF after dispatch does not prove that generation or billing did not
+	// happen. Keep the account available for new requests, but never replay this
+	// ambiguous request through the handler's pool/account failover loop.
+	if attempt != nil && attempt.RequestMayHaveBeenSent {
 		return err
 	}
 

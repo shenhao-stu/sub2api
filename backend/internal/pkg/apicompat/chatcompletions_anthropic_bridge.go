@@ -108,8 +108,20 @@ func AnthropicToChatCompletionsRequestWithMinOutputTokens(req *AnthropicRequest,
 	// Match the Responses bridge, including an explicit thinking disable.
 	out.ReasoningEffort = anthropicReasoningEffort(req)
 
-	parallelToolCalls := true
-	out.ParallelToolCalls = &parallelToolCalls
+	// A tool-only option without converted tools is rejected by strict Chat
+	// providers. Preserve the caller's serial-execution constraint when present.
+	if len(out.Tools) > 0 {
+		var choice struct {
+			DisableParallelToolUse bool `json:"disable_parallel_tool_use"`
+		}
+		if len(req.ToolChoice) > 0 {
+			if err := json.Unmarshal(req.ToolChoice, &choice); err != nil {
+				return nil, fmt.Errorf("convert parallel tool choice: %w", err)
+			}
+		}
+		parallel := !choice.DisableParallelToolUse
+		out.ParallelToolCalls = &parallel
+	}
 
 	return out, nil
 }
