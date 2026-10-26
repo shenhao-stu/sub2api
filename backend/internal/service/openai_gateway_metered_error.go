@@ -177,6 +177,13 @@ func anthropicErrorBodyWithOpenAIUsage(body gin.H, usage ...*OpenAIUsage) gin.H 
 }
 
 func openAIMeteredErrorMetadata(c *gin.Context, body gin.H) gin.H {
+	// V2 must not turn permissive internal partial counters into a final receipt.
+	// Internal usage accounting remains available even when the wire meter is unknown.
+	if c != nil && c.Request != nil {
+		if capture := chatReceiptFromContext(c.Request.Context()); capture != nil && capture.meter == nil {
+			delete(body, "usage")
+		}
+	}
 	if body["usage"] != nil {
 		if tier := observedUpstreamResponseServiceTier(c); tier != "" {
 			body["service_tier"] = tier

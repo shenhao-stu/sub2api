@@ -58,6 +58,8 @@ func openAIGenerationFailureFields(payload []byte) (openAIClientErrorFields, boo
 		message = "The upstream returned a malformed response."
 	case "upstream_malformed_function_call":
 		message = "The upstream returned a malformed function call."
+	case "upstream_empty_completion":
+		message = "The upstream returned no response content."
 	default:
 		return empty, false
 	}

@@ -14,7 +14,7 @@ import (
 )
 
 func TestOpenAIGenerationFailureReaders(t *testing.T) {
-	for _, code := range []string{"upstream_malformed_response", "upstream_malformed_function_call"} {
+	for _, code := range []string{"upstream_malformed_response", "upstream_malformed_function_call", "upstream_empty_completion"} {
 		for _, path := range []string{"responses_stream", "passthrough_stream", "responses_buffered", "passthrough_buffered", "chat_stream", "chat_buffered"} {
 			for _, meter := range []string{"missing", "zero", "positive"} {
 				t.Run(code+"/"+path+"/"+meter, func(t *testing.T) {
@@ -122,7 +122,7 @@ func TestOpenAIGenerationFailureExactContract(t *testing.T) {
 }
 
 func TestOpenAIGenerationFailureJSONReaders(t *testing.T) {
-	for _, code := range []string{"upstream_malformed_response", "upstream_malformed_function_call"} {
+	for _, code := range []string{"upstream_malformed_response", "upstream_malformed_function_call", "upstream_empty_completion"} {
 		for _, reader := range []string{"responses_buffered", "passthrough_buffered"} {
 			for _, meter := range []string{"missing", "incomplete_zero", "zero", "positive"} {
 				t.Run(code+"/"+reader+"/"+meter, func(t *testing.T) {
