@@ -520,6 +520,10 @@ func chatUsageFromResponsesUsage(u *ResponsesUsage) *ChatUsage {
 		CompletionTokens: u.OutputTokens,
 		TotalTokens:      chatTokenTotal(u.InputTokens, u.OutputTokens),
 	}
+	if u.decoded {
+		usage.missingPromptTokens = !u.inputTokensPresent || !u.receiptCountersValid
+		usage.missingCompletionTokens = !u.outputTokensPresent || !u.receiptCountersValid
+	}
 	usage.PromptTokensDetails = promptDetailsFromResponses(u.InputTokensDetails)
 	if u.CacheCreationInputTokens > 0 {
 		if usage.PromptTokensDetails == nil {

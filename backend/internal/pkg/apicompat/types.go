@@ -514,6 +514,9 @@ type ResponsesSummary struct {
 
 // ResponsesUsage holds token counts in Responses API format.
 type ResponsesUsage struct {
+	decoded                bool
+	inputTokensPresent     bool
+	outputTokensPresent    bool
 	explicitTokenTotals    bool
 	receiptCountersValid   bool
 	zeroTokenCountersValid bool
@@ -561,7 +564,10 @@ func (u *ResponsesUsage) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*u = ResponsesUsage(aux.responsesUsageAlias)
-	u.explicitTokenTotals = (nestedPresence.InputTokens != nil || nestedPresence.PromptTokens != nil) && (nestedPresence.OutputTokens != nil || nestedPresence.CompletionTokens != nil)
+	u.decoded = true
+	u.inputTokensPresent = nestedPresence.InputTokens != nil || nestedPresence.PromptTokens != nil
+	u.outputTokensPresent = nestedPresence.OutputTokens != nil || nestedPresence.CompletionTokens != nil
+	u.explicitTokenTotals = u.inputTokensPresent && u.outputTokensPresent
 	u.zeroTokenCountersValid = responsesZeroCountersValid(data)
 	u.receiptCountersValid = responsesZeroCountersValidObject(data, false, false)
 	u.cacheReadExplicitZero = responsesExplicitCacheZero(data, false)
@@ -606,6 +612,23 @@ func (u *ResponsesUsage) UnmarshalJSON(data []byte) error {
 		u.TotalTokens = u.InputTokens + u.OutputTokens
 	}
 	return nil
+}
+
+func (u ResponsesUsage) MarshalJSON() ([]byte, error) {
+	type plain ResponsesUsage
+	input, output, total := &u.InputTokens, &u.OutputTokens, &u.TotalTokens
+	if u.decoded && (!u.inputTokensPresent || !u.receiptCountersValid) {
+		input, total = nil, nil
+	}
+	if u.decoded && (!u.outputTokensPresent || !u.receiptCountersValid) {
+		output, total = nil, nil
+	}
+	return json.Marshal(struct {
+		plain
+		InputTokens  *int `json:"input_tokens,omitempty"`
+		OutputTokens *int `json:"output_tokens,omitempty"`
+		TotalTokens  *int `json:"total_tokens,omitempty"`
+	}{plain: plain(u), InputTokens: input, OutputTokens: output, TotalTokens: total})
 }
 
 // ResponsesInputTokensDetails breaks down input token usage.
@@ -807,6 +830,8 @@ type ChatChoice struct {
 
 // ChatUsage holds token counts in Chat Completions format.
 type ChatUsage struct {
+	missingPromptTokens     bool
+	missingCompletionTokens bool
 	PromptTokens            int               `json:"prompt_tokens"`
 	CompletionTokens        int               `json:"completion_tokens"`
 	TotalTokens             int               `json:"total_tokens"`
@@ -825,13 +850,22 @@ func chatTokenTotal(input, output int) int {
 // input/output counters. Omit only that derived field; ordinary zero is retained.
 func (u ChatUsage) MarshalJSON() ([]byte, error) {
 	type plain ChatUsage
-	if u.PromptTokens >= 0 && u.CompletionTokens >= 0 && u.CompletionTokens > math.MaxInt-u.PromptTokens {
-		return json.Marshal(struct {
-			plain
-			TotalTokens *int `json:"total_tokens,omitempty"`
-		}{plain: plain(u)})
+	input, output, total := &u.PromptTokens, &u.CompletionTokens, &u.TotalTokens
+	if u.missingPromptTokens {
+		input, total = nil, nil
 	}
-	return json.Marshal(plain(u))
+	if u.missingCompletionTokens {
+		output, total = nil, nil
+	}
+	if u.PromptTokens >= 0 && u.CompletionTokens >= 0 && u.CompletionTokens > math.MaxInt-u.PromptTokens {
+		total = nil
+	}
+	return json.Marshal(struct {
+		plain
+		PromptTokens     *int `json:"prompt_tokens,omitempty"`
+		CompletionTokens *int `json:"completion_tokens,omitempty"`
+		TotalTokens      *int `json:"total_tokens,omitempty"`
+	}{plain: plain(u), PromptTokens: input, CompletionTokens: output, TotalTokens: total})
 }
 
 // ChatTokenDetails provides a breakdown of token usage. The same type is

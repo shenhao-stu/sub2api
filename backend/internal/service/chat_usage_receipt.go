@@ -356,6 +356,16 @@ func receiptObject(data []byte) (map[string]json.RawMessage, bool) {
 
 func (s *OpenAIGatewayService) completeChatUsageReceipt(ctx context.Context, c *gin.Context, account *Account, result *OpenAIForwardResult, forwardErr error) {
 	capture := chatReceiptFromContext(ctx)
+	if capture != nil && capture.claim != nil && capture.meter == nil {
+		var accountID int64
+		if account != nil {
+			accountID = account.ID
+		}
+		// Join the pending claim to private ledger diagnostics without logging payloads.
+		slog.Info("provider_chat_usage_receipt_pending", "api_key_id", capture.claim.APIKeyID,
+			"request_id", capture.claim.RequestID, "account_id", accountID,
+			"billing_request_id", resolveUsageBillingRequestID(ctx, ""), "forward_failed", forwardErr != nil)
+	}
 	if capture == nil || capture.meter == nil || result == nil || account == nil || result.ImageCount != 0 || result.AudioUsage != nil || result.SearchCount != 0 || result.WebSearchCalls != 0 {
 		return
 	}
