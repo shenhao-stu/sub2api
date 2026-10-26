@@ -91,3 +91,28 @@ func TestKeyUsageReceiptUnknownIsNotZeroAndErrorsAreSafe(t *testing.T) {
 		})
 	}
 }
+
+func TestKeyUsageReceiptPendingIsAcceptedWithoutMeter(t *testing.T) {
+	const id = "2c4e888b-836b-4992-9ff1-dc1699488902"
+	repo := &receiptRepository{err: service.ErrUsageReceiptPending}
+	h := &GatewayHandler{usageService: service.NewUsageService(repo, nil, nil, nil)}
+	c, w := newKeyBillingContext(&service.APIKey{ID: 11, Key: "synthetic-private-key", UserID: 7})
+	c.Params = gin.Params{{Key: "request_id", Value: id}}
+	h.KeyUsageReceipt(c)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("pending receipt status=%d", w.Code)
+	}
+	if w.Header().Get("Retry-After") != "60" {
+		t.Fatalf("pending receipt retry hint=%q", w.Header().Get("Retry-After"))
+	}
+	var got service.PendingUsageReceipt
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Object != "sub2api.usage_receipt" || got.Version != 2 || got.RequestID != id || got.State != "pending" {
+		t.Fatalf("unsafe or incomplete pending receipt: %+v", got)
+	}
+	if strings.Contains(w.Body.String(), "output_tokens") || strings.Contains(w.Body.String(), "synthetic-private-key") {
+		t.Fatal("pending receipt exposed a meter or credential")
+	}
+}

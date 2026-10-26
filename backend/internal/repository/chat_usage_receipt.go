@@ -148,7 +148,7 @@ func decodeProviderReceipt(payload []byte, apiKeyID int64, requestID string) (*s
 	}
 	if envelope.State != "" {
 		if envelope.State == "pending" {
-			return nil, service.ErrUsageLogNotFound
+			return nil, service.ErrUsageReceiptPending
 		}
 		if envelope.State != "final" || envelope.Receipt == nil || envelope.Claim == nil || envelope.AccountID <= 0 || envelope.BillingRequestID == "" || envelope.Claim.APIKeyID != apiKeyID || envelope.Claim.RequestID != requestID {
 			return nil, errors.New("invalid receipt envelope")

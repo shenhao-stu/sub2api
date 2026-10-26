@@ -16,7 +16,13 @@ func (r *usageLogRepository) GetUsageReceipt(ctx context.Context, apiKeyID int64
 	// Existing PG evidence remains authoritative when the new journal has a
 	// filesystem failure. Do not make healthy v1/v2 reads depend on local disk.
 	receipt, readErr := r.readUsageReceipt(ctx, apiKeyID, requestID)
-	if readErr != nil && !errors.Is(readErr, service.ErrUsageLogNotFound) {
+	// A pending v2 envelope is still durable evidence that belongs to the
+	// journal-recovery path. Treat it like a missing final receipt here so an
+	// immutable journal final can be reconciled, while preserving the pending
+	// sentinel when no final evidence exists. Database/I/O errors remain fatal.
+	if readErr != nil &&
+		!errors.Is(readErr, service.ErrUsageLogNotFound) &&
+		!errors.Is(readErr, service.ErrUsageReceiptPending) {
 		return nil, readErr
 	}
 	// This runs only behind the existing authenticated key-scoped endpoint.

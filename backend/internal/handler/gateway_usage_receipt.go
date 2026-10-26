@@ -28,6 +28,16 @@ func (h *GatewayHandler) KeyUsageReceipt(c *gin.Context) {
 		return
 	}
 	receipt, err := h.usageService.GetAPIKeyUsageReceipt(c.Request.Context(), key.ID, id)
+	if errors.Is(err, service.ErrUsageReceiptPending) {
+		c.Header("Retry-After", "60")
+		c.JSON(http.StatusAccepted, service.PendingUsageReceipt{
+			Object:    "sub2api.usage_receipt",
+			Version:   2,
+			RequestID: id,
+			State:     "pending",
+		})
+		return
+	}
 	if errors.Is(err, service.ErrUsageLogNotFound) {
 		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Usage receipt is not available for this API key")
 		return
