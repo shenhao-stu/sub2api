@@ -53,6 +53,50 @@ func TestSubscriptionTierFromJWTUsesNumericClaim(t *testing.T) {
 	require.Empty(t, SubscriptionTierFromJWT("not-a-jwt"))
 }
 
+func TestSubscriptionTierFromAccessToken(t *testing.T) {
+	t.Parallel()
+
+	// Shape of a lapsed (free) Build access token: decodable, no tier claim.
+	freeClaims := map[string]any{
+		"iss": "https://auth.x.ai", "aud": "build", "exp": 1_900_000_000, "iat": 1_899_990_000,
+		"scope": "openid", "principal_type": "user", "principal_id": "p-1", "client_id": "c-1",
+	}
+	withClaim := func(key string, value any) map[string]any {
+		claims := make(map[string]any, len(freeClaims)+1)
+		for k, v := range freeClaims {
+			claims[k] = v
+		}
+		claims[key] = value
+		return claims
+	}
+
+	tests := []struct {
+		name     string
+		token    string
+		wantTier string
+		wantOK   bool
+	}{
+		{name: "tier 5 is heavy", token: jwtWithClaims(t, withClaim("tier", 5)), wantTier: "supergrok_heavy", wantOK: true},
+		{name: "explicit tier 0 is free", token: jwtWithClaims(t, withClaim("tier", 0)), wantTier: "free", wantOK: true},
+		{name: "explicit tier without exp still maps", token: jwtWithClaims(t, map[string]any{"tier": 1}), wantTier: "supergrok", wantOK: true},
+		{name: "decodable access token without tier is free", token: jwtWithClaims(t, freeClaims), wantTier: "free", wantOK: true},
+		{name: "null tier treated as missing", token: jwtWithClaims(t, withClaim("tier", nil)), wantTier: "free", wantOK: true},
+		{name: "unrecognized tier value is no evidence", token: jwtWithClaims(t, withClaim("tier", true)), wantOK: false},
+		{name: "jwt without exp is no evidence", token: jwtWithClaims(t, map[string]any{"sub": "user"}), wantOK: false},
+		{name: "opaque token is no evidence", token: "opaque-access-token", wantOK: false},
+		{name: "undecodable payload is no evidence", token: "header.%%%.sig", wantOK: false},
+		{name: "empty token is no evidence", token: "", wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tier, ok := SubscriptionTierFromAccessToken(tt.token)
+			require.Equal(t, tt.wantOK, ok)
+			require.Equal(t, tt.wantTier, tier)
+		})
+	}
+}
+
 func TestCanonicalGrokPlanUsesOnlyGrok45ResponsesWindow(t *testing.T) {
 	t.Parallel()
 

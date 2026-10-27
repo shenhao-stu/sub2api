@@ -297,6 +297,114 @@ func TestGrokOAuthServiceRefreshAccountTokenKeepsStoredTierWhenJWTHasNoClaim(t *
 	require.Equal(t, "supergrok_lite", info.SubscriptionTier)
 }
 
+func TestGrokOAuthServiceRefreshAccountTokenResolvesTierFromRefreshedAccessToken(t *testing.T) {
+	// Claims observed on refreshed Build access tokens (no signature checked).
+	accessClaims := func(extra map[string]any) map[string]any {
+		claims := map[string]any{
+			"iss": "https://auth.x.ai", "aud": "build", "exp": time.Now().Add(time.Hour).Unix(),
+			"iat": time.Now().Unix(), "scope": "openid", "principal_type": "user",
+			"principal_id": "principal-1", "client_id": "client-id",
+		}
+		for k, v := range extra {
+			claims[k] = v
+		}
+		return claims
+	}
+
+	tests := []struct {
+		name        string
+		accessToken string
+		storedTier  string
+		wantTier    string
+		wantGate    bool
+	}{
+		{
+			name:        "tier 5 claim is heavy",
+			accessToken: makeGrokOAuthJWT(accessClaims(map[string]any{"tier": 5})),
+			storedTier:  "free",
+			wantTier:    "supergrok_heavy",
+		},
+		{
+			name:        "decodable token without tier claim lapses stale heavy to free",
+			accessToken: makeGrokOAuthJWT(accessClaims(nil)),
+			storedTier:  "supergrok_heavy",
+			wantTier:    "free",
+			wantGate:    true,
+		},
+		{
+			name:        "opaque token keeps stored tier",
+			accessToken: "opaque-access-token",
+			storedTier:  "supergrok_heavy",
+			wantTier:    "supergrok_heavy",
+		},
+		{
+			name:        "undecodable jwt keeps stored tier",
+			accessToken: "header.%%%.signature",
+			storedTier:  "supergrok_heavy",
+			wantTier:    "supergrok_heavy",
+		},
+		{
+			name:        "explicit tier 0 claim is free",
+			accessToken: makeGrokOAuthJWT(accessClaims(map[string]any{"tier": 0})),
+			storedTier:  "supergrok_heavy",
+			wantTier:    "free",
+			wantGate:    true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := NewGrokOAuthService(nil, &grokOAuthClientStub{
+				refreshResponse: &xai.TokenResponse{
+					AccessToken: tt.accessToken,
+					TokenType:   "Bearer",
+					ExpiresIn:   3600,
+				},
+			})
+			defer svc.Stop()
+
+			account := &Account{
+				ID:       463,
+				Platform: PlatformGrok,
+				Type:     AccountTypeOAuth,
+				Credentials: map[string]any{
+					"refresh_token":     "refresh-token",
+					"client_id":         "client-id",
+					"subscription_tier": tt.storedTier,
+				},
+			}
+
+			info, err := svc.RefreshAccountToken(context.Background(), account)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantTier, info.SubscriptionTier)
+
+			// Background refresher path: built credentials merged over stored ones.
+			persisted, err := NewGrokTokenRefresher(svc).Refresh(context.Background(), account)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantTier, persisted["subscription_tier"])
+
+			refreshed := *account
+			refreshed.Credentials = persisted
+			require.Equal(t, tt.wantGate, isExplicitGrokFreeOAuthAccount(&refreshed))
+		})
+	}
+}
+
+func TestGrokOAuthServiceConvertFromSSOTierlessAccessTokenIsFree(t *testing.T) {
+	svc := NewGrokOAuthService(nil, &grokOAuthClientStub{
+		ssoResponse: &xai.TokenResponse{
+			AccessToken:  makeGrokOAuthJWT(map[string]any{"sub": "user-sub", "exp": time.Now().Add(time.Hour).Unix()}),
+			RefreshToken: "refresh-token",
+			ExpiresIn:    3600,
+		},
+	})
+	defer svc.Stop()
+
+	info, err := svc.ConvertFromSSO(context.Background(), "sso-token", nil)
+	require.NoError(t, err)
+	require.Equal(t, "free", info.SubscriptionTier)
+	require.Equal(t, "free", svc.BuildAccountCredentials(info)["subscription_tier"])
+}
+
 func TestGrokOAuthServiceValidateSSOTokenReturnsOAuthTokensWithoutPersistingSSO(t *testing.T) {
 	svc := NewGrokOAuthService(nil, &grokOAuthClientStub{
 		ssoResponse: &xai.TokenResponse{

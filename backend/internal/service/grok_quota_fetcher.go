@@ -184,7 +184,9 @@ func applyGrokResolvedSubscriptionTier(usage *UsageInfo, account *Account, billi
 	if usage == nil || account == nil {
 		return
 	}
-	if jwtTier := xai.SubscriptionTierFromJWT(account.GetCredential("access_token")); jwtTier != "" {
+	// A decodable AT without a tier claim is free and must not fall back to a
+	// stale stored paid tier.
+	if jwtTier, ok := xai.SubscriptionTierFromAccessToken(account.GetCredential("access_token")); ok {
 		usage.SubscriptionTier = jwtTier
 		usage.SubscriptionTierRaw = jwtTier
 		return

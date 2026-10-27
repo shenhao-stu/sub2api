@@ -128,6 +128,36 @@ func TestGrokQuotaFetcherPrefersLiveJWTTierOverStaleBillingPlan(t *testing.T) {
 	require.Equal(t, "free", usage.SubscriptionTierRaw)
 }
 
+func TestGrokQuotaFetcherTierFromAccessTokenOverridesStoredTier(t *testing.T) {
+	t.Parallel()
+
+	exp := time.Now().Add(time.Hour).Unix()
+	tests := []struct {
+		name        string
+		accessToken string
+		want        string
+	}{
+		{name: "tierless decodable token is free", accessToken: makeGrokOAuthJWT(map[string]any{"exp": exp, "principal_id": "p-1"}), want: "free"},
+		{name: "tier 5 token is heavy", accessToken: makeGrokOAuthJWT(map[string]any{"exp": exp, "tier": 5}), want: "supergrok_heavy"},
+		{name: "opaque token keeps stored tier", accessToken: "opaque-access-token", want: "supergrok_heavy"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			account := &Account{
+				Platform: PlatformGrok,
+				Type:     AccountTypeOAuth,
+				Credentials: map[string]any{
+					"access_token":      tt.accessToken,
+					"subscription_tier": "supergrok_heavy",
+				},
+			}
+			usage := NewGrokQuotaFetcher().BuildUsageInfo(account)
+			require.Equal(t, tt.want, usage.SubscriptionTier)
+		})
+	}
+}
+
 func TestGrokQuotaFetcherUsesCredentialTierWhenBillingHasNoPlan(t *testing.T) {
 	t.Parallel()
 

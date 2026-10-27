@@ -330,8 +330,9 @@ func (s *GrokOAuthService) RefreshAccountToken(ctx context.Context, account *Acc
 	if err != nil {
 		return nil, err
 	}
-	// New access-token JWT is authoritative. Keep the stored value only when
-	// the refreshed token has no tier claim (opaque AT / missing field).
+	// New access-token JWT is authoritative; a decodable AT without a tier
+	// claim already resolved to "free" (tier 0 is omitted). Keep the stored
+	// value only when the refreshed AT carries no tier evidence (opaque).
 	if strings.TrimSpace(tokenInfo.SubscriptionTier) == "" {
 		tokenInfo.SubscriptionTier = account.GetCredential("subscription_tier")
 	}
@@ -470,7 +471,7 @@ func applyGrokTokenClaims(info *GrokTokenInfo, token string, includeTier bool) {
 		info.TeamID = xai.JWTClaimString(claims, "team_id")
 	}
 	if includeTier {
-		if tier := xai.SubscriptionTierFromJWT(token); tier != "" {
+		if tier, ok := xai.SubscriptionTierFromAccessToken(token); ok {
 			info.SubscriptionTier = tier
 		}
 	}
