@@ -139,6 +139,8 @@ func openAIImagesUpstreamErrorResponseBody(err *OpenAIImagesUpstreamError) []byt
 	body := []byte(`{"error":{"type":"","message":""}}`)
 	body, _ = sjson.SetBytes(body, "error.type", err.clientErrorType())
 	body, _ = sjson.SetBytes(body, "error.message", err.clientMessage())
+	body, _ = sjson.SetBytes(body, "error.status_code", err.clientStatusCode())
+	body, _ = sjson.SetBytes(body, "status_code", err.clientStatusCode())
 	if code := strings.TrimSpace(err.Code); code != "" {
 		body, _ = sjson.SetBytes(body, "error.code", code)
 	}
@@ -622,20 +624,25 @@ func openAIImagesUpstreamErrorFromSSEPayload(payload []byte) *OpenAIImagesUpstre
 	if !gjson.ValidBytes(payload) {
 		return nil
 	}
+	var upstreamErr *OpenAIImagesUpstreamError
 	switch gjson.GetBytes(payload, "type").String() {
 	case "error":
-		return openAIImagesUpstreamErrorFromGJSON(gjson.GetBytes(payload, "error"), "")
+		upstreamErr = openAIImagesUpstreamErrorFromGJSON(gjson.GetBytes(payload, "error"), "")
 	case "response.failed":
 		response := gjson.GetBytes(payload, "response")
-		return openAIImagesUpstreamErrorFromGJSON(response.Get("error"), response.Get("id").String())
+		upstreamErr = openAIImagesUpstreamErrorFromGJSON(response.Get("error"), response.Get("id").String())
 	case "response.incomplete":
 		// 上游在生成预算内未产出图片（超时/被截断），返回 response.incomplete 而非 error。
 		// 旧逻辑识别不到，统一报成模糊的 "upstream did not return image output" + 502，
 		// 且不触发 failover。这里把它显式建模为可重试的上游错误，使其能换账号重试。
 		return openAIImagesIncompleteUpstreamError(gjson.GetBytes(payload, "response"))
 	default:
-		return nil
+		upstreamErr = openAIImagesUpstreamErrorFromGJSON(gjson.GetBytes(payload, "error"), "")
 	}
+	if upstreamErr != nil {
+		upstreamErr.StatusCode = openAIImagesExplicitErrorStatus(payload, upstreamErr.StatusCode)
+	}
+	return upstreamErr
 }
 
 // extractOpenAIImagesModelText collects textual terminal output from an image
@@ -814,13 +821,13 @@ func openAIImagesIncompleteUpstreamError(response gjson.Result) *OpenAIImagesUps
 		StatusCode:        statusCode,
 		ErrorType:         errType,
 		Code:              "response_incomplete",
-		Message:           sanitizeUpstreamErrorMessage(message),
+		Message:           sanitizeImageErrorMessage(message),
 		UpstreamRequestID: strings.TrimSpace(response.Get("id").String()),
 	}
 }
 
 func openAIImagesUpstreamErrorFromGJSON(errorObj gjson.Result, upstreamRequestID string) *OpenAIImagesUpstreamError {
-	if !errorObj.Exists() {
+	if !errorObj.IsObject() {
 		return nil
 	}
 	code := strings.TrimSpace(errorObj.Get("code").String())
@@ -835,7 +842,7 @@ func openAIImagesUpstreamErrorFromGJSON(errorObj gjson.Result, upstreamRequestID
 		StatusCode:        statusCode,
 		ErrorType:         errType,
 		Code:              code,
-		Message:           sanitizeUpstreamErrorMessage(message),
+		Message:           sanitizeImageErrorMessage(message),
 		Param:             param,
 		UpstreamRequestID: strings.TrimSpace(upstreamRequestID),
 	}
@@ -870,7 +877,7 @@ func openAIImagesUpstreamErrorFromHTTP(statusCode int, header http.Header, body 
 	errType := strings.TrimSpace(gjson.GetBytes(body, "error.type").String())
 	code := strings.TrimSpace(extractUpstreamErrorCode(body))
 	param := strings.TrimSpace(gjson.GetBytes(body, "error.param").String())
-	message := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body)))
+	message := sanitizeImageErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body)))
 	if message == "" {
 		message = fmt.Sprintf("Upstream request failed (status %d)", statusCode)
 	}
@@ -1099,6 +1106,8 @@ func buildOpenAIImagesStreamErrorBodyFromUpstream(err *OpenAIImagesUpstreamError
 	}
 	body := buildOpenAIImagesStreamErrorBody(err.clientMessage())
 	body, _ = sjson.SetBytes(body, "error.type", err.clientErrorType())
+	body, _ = sjson.SetBytes(body, "error.status_code", err.clientStatusCode())
+	body, _ = sjson.SetBytes(body, "status_code", err.clientStatusCode())
 	if code := strings.TrimSpace(err.Code); code != "" {
 		body, _ = sjson.SetBytes(body, "error.code", code)
 	}
@@ -1117,8 +1126,9 @@ func writeOpenAIImagesUpstreamErrorResponse(c *gin.Context, err *OpenAIImagesUps
 	}
 	StopOpenAIImagesJSONKeepaliveCommitted(c)
 	errorObj := gin.H{
-		"type":    err.clientErrorType(),
-		"message": err.clientMessage(),
+		"type":        err.clientErrorType(),
+		"message":     err.clientMessage(),
+		"status_code": err.clientStatusCode(),
 	}
 	if code := strings.TrimSpace(err.Code); code != "" {
 		errorObj["code"] = code
@@ -1127,7 +1137,8 @@ func writeOpenAIImagesUpstreamErrorResponse(c *gin.Context, err *OpenAIImagesUps
 		errorObj["param"] = param
 	}
 	c.JSON(err.clientStatusCode(), gin.H{
-		"error": errorObj,
+		"error":       errorObj,
+		"status_code": err.clientStatusCode(),
 	})
 	return true
 }

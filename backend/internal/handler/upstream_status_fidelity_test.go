@@ -81,7 +81,7 @@ func TestUnknown503FailoverPreservesHTTPAndLogicalStreamStatus(t *testing.T) {
 					}
 					require.NotContains(t, body, "private")
 					require.NotContains(t, body, "name@example")
-					require.NotContains(t, body, "418")
+					require.NotEqual(t, int64(418), gjson.Get(body, prefix+"status_code").Int(), "check status, not digits in a random response ID")
 					require.NotContains(t, body, `"usage"`)
 				})
 			}
@@ -104,7 +104,7 @@ func TestResponsesFailedLogicalStatusUsesValidatedHandlerMetadata(t *testing.T) 
 			} else {
 				require.False(t, gjson.Get(body, "response.error.status_code").Exists())
 			}
-			require.NotContains(t, body, "418")
+			require.NotEqual(t, int64(418), gjson.Get(body, "response.error.status_code").Int())
 			require.NotContains(t, body, `"usage"`)
 		})
 	}

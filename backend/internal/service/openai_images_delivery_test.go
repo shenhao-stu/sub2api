@@ -14,7 +14,7 @@ import (
 func TestForwardImagesAPIKeyRequiresDeliveredImages(t *testing.T) {
 	for _, body := range []string{
 		"error code: 502\n", `<html>Bad Gateway</html>`,
-		`{"error":{"message":"failed"}}`, `{"data":[]}`, `{"usage":{"images":2}}`,
+		`{"data":[]}`, `{"usage":{"images":2}}`,
 	} {
 		t.Run(body, func(t *testing.T) {
 			request := []byte(`{"model":"gpt-image-2.5-sunburst","prompt":"draw a cat","n":2}`)
