@@ -971,6 +971,14 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(
 	if err != nil {
 		return OpenAIUsage{}, 0, nil, err
 	}
+	// A provider may have committed HTTP 200 for a JSON heartbeat before the
+	// actual error arrived. Classify that error before requiring image output.
+	if upErr := openAIImagesUpstreamErrorFromSSEPayload(body); upErr != nil {
+		upErr.UpstreamRequestID = resp.Header.Get("x-request-id")
+		setOpsUpstreamError(c, upErr.StatusCode, upErr.Message, "")
+		writeOpenAIImagesUpstreamErrorResponse(c, upErr)
+		return OpenAIUsage{}, 0, nil, upErr
+	}
 	body = s.backfillOpenAIImagesB64JSON(ctx, account, parsed, body)
 	imageCount := extractOpenAIImageCountFromJSONBytes(body)
 	if imageCount == 0 {
@@ -1028,11 +1036,11 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 	var sseData openAISSEDataAccumulator
 	var streamErr error
 	finish := func() error {
-		if direct == nil {
-			return nil
-		}
 		if streamErr != nil {
 			return streamErr
+		}
+		if direct == nil {
+			return nil
 		}
 		if !seenSSEData || imageCounter.Count() == 0 {
 			return newOpenAIUpstreamStreamReadError(ErrOpenAIUpstreamStreamTruncated)
@@ -1053,8 +1061,20 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 			}
 		}
 		mergeOpenAIUsage(&usage, dataBytes)
+		// API-key streams are forwarded as received, but their terminal error
+		// must also reach Ops and settlement. Delivered images remain billable.
+		if direct == nil {
+			if upErr := openAIImagesUpstreamErrorFromSSEPayload(dataBytes); upErr != nil {
+				upErr.UpstreamRequestID = resp.Header.Get("x-request-id")
+				streamErr = upErr
+				setOpsUpstreamError(c, upErr.StatusCode, upErr.Message, "")
+				return
+			}
+			imageCounter.AddSSEData(dataBytes)
+			return
+		}
 		imageCounter.AddSSEData(dataBytes)
-		if direct == nil || string(dataBytes) == "[DONE]" {
+		if string(dataBytes) == "[DONE]" {
 			return
 		}
 		if directUsage, ok := codexDirectImagesUsage(dataBytes); ok {
@@ -1111,6 +1131,10 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 		if len(line) == 0 {
 			return
 		}
+		if direct == nil && streamErr != nil {
+			// Never deliver images after a terminal error.
+			return
+		}
 		if firstTokenMs == nil {
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms
@@ -1153,6 +1177,11 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 			return
 		}
 		mergeOpenAIUsage(&usage, body)
+		if upErr := openAIImagesUpstreamErrorFromSSEPayload(body); upErr != nil {
+			streamErr = upErr
+			setOpsUpstreamError(c, upErr.StatusCode, upErr.Message, "")
+			return
+		}
 		imageCounter.AddJSONResponse(body)
 	}
 
@@ -1163,11 +1192,17 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 		for {
 			line, err := reader.ReadBytes('\n')
 			processLine(line)
+			if direct == nil && streamErr != nil {
+				return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, streamErr
+			}
 			if err == io.EOF {
 				break
 			}
 			if err != nil {
 				flushSSEEvent()
+				if direct == nil && streamErr != nil {
+					return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, streamErr
+				}
 				return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, err
 			}
 		}
@@ -1244,9 +1279,15 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 			}
 			if ev.err != nil {
 				flushSSEEvent()
+				if direct == nil && streamErr != nil {
+					return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, streamErr
+				}
 				return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, ev.err
 			}
 			processLine(ev.line)
+			if direct == nil && streamErr != nil {
+				return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, streamErr
+			}
 		case <-intervalCh:
 			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
 			if time.Since(lastRead) < streamInterval {

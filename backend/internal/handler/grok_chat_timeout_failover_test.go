@@ -66,7 +66,7 @@ func TestGrokChatHeaderTimeoutSkipsPoolReplay(t *testing.T) {
 		{"switches_directly_to_healthy_account", false, false, false, []int64{9980, 9981}},
 		{"client_gone_stops_failover", true, false, false, []int64{9980}},
 		{"switch_budget_remains_bounded", false, true, false, []int64{9980, 9981}},
-		{"real_http_header_timeout_switches_once", false, false, true, []int64{9980, 9981}},
+		{"real_http_header_timeout_after_dispatch_is_not_replayed", false, false, true, []int64{9980}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			baseURL := "https://api.x.ai/v1"
@@ -153,7 +153,7 @@ func TestGrokChatHeaderTimeoutSkipsPoolReplay(t *testing.T) {
 			}
 			if tc.cancel {
 				require.Empty(t, rec.Body.String())
-			} else if tc.allFail {
+			} else if tc.allFail || tc.realHTTP {
 				require.Equal(t, http.StatusBadGateway, rec.Code)
 				require.True(t, gjson.Get(rec.Body.String(), "error").Exists())
 			} else {
