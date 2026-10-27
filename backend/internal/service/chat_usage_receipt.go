@@ -207,8 +207,23 @@ func parseChatReceiptMeter(data []byte) *UsageReceipt {
 	}
 	var cached, write, reasoning int
 	var nestedRead, nestedWrite, nestedReason bool
-	for _, name := range []string{"prompt_tokens_details", "input_tokens_details", "completion_tokens_details", "output_tokens_details"} {
+	for _, pair := range []struct{ name, alias, counter string }{
+		{"prompt_tokens_details", "input_tokens_details", "cached_tokens"},
+		{"input_tokens_details", "prompt_tokens_details", "cached_tokens"},
+		{"completion_tokens_details", "output_tokens_details", "reasoning_tokens"},
+		{"output_tokens_details", "completion_tokens_details", "reasoning_tokens"},
+	} {
+		name := pair.name
 		if raw, exists := fields[name]; exists {
+			// Some Chat adapters emit a null Responses detail alias. Accept it
+			// only with an explicit counter in the other, fully validated object.
+			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+				alias, valid := receiptObject(fields[pair.alias])
+				if _, counted := receiptCounter(alias, pair.counter); !valid || !counted {
+					return nil
+				}
+				continue
+			}
 			details, valid := receiptObject(raw)
 			if !valid {
 				return nil
