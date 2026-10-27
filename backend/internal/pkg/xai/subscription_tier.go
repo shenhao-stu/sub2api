@@ -75,7 +75,34 @@ func NormalizeSubscriptionTier(raw string) string {
 // SubscriptionTierFromJWT decodes an access token payload (no signature check)
 // and maps the numeric or string `tier` claim.
 func SubscriptionTierFromJWT(jwt string) string {
-	claims := DecodeJWTClaims(jwt)
+	return subscriptionTierFromClaims(DecodeJWTClaims(jwt))
+}
+
+// SubscriptionTierFromAccessToken resolves the plan carried by a Build OAuth
+// access token. ok=false means the token carries no tier evidence (opaque or
+// undecodable, a JWT without `exp`, or an unrecognized `tier` value) and the
+// caller should keep its stored tier. A decodable access-token JWT without a
+// `tier` claim is the free plan: prod_auth omits SubscriptionTier 0 as a
+// protobuf zero value, so accounts that lapse to free get tier-less tokens.
+func SubscriptionTierFromAccessToken(token string) (tier string, ok bool) {
+	claims := DecodeJWTClaims(token)
+	if claims == nil {
+		return "", false
+	}
+	if mapped := subscriptionTierFromClaims(claims); mapped != "" {
+		return mapped, true
+	}
+	// A tier claim we cannot map is not evidence of free.
+	if raw, present := claims["tier"]; present && raw != nil {
+		return "", false
+	}
+	if exp, present := claims["exp"]; !present || exp == nil {
+		return "", false
+	}
+	return MapJWTSubscriptionTier(0), true
+}
+
+func subscriptionTierFromClaims(claims map[string]any) string {
 	if claims == nil {
 		return ""
 	}
