@@ -90,11 +90,20 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	// passback-required third-party upstreams such as GLM/Kimi/DeepSeek,
 	// which reject server_tool_use with 400). input.RequestModel 已是映射后的模型 ID。
 	input.Body = FilterWebSearchHistoryBlocks(input.Body, input.RequestModel)
+	bufferedStream := wantsAnthropicBufferedStream(account, input.RequestModel, input.RequestStream)
+	if bufferedStream {
+		input.Body, err = sjson.SetBytes(input.Body, "stream", true)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if input.Parsed != nil {
 		// 透传分支也会改写实际 wire body，成功 usage hash 依赖这里同步当前 body。
 		if err := input.Parsed.ReplaceBody(input.Body); err != nil {
 			return nil, err
 		}
+		// The wire body may stream internally; the caller still expects JSON.
+		input.Parsed.Stream = input.RequestStream
 	}
 
 	var resp *http.Response
@@ -111,6 +120,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			if err := input.Parsed.ReplaceBody(wireBody); err != nil {
 				return nil, err
 			}
+			input.Parsed.Stream = input.RequestStream
 			input.Body = input.Parsed.Body.Bytes()
 		}
 
@@ -261,6 +271,9 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	if resp.StatusCode >= 400 {
 		return s.handleErrorResponse(ctx, resp, c, account, input.RequestModel)
 	}
+	if bufferedStream && strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		return s.writeAnthropicBufferedStream(ctx, resp, c, input)
+	}
 
 	var usage *ClaudeUsage
 	var firstTokenMs *int
@@ -281,6 +294,11 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	} else {
 		usage, err = s.handleNonStreamingResponseAnthropicAPIKeyPassthrough(ctx, resp, c, account)
 		if err != nil {
+			if bufferedStream {
+				// A provider ignoring stream=true must not turn a malformed paid
+				// response into another dispatched request.
+				return nil, fmt.Errorf("buffered upstream response invalid: %v", err)
+			}
 			return nil, err
 		}
 	}
