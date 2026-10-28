@@ -29,6 +29,7 @@ func TestClassifyUpstreamTransportError(t *testing.T) {
 		{"no route to host", errors.New(`dial tcp 1.2.3.4:443: connect: no route to host`), true},
 		{"dns resolution failure", errors.New(`dial tcp: lookup proxy.example.com: no such host`), true},
 		{"network unreachable", errors.New(`dial tcp 1.2.3.4:443: connect: network is unreachable`), true},
+		{"socks host unreachable", errors.New(`socks connect tcp proxy:1080->upstream:3000: unknown error host unreachable`), true},
 
 		// Transient — a temporary blip. Fail over, but do NOT evict the account.
 		{"client timeout", errors.New(`Post "https://chatgpt.com/...": context deadline exceeded (Client.Timeout exceeded while awaiting headers)`), false},
