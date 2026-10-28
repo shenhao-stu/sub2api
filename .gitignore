@@ -135,6 +135,7 @@ vite.config.js
 docs/*
 !docs/COMMAND_CODE.md
 !docs/GROK_COOLDOWNS.md
+!docs/admin-api-keys.md
 !docs/PAYMENT.md
 !docs/PAYMENT_CN.md
 !docs/ADMIN_PAYMENT_INTEGRATION_API.md

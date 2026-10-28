@@ -707,7 +707,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 
 	finishDrain := boundDisconnectedResponseDrain(c.Request.Context(), resp.Body)
 	defer finishDrain()
-	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(resp, c, "openai chat_completions buffered", requestID)
+	finalResponse, usage, acc, priorModels, err := s.readOpenAICompatBufferedTerminal(resp, c, account, "openai chat_completions buffered", requestID)
 	partialResult := func() *OpenAIForwardResult {
 		return openAICompatMeteredResult(c, resp, usage, originalModel, billingModel, upstreamModel, startTime)
 	}
@@ -730,6 +730,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
 	}
+	priorModels.apply(observer)
 	observer.Observe(finalResponse.Model, true)
 	observer.ObserveServiceTier(finalResponse.ServiceTier, true)
 	if finalResponse.CompleteReceiptMetering() {
