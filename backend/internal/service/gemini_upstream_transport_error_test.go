@@ -18,7 +18,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // Gemini 传输层失败（Do 返回非 HTTP 错误）的契约，三条转发路径一致：
-//   - 不在同账号上重试，单次尝试后立即返回 *UpstreamFailoverError(502) 交给 handler 换号；
+//   - 不在同账号上重试；发送前失败可换号，已派发生成请求禁止重发；
 //   - service 不写客户端响应；
 //   - 瞬时故障不摘号，持久性故障临时摘号；
 //   - 客户端断开原样返回，不换号、不摘号；
@@ -156,4 +156,44 @@ func TestGeminiForwardAsChatCompletions_TransportErrorFailsOverWithoutRetry(t *t
 	require.Equal(t, 1, httpStub.calls, "不应在同账号上重试")
 	require.Zero(t, repo.calls)
 	require.False(t, c.Writer.Written(), "换号场景不应写客户端响应")
+}
+
+func TestGeminiCountTokensTransportDispatchBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		err          error
+		cancel       bool
+		wantEstimate bool
+	}{
+		{"raw eof", errors.New("EOF"), false, true},
+		{"sent eof", &HTTPUpstreamAttemptError{Err: errors.New("EOF"), RequestMayHaveBeenSent: true}, false, true},
+		{"sent timeout", &HTTPUpstreamAttemptError{Err: context.DeadlineExceeded, RequestMayHaveBeenSent: true}, false, true},
+		{"pre dispatch failure", &HTTPUpstreamAttemptError{Err: errors.New("connection refused")}, false, true},
+		{"cancellation", &HTTPUpstreamAttemptError{Err: context.Canceled, RequestMayHaveBeenSent: true}, false, false},
+		{"canceled caller", &HTTPUpstreamAttemptError{Err: errors.New("EOF"), RequestMayHaveBeenSent: true}, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.cancel {
+				cancel()
+			}
+			svc, httpStub, _ := newGeminiTransportErrorService(tc.err)
+			c, rec := newGeminiNativeTestContext(t)
+			result, err := svc.ForwardNative(ctx, c, geminiPoolModeAPIKeyAccount(),
+				"gemini-2.5-flash", "countTokens", false, []byte(geminiTransportTestNativeBody))
+			require.Equal(t, 1, httpStub.calls, "local estimation must not replay upstream")
+			if tc.wantEstimate {
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				require.Equal(t, ClaudeUsage{}, result.Usage, "estimate is not billable provider usage")
+				require.Equal(t, http.StatusOK, rec.Code)
+				require.Contains(t, rec.Body.String(), `"totalTokens"`)
+			} else {
+				require.ErrorIs(t, err, tc.err)
+				require.Nil(t, result)
+				require.False(t, c.Writer.Written())
+			}
+		})
+	}
 }

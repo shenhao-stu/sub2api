@@ -1295,9 +1295,8 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 		if err != nil {
 			transportErr := s.handleUpstreamTransportError(ctx, c, account, err)
-			// countTokens 不因上游链路故障而失败：本地估算兜底，不换号。
-			var failoverErr *UpstreamFailoverError
-			if action == "countTokens" && errors.As(transportErr, &failoverErr) {
+			// countTokens can estimate locally even after dispatch; never replay it.
+			if action == "countTokens" && ctx.Err() == nil && !errors.Is(transportErr, context.Canceled) {
 				estimated := estimateGeminiCountTokens(body)
 				c.JSON(http.StatusOK, map[string]any{"totalTokens": estimated})
 				return &ForwardResult{
