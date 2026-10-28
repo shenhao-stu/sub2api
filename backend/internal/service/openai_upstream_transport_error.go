@@ -45,6 +45,7 @@ var persistentUpstreamTransportErrorMarkers = []string{
 	"proxy authentication required", // HTTP proxy 407
 	"connection refused",            // proxy/upstream endpoint down
 	"no route to host",
+	"host unreachable", // SOCKS5 reply without an EHOSTUNREACH wrapper
 	"network is unreachable",
 	"no such host", // DNS resolution failure (bad/expired proxy hostname)
 }
@@ -133,16 +134,7 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 		Kind:               "request_error",
 		Message:            safeErr,
 	}
-	var attempt *HTTPUpstreamAttemptError
-	if errors.As(err, &attempt) {
-		event.DurationMs = attempt.Elapsed.Milliseconds()
-		event.RequestMayHaveBeenSent = attempt.RequestMayHaveBeenSent
-		event.ConnectionReused = attempt.ConnectionReused
-		if attempt.RequestMayHaveBeenSent {
-			event.Stage = "awaiting_response_headers"
-			event.Reason = "dispatched_request_not_retried"
-		}
-	}
+	event = withUpstreamTransportAttempt(event, err)
 	appendOpsUpstreamError(c, event)
 
 	// Client disconnected: do NOT fail over to another account and do NOT evict
@@ -165,7 +157,7 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 	// An EOF after dispatch does not prove that generation or billing did not
 	// happen. Keep the account available for new requests, but never replay this
 	// ambiguous request through the handler's pool/account failover loop.
-	if attempt != nil && attempt.RequestMayHaveBeenSent {
+	if event.RequestMayHaveBeenSent {
 		return err
 	}
 

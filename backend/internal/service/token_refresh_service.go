@@ -1054,6 +1054,11 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 			"max_retries", maxRetries,
 			"error", logredact.RedactText(err.Error()),
 		)
+		if classifyUpstreamTransportError(err).Persistent {
+			// Repeating a rejected proxy connection cannot refresh the token.
+			// Keep the existing cooldown and credential/proxy CAS below.
+			break
+		}
 
 		// 如果还有重试机会，等待后重试
 		if attempt < maxRetries {

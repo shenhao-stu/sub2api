@@ -33,9 +33,8 @@ var gatewayTransportFailoverBody = []byte(`{"type":"error","error":{"type":"upst
 //  2. for durable faults (expired/rejected proxy creds, dead proxy,
 //     DNS/routing) temporarily unschedules the account and logs a stable warn
 //     event that alert rules can key on;
-//  3. returns an error that is *UpstreamFailoverError (so the handler fails
-//     over to a healthy account) for all non-canceled errors, or the original
-//     error for context.Canceled (client gone — no failover, no eviction).
+//  3. allows failover before dispatch; cancellation or evidence of dispatch
+//     returns the original error without replay or account eviction.
 //
 // It deliberately does NOT write to the response: the handler owns the
 // response (failover, or a protocol-correct error once failover is exhausted).
@@ -52,6 +51,7 @@ func (s *GatewayService) handleUpstreamTransportError(ctx context.Context, c *gi
 	event.UpstreamStatusCode = 0
 	event.Kind = "request_error"
 	event.Message = safeErr
+	event = withUpstreamTransportAttempt(event, err)
 	appendOpsUpstreamError(c, event)
 
 	// Client disconnected: do NOT fail over to another account and do NOT
@@ -62,6 +62,10 @@ func (s *GatewayService) handleUpstreamTransportError(ctx context.Context, c *gi
 
 	// Transport attempt left local validation; count Ollama Cloud activity.
 	scheduleOllamaCloudUsageActivity(s.deferredService, account)
+
+	if event.RequestMayHaveBeenSent {
+		return err
+	}
 
 	if classifyUpstreamTransportError(err).Persistent {
 		s.tempUnscheduleTransportError(ctx, account, safeErr)
