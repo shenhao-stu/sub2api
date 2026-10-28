@@ -22,7 +22,11 @@ release command. Never disable customer features merely to satisfy a gate.
    health, migrations, journal, bounded new synthetic requests and accounting.
 2. Reload only this secondary ingress to the candidate. Redirect new connections
    to the old service addresses through it using the dedicated transition NAT
-   table. Existing conntrack entries and requests remain on the old process.
+   table. Where bridge packets bypass host IP hooks, install the same exact
+   redirect in each source container network namespace. Match initial SYN only:
+   a previously untracked established connection must never be redirected.
+   Test this from a bridge client; do not globally enable bridge netfilter.
+   Existing conntrack entries and requests remain on the old process.
 3. Verify new admission, then send native SIGTERM to the old process. Keep the
    candidate serving throughout the native drain and settlement cleanup. Do not
    use Docker's short stop timeout or force kill. Preserve shutdown evidence.

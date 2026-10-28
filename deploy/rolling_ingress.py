@@ -69,7 +69,7 @@ def transition_nat(table, pairs, published_ports=()):
         ipaddress.IPv4Address(ingress)
         if old == ingress:
             raise ValueError("ingress cannot reuse the live source address")
-        rules.append(f"ip daddr {old} ip saddr != {ingress} tcp dport 8181 dnat to {ingress}:8181")
+        rules.append(f"ip daddr {old} ip saddr != {ingress} tcp dport 8181 tcp flags & (syn | ack) == syn dnat to {ingress}:8181")
     if not rules:
         raise ValueError("empty transition")
     chains = []
@@ -81,7 +81,7 @@ def transition_nat(table, pairs, published_ports=()):
                     raise ValueError("invalid loopback published port")
                 if old_port == ingress_port:
                     raise ValueError("loopback handover must change port")
-                current.append(f"ip daddr 127.0.0.1 tcp dport {old_port} dnat to 127.0.0.1:{ingress_port}")
+                current.append(f"ip daddr 127.0.0.1 tcp dport {old_port} tcp flags & (syn | ack) == syn dnat to 127.0.0.1:{ingress_port}")
         chains.append(f"chain {name} {{ type nat hook {hook} priority -110; policy accept;\n" + "\n".join(current) + "\n}")
     return f"table ip {table} {{\n" + "\n".join(chains) + "\n}\n"
 
