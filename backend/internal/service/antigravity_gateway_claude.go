@@ -451,12 +451,16 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	var usage *ClaudeUsage
 	var firstTokenMs *int
 	var clientDisconnect bool
+	var responseErr error
 	if claudeReq.Stream {
 		// 客户端要求流式，直接透传转换
 		streamRes, err := s.handleClaudeStreamingResponse(c, resp, startTime, originalModel)
 		if err != nil {
 			logger.LegacyPrintf("service.antigravity_gateway", "%s status=stream_error error=%v", prefix, err)
-			return nil, err
+			if streamRes == nil {
+				return nil, err
+			}
+			responseErr = err
 		}
 		usage = streamRes.usage
 		firstTokenMs = streamRes.firstTokenMs
@@ -466,7 +470,10 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 		streamRes, err := s.handleClaudeStreamToNonStreaming(c, resp, startTime, originalModel)
 		if err != nil {
 			logger.LegacyPrintf("service.antigravity_gateway", "%s status=stream_collect_error error=%v", prefix, err)
-			return nil, err
+			if streamRes == nil {
+				return nil, err
+			}
+			responseErr = err
 		}
 		usage = streamRes.usage
 		firstTokenMs = streamRes.firstTokenMs
@@ -484,7 +491,7 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 		Duration:                      time.Since(startTime),
 		FirstTokenMs:                  firstTokenMs,
 		ClientDisconnect:              clientDisconnect,
-	}, nil
+	}, responseErr
 }
 
 func isSignatureRelatedError(respBody []byte) bool {

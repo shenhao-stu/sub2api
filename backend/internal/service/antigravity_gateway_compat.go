@@ -569,7 +569,7 @@ func (s *AntigravityGatewayService) handleChatCompletionsNonStreamingFromAntigra
 ) (*antigravityStreamResult, error) {
 	claudeResponse, result, err := s.collectClaudeStreamResponse(c, resp, startTime, originalModel)
 	if err != nil {
-		return nil, s.mapAntigravityCompatCollectionError(c, err)
+		return result, s.mapAntigravityCompatCollectionError(c, err)
 	}
 	var anthropicResponse apicompat.AnthropicResponse
 	if json.Unmarshal(claudeResponse, &anthropicResponse) != nil {
@@ -588,7 +588,7 @@ func (s *AntigravityGatewayService) handleResponsesNonStreamingFromAntigravity(
 ) (*antigravityStreamResult, error) {
 	claudeResponse, result, err := s.collectClaudeStreamResponse(c, resp, startTime, originalModel)
 	if err != nil {
-		return nil, s.mapAntigravityCompatCollectionError(c, err)
+		return result, s.mapAntigravityCompatCollectionError(c, err)
 	}
 	var anthropicResponse apicompat.AnthropicResponse
 	if json.Unmarshal(claudeResponse, &anthropicResponse) != nil {
@@ -605,6 +605,9 @@ func (s *AntigravityGatewayService) mapAntigravityCompatCollectionError(c *gin.C
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
+	}
+	if errors.Is(err, antigravity.ErrMalformedFunctionCall) {
+		return s.writeAntigravityCompatError(c, http.StatusBadGateway, "malformed_function_call", err.Error())
 	}
 	if strings.Contains(err.Error(), "stream data interval timeout") {
 		return s.writeAntigravityCompatError(c, http.StatusBadGateway, "upstream_timeout", "Upstream stream data interval timeout")

@@ -749,6 +749,7 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, 
 	if upstreamResponseModelObserverFromContext(c) == nil {
 		beginUpstreamResponseModelObservation(c)
 	}
+	defer resp.Body.Close()
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
 	if s.settingService.cfg != nil && s.settingService.cfg.Gateway.MaxLineSize > 0 {
@@ -762,6 +763,22 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, 
 	var lastWithParts map[string]any
 	var collectedParts []map[string]any // 收集所有 parts（包括 text、thinking、functionCall、inlineData 等）
 	var meaningfulResponse bool
+	var terminalErr error
+	var observedUsage *ClaudeUsage
+	usageMetadata := map[string]any{}
+	var failureDrainTimer *time.Timer
+	var failureDrainCh <-chan time.Time
+	defer func() {
+		if failureDrainTimer != nil {
+			failureDrainTimer.Stop()
+		}
+	}()
+	meteredFailure := func(err error) ([]byte, *antigravityStreamResult, error) {
+		if observedUsage == nil || !observedUsage.hasObservedTokens() {
+			return nil, nil, err
+		}
+		return nil, &antigravityStreamResult{usage: observedUsage, firstTokenMs: firstTokenMs}, err
+	}
 
 	type scanEvent struct {
 		line string
@@ -823,7 +840,7 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, 
 				if errors.Is(ev.err, bufio.ErrTooLong) {
 					logger.LegacyPrintf("service.antigravity_gateway", "SSE line too long (antigravity claude non-stream): max_size=%d error=%v", maxLineSize, ev.err)
 				}
-				return nil, nil, ev.err
+				return meteredFailure(errors.Join(terminalErr, ev.err))
 			}
 
 			line := ev.line
@@ -850,6 +867,21 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, 
 				continue
 			}
 
+			if meter, ok := parsed["usageMetadata"].(map[string]any); ok {
+				// Partial snapshots only replace fields actually reported, including zero.
+				for field, value := range meter {
+					usageMetadata[field] = value
+				}
+				meterBody, _ := json.Marshal(map[string]any{"usageMetadata": usageMetadata})
+				observedUsage = extractGeminiUsage(meterBody)
+			}
+			// Keep draining the existing response for its late meter; never resend it.
+			if terminalErr == nil && extractGeminiFinishReason(parsed) == "MALFORMED_FUNCTION_CALL" {
+				terminalErr = antigravity.ErrMalformedFunctionCall
+				failureDrainTimer = time.NewTimer(disconnectedResponseDrainTimeout)
+				failureDrainCh = failureDrainTimer.C
+			}
+
 			last = parsed
 
 			// 保留最后一个有 parts 的响应，并收集所有 parts
@@ -868,17 +900,23 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, 
 				}
 			}
 
+		case <-failureDrainCh:
+			return meteredFailure(errors.Join(terminalErr, fmt.Errorf("upstream failure usage drain timeout")))
+
 		case <-intervalCh:
 			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
 			if time.Since(lastRead) < streamInterval {
 				continue
 			}
 			logger.LegacyPrintf("service.antigravity_gateway", "Stream data interval timeout (antigravity claude non-stream)")
-			return nil, nil, fmt.Errorf("stream data interval timeout")
+			return meteredFailure(errors.Join(terminalErr, fmt.Errorf("stream data interval timeout")))
 		}
 	}
 
 returnResponse:
+	if terminalErr != nil {
+		return meteredFailure(terminalErr)
+	}
 	// 处理空响应情况 — 触发同账号重试 + failover 切换账号
 	if !meaningfulResponse {
 		logger.LegacyPrintf("service.antigravity_gateway", "[antigravity-Forward] warning: empty stream response (claude non-stream), triggering failover")
@@ -933,12 +971,14 @@ func (s *AntigravityGatewayService) handleClaudeStreamToNonStreaming(c *gin.Cont
 		}
 
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, err
+			return streamRes, err
 		}
 
 		errMsg := "Failed to parse upstream response"
 		errType := "upstream_error"
-		if strings.Contains(err.Error(), "stream data interval timeout") {
+		if errors.Is(err, antigravity.ErrMalformedFunctionCall) {
+			errMsg, errType = antigravity.ErrMalformedFunctionCall.Error(), "malformed_function_call"
+		} else if strings.Contains(err.Error(), "stream data interval timeout") {
 			errMsg = "Upstream stream data interval timeout"
 			errType = "upstream_timeout"
 		} else if errors.Is(err, bufio.ErrTooLong) {
@@ -946,7 +986,7 @@ func (s *AntigravityGatewayService) handleClaudeStreamToNonStreaming(c *gin.Cont
 			errType = "response_too_large"
 		}
 
-		return nil, s.writeClaudeError(c, http.StatusBadGateway, errType, errMsg)
+		return streamRes, s.writeClaudeError(c, http.StatusBadGateway, errType, errMsg)
 	}
 	c.Data(http.StatusOK, "application/json", claudeResp)
 	return streamRes, nil
@@ -1160,7 +1200,7 @@ func (s *AntigravityGatewayService) extractImageInputSize(body []byte) string {
 }
 
 // isImageGenerationModel 判断模型是否为图片生成模型
-// 支持的模型：gemini-3.1-flash-image, gemini-3-pro-image, gemini-2.5-flash-image 等
+// 支持的模型：gemini-3.1-flash-image, gemini-3.1-flash-lite-image, gemini-3-pro-image, gemini-2.5-flash-image 等
 func isImageGenerationModel(model string) bool {
 	modelLower := strings.ToLower(model)
 	// 移除 models/ 前缀
@@ -1170,6 +1210,8 @@ func isImageGenerationModel(model string) bool {
 	return modelLower == "gemini-3.1-flash-image" ||
 		modelLower == "gemini-3.1-flash-image-preview" ||
 		strings.HasPrefix(modelLower, "gemini-3.1-flash-image-") ||
+		modelLower == "gemini-3.1-flash-lite-image" ||
+		strings.HasPrefix(modelLower, "gemini-3.1-flash-lite-image-") ||
 		modelLower == "gemini-3-pro-image" ||
 		modelLower == "gemini-3-pro-image-preview" ||
 		strings.HasPrefix(modelLower, "gemini-3-pro-image-") ||
