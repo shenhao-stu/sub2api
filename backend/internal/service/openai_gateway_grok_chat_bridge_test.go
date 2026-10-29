@@ -175,9 +175,14 @@ func TestGrokChatResponsesBridgeEligibility(t *testing.T) {
 			reason: "invalid_parallel_tool_calls",
 		},
 		{
-			name:   "reasoning effort falls back because conversion adds summary",
-			body:   `{"model":"grok","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`,
-			reason: "unsupported_reasoning_effort",
+			name: "reasoning effort bridges without adding summary",
+			body: `{"model":"grok","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`,
+			want: true,
+		},
+		{
+			name:   "non string reasoning effort falls back",
+			body:   `{"model":"grok","messages":[{"role":"user","content":"hi"}],"reasoning_effort":{"level":"high"}}`,
+			reason: "invalid_reasoning_effort",
 		},
 		{
 			name:   "both token limits fall back",
