@@ -52,13 +52,14 @@ func grokChatResponsesBridgeEligibility(body []byte) (bool, string) {
 		return false, "invalid_json"
 	}
 
-	// These fields have no effect when explicitly set to JSON null. Accepting
-	// that common SDK representation keeps the request on the bridge path,
-	// while non-null values remain unsupported because the Responses converter
-	// cannot preserve their Chat Completions semantics.
-	for _, field := range []string{"stop", "reasoning_effort"} {
-		if raw, exists := root[field]; exists && !grokChatJSONNull(raw) {
-			return false, "unsupported_" + field
+	// Responses cannot preserve Chat stop sequences; an explicit null is inert.
+	if raw, exists := root["stop"]; exists && !grokChatJSONNull(raw) {
+		return false, "unsupported_stop"
+	}
+	if raw, exists := root["reasoning_effort"]; exists && !grokChatJSONNull(raw) {
+		var effort string
+		if json.Unmarshal(raw, &effort) != nil {
+			return false, "invalid_reasoning_effort"
 		}
 	}
 	if raw, exists := root["instructions"]; exists {
@@ -550,6 +551,10 @@ func (s *OpenAIGatewayService) forwardGrokChatCompletionsViaResponses(
 	}
 	responsesReq.Model = upstreamModel
 	responsesReq.Stream = true
+	if responsesReq.Reasoning != nil {
+		// The shared converter adds an OpenAI summary that Chat never requested.
+		responsesReq.Reasoning.Summary = ""
+	}
 	// Keep Chat and native Responses paths aligned for OpenAI-compatible
 	// service_tier aliases (for example, "fast" -> "priority"). Unknown
 	// values are omitted by the shared normalizer instead of reaching xAI.
