@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -2841,37 +2842,43 @@ func createOpenAIChatCompletionsTestPayload(modelID string, prompt string) map[s
 	}
 }
 
-// processClaudeStream processes the SSE stream from Claude API
-func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader) error {
-	reader := bufio.NewReader(body)
+// Only the response tail is bounded; model generation keeps its existing timeout.
+const accountTestClaudeFinalizeTimeout = 30 * time.Second
 
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
-				return nil
-			}
-			return s.sendErrorAndEnd(c, fmt.Sprintf("Stream read error: %s", err.Error()))
+// processClaudeStream waits for HTTP EOF so the upstream can finalize usage.
+func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.ReadCloser) error {
+	scanner := bufio.NewScanner(body)
+	maxLineSize := defaultMaxLineSize
+	if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
+		maxLineSize = s.cfg.Gateway.MaxLineSize
+	}
+	scanBuf := getSSEScannerBuf64K()
+	defer putSSEScannerBuf64K(scanBuf)
+	scanner.Buffer(scanBuf[:0], maxLineSize)
+
+	var terminal bool
+	var finalizeTimer *time.Timer
+	var finalizeExpired atomic.Bool
+	defer func() {
+		if finalizeTimer != nil {
+			finalizeTimer.Stop()
 		}
+	}()
 
-		line = strings.TrimSpace(line)
-		if line == "" || !sseDataPrefix.MatchString(line) {
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !sseDataPrefix.MatchString(line) {
 			continue
 		}
-
 		jsonStr := sseDataPrefix.ReplaceAllString(line, "")
-		if jsonStr == "[DONE]" {
-			s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
-			return nil
-		}
-
 		var data map[string]any
-		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-			continue
+		eventType := "message_stop"
+		if jsonStr != "[DONE]" {
+			if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+				return s.sendErrorAndEnd(c, "Invalid Claude stream: expected SSE JSON data")
+			}
+			eventType, _ = data["type"].(string)
 		}
-
-		eventType, _ := data["type"].(string)
 
 		switch eventType {
 		case "content_block_delta":
@@ -2881,8 +2888,13 @@ func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader)
 				}
 			}
 		case "message_stop":
-			s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
-			return nil
+			if !terminal {
+				terminal = true
+				finalizeTimer = time.AfterFunc(accountTestClaudeFinalizeTimeout, func() {
+					finalizeExpired.Store(true)
+					_ = body.Close()
+				})
+			}
 		case "error":
 			errorMsg := "Unknown error"
 			if errData, ok := data["error"].(map[string]any); ok {
@@ -2893,6 +2905,17 @@ func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader)
 			return s.sendErrorAndEnd(c, errorMsg)
 		}
 	}
+	if finalizeExpired.Load() {
+		return s.sendErrorAndEnd(c, "Claude stream finalization timed out after terminal event")
+	}
+	if err := scanner.Err(); err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Stream read error: %s", err.Error()))
+	}
+	if !terminal {
+		return s.sendErrorAndEnd(c, "Claude stream ended before message_stop or [DONE]")
+	}
+	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+	return nil
 }
 
 // processOpenAIChatCompletionsStream processes SSE chunks from the
