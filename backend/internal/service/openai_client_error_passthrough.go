@@ -108,7 +108,7 @@ func WriteOpenAIClientErrorPassthrough(c *gin.Context, rules *ErrorPassthroughSe
 	return writeOpenAIErrorFields(c, fields, streamStarted)
 }
 
-func writeOpenAIErrorFields(c *gin.Context, fields openAIClientErrorFields, streamStarted bool) bool {
+func writeOpenAIErrorFields(c *gin.Context, fields openAIClientErrorFields, streamStarted bool, usage ...*OpenAIUsage) bool {
 	status := fields.StatusCode
 	streamStarted = StopOpenAICompactSSEKeepaliveCommitted(c) || streamStarted ||
 		(c.Writer.Written() && strings.HasPrefix(c.Writer.Header().Get("Content-Type"), "text/event-stream"))
@@ -117,7 +117,7 @@ func writeOpenAIErrorFields(c *gin.Context, fields openAIClientErrorFields, stre
 	if c.Request != nil && c.Request.URL != nil {
 		path = strings.TrimRight(c.Request.URL.Path, "/")
 	}
-	payload := gin.H{"error": fields}
+	payload := openAIMeteredErrorMetadata(c, openAIErrorBodyWithUsage(gin.H{"error": fields}, usage...))
 	if strings.HasSuffix(path, "/messages") {
 		payload["type"] = "error"
 	}
@@ -146,7 +146,11 @@ func writeOpenAIErrorFields(c *gin.Context, fields openAIClientErrorFields, stre
 				return true
 			}
 			response["status"], response["error"] = "failed", fields
-			delete(response, "usage")
+			if meter, ok := payload["usage"]; ok {
+				response["usage"] = meter
+			} else {
+				delete(response, "usage")
+			}
 			payload = gin.H{"type": "response.failed", "sequence_number": 1, "response": response}
 		}
 		encoded, _ := json.Marshal(payload)
