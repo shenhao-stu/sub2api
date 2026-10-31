@@ -363,10 +363,16 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 	defer cancel()
 
 	acquireSlot := func() (*service.AcquireResult, error) {
-		if slotType == "user" {
-			return h.concurrencyService.AcquireUserSlot(ctx, id, maxConcurrency)
+		return h.concurrencyService.AcquireUserSlot(ctx, id, maxConcurrency)
+	}
+	if slotType == "account" {
+		var cancelWait func()
+		var err error
+		acquireSlot, cancelWait, err = h.concurrencyService.NewAccountSlotWait(ctx, id, maxConcurrency, timeout)
+		if err != nil {
+			return nil, err
 		}
-		return h.concurrencyService.AcquireAccountSlot(ctx, id, maxConcurrency)
+		defer cancelWait()
 	}
 
 	if tryImmediate {

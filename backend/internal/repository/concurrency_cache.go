@@ -68,7 +68,7 @@ var (
 	// ARGV[2] = TTL（秒）
 	// ARGV[3] = requestID
 	// 返回 {是否成功, Redis 当前秒}，Go 侧复用同一时间源写活跃索引，省去额外 TIME 往返。
-	acquireScript = redis.NewScript(`
+	acquireScript = redis.NewScript(reapAccountWaitersLua + `
 		-- Redis 3.2-4.x compat: opt into effects replication so redis.call('TIME')
 		-- replicates correctly. No-op on Redis 5.0+ (effects replication is default).
 		redis.replicate_commands()
@@ -82,6 +82,10 @@ var (
 		local timeResult = redis.call('TIME')
 		local now = tonumber(timeResult[1])
 		local expireBefore = now - ttl
+		local queue, expiry = KEYS[3], KEYS[4]
+		if queue then
+			reapWaiters(queue, expiry, now * 1000 + math.floor(tonumber(timeResult[2]) / 1000))
+		end
 
 		-- 清理过期槽位
 		redis.call('ZREMRANGEBYSCORE', key, '-inf', expireBefore)
@@ -98,6 +102,16 @@ var (
 		-- 检查是否达到并发上限
 		local count = redis.call('ZCARD', key) + redis.call('ZCARD', liveKey)
 		if count < maxConcurrency then
+			if queue then
+				if ARGV[4] == '1' then
+					local rank = redis.call('ZRANK', queue, requestID)
+					if rank == false or rank >= maxConcurrency - count then return {0, now} end
+					redis.call('ZREM', queue, requestID)
+					redis.call('ZREM', expiry, requestID)
+				elseif redis.call('ZCARD', queue) > 0 then
+					return {0, now}
+				end
+			end
 			redis.call('ZADD', key, now, requestID)
 			redis.call('EXPIRE', key, ttl)
 			return {1, now}
@@ -128,7 +142,7 @@ var (
 		return redis.call('ZCARD', key) + redis.call('ZCARD', liveKey)
 	`)
 
-	acquireLiveLeaseScript = redis.NewScript(`
+	acquireLiveLeaseScript = redis.NewScript(reapAccountWaitersLua + `
 		redis.replicate_commands()
 		local accountRegular = KEYS[1]
 		local accountLive = KEYS[2]
@@ -140,13 +154,18 @@ var (
 		local ttl = tonumber(ARGV[3])
 		local leaseID = ARGV[4]
 		local replacing = tonumber(ARGV[5])
-		local now = tonumber(redis.call('TIME')[1])
+		local clock = redis.call('TIME')
+		local now = tonumber(clock[1])
 		local liveExpireBefore = now - ttl
 		redis.call('ZREMRANGEBYSCORE', accountLive, '-inf', liveExpireBefore)
 		redis.call('ZREMRANGEBYSCORE', userLive, '-inf', liveExpireBefore)
 		redis.call('ZREMRANGEBYSCORE', apiLive, '-inf', liveExpireBefore)
 		if redis.call('ZSCORE', accountLive, leaseID) ~= false then
 			return 1
+		end
+		if accountMax > 0 and replacing ~= 1 then
+			reapWaiters(KEYS[6], KEYS[7], now * 1000 + math.floor(tonumber(clock[2]) / 1000))
+			if redis.call('ZCARD', KEYS[6]) > 0 then return 0 end
 		end
 		local accountCount = redis.call('ZCARD', accountRegular) + redis.call('ZCARD', accountLive)
 		local userCount = redis.call('ZCARD', userRegular) + redis.call('ZCARD', userLive)
@@ -629,9 +648,18 @@ func runScriptInt64Pair(ctx context.Context, rdb *redis.Client, script *redis.Sc
 // Account slot operations
 
 func (c *concurrencyCache) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
+	return c.acquireAccountSlot(ctx, accountID, maxConcurrency, requestID, false)
+}
+
+func (c *concurrencyCache) acquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string, waiting bool) (bool, error) {
 	key := accountSlotKey(accountID)
+	queue, expiry, _ := accountWaitKeys(accountID)
+	mode := 0
+	if waiting {
+		mode = 1
+	}
 	// 时间戳在 Lua 脚本内使用 Redis TIME 命令获取，确保多实例时钟一致
-	result, now, err := runScriptInt64Pair(ctx, c.rdb, acquireScript, []string{key, liveAccountSlotKey(accountID)}, maxConcurrency, c.slotTTLSeconds, requestID)
+	result, now, err := runScriptInt64Pair(ctx, c.rdb, acquireScript, []string{key, liveAccountSlotKey(accountID), queue, expiry}, maxConcurrency, c.slotTTLSeconds, requestID, mode)
 	if err != nil {
 		return false, err
 	}
@@ -809,12 +837,15 @@ func (c *concurrencyCache) AcquireLiveLease(
 	if replacingRegularSlots {
 		replacing = 1
 	}
+	queue, expiry, _ := accountWaitKeys(accountID)
 	result, err := acquireLiveLeaseScript.Run(ctx, c.rdb, []string{
 		accountSlotKey(accountID),
 		liveAccountSlotKey(accountID),
 		userSlotKey(userID),
 		liveUserSlotKey(userID),
 		liveAPIKeySlotKey(apiKeyID),
+		queue,
+		expiry,
 	}, accountMax, userMax, liveLeaseTTLSeconds, leaseID, replacing).Int()
 	return result == 1, err
 }
