@@ -38,7 +38,6 @@ func (s *GeminiMessagesCompatService) ForwardAsChatCompletions(
 		return nil, s.writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", "model is required")
 	}
 
-	originalModel := ccReq.Model
 	clientStream := ccReq.Stream
 	includeUsage := ccReq.StreamOptions != nil && ccReq.StreamOptions.IncludeUsage
 
@@ -67,7 +66,7 @@ func (s *GeminiMessagesCompatService) ForwardAsChatCompletions(
 		return nil, fmt.Errorf("marshal chat completions compat request: %w", err)
 	}
 
-	return s.forwardClaudeBodyAsChatCompletions(ctx, c, account, claudeBody, originalModel, clientStream, includeUsage, startTime)
+	return s.forwardClaudeBodyAsChatCompletions(ctx, c, account, claudeBody, &ccReq, clientStream, includeUsage, startTime)
 }
 
 func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
@@ -75,11 +74,12 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 	c *gin.Context,
 	account *Account,
 	claudeBody []byte,
-	originalModel string,
+	chatReq *apicompat.ChatCompletionsRequest,
 	clientStream bool,
 	includeUsage bool,
 	startTime time.Time,
 ) (*ForwardResult, error) {
+	originalModel := chatReq.Model
 	var req struct {
 		Model  string `json:"model"`
 		Stream bool   `json:"stream"`
@@ -102,6 +102,10 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 	geminiReq, err := convertClaudeMessagesToGeminiGenerateContent(claudeBody)
 	if err != nil {
 		return nil, s.writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+	}
+	if fields := geminiChatFinalTurnError(mappedModel, chatReq.Messages, geminiReq); fields != nil {
+		writeOpenAIErrorFields(c, *fields, false)
+		return nil, errors.New(fields.Message)
 	}
 	if geminiImageGenerationDenied(c, geminiReq, originalModel, req.Model, mappedModel) {
 		return nil, s.writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", ImageGenerationPermissionMessage())
