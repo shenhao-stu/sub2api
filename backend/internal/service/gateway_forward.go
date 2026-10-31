@@ -847,6 +847,13 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				// 上游 HTTP 200 + SSE 流体内出现 event:error 帧。
 				body := []byte(sseErr.RawData)
 				semanticStatus := anthropicStreamErrorStatus(body)
+				if isContentRefusal(semanticStatus, body) {
+					usage := &ClaudeUsage{}
+					if streamResult != nil {
+						usage = streamResult.usage
+					}
+					return s.handleContentRefusalBody(c, account, resp, body, usage, originalModel, mappedModel, true, startTime)
+				}
 				if AnthropicKeepaliveAdjustedWrittenSize(c) == writerSizeBeforeStream && gjson.GetBytes(body, "error.type").String() == "overloaded_error" {
 					syntheticResp := &http.Response{
 						StatusCode: semanticStatus,
@@ -1140,6 +1147,10 @@ func (s *GatewayService) sseStreamErrorEventFailover(ctx context.Context, c *gin
 		upstreamDetail = truncateString(rawData, maxBytes)
 	}
 
+	kind := "stream_error"
+	if isContentRefusal(semanticStatus, body) {
+		kind = "request_rejection"
+	}
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		ProxyID:            opsUpstreamProxyID(account),
 		ProxyName:          opsUpstreamProxyName(account),
@@ -1148,7 +1159,7 @@ func (s *GatewayService) sseStreamErrorEventFailover(ctx context.Context, c *gin
 		AccountName:        account.Name,
 		UpstreamStatusCode: semanticStatus,
 		UpstreamRequestID:  resp.Header.Get("x-request-id"),
-		Kind:               "stream_error",
+		Kind:               kind,
 		Message:            upstreamMsg,
 		Detail:             upstreamDetail,
 	})

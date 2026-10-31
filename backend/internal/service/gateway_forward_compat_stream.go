@@ -253,13 +253,19 @@ func finishAnthropicCompatStreamFailure(c *gin.Context, writerSizeBeforeStream i
 	return result, failure.err
 }
 
+func anthropicCompatFailureFields(failure *anthropicCompatStreamFailure) openAIClientErrorFields {
+	status := anthropicCompatFailureStatus(failure)
+	var upstream *sseStreamErrorEventError
+	if errors.As(failure.err, &upstream) && isContentRefusal(status, []byte(upstream.RawData)) {
+		return boundedOpenAIClientError([]byte(upstream.RawData), status)
+	}
+	return openAIClientErrorFields{Type: failure.errType, Message: failure.message, StatusCode: status}
+}
+
 // writeAnthropicCompatCCStreamFailure 向 Chat Completions 流写出终止错误帧，
 // 并标记响应已提交，handler 不再追加兜底错误。
 func writeAnthropicCompatCCStreamFailure(c *gin.Context, failure *anthropicCompatStreamFailure, usage *ClaudeUsage) {
-	body := gin.H{"error": openAIClientErrorFields{
-		Type: failure.errType, Message: failure.message,
-		StatusCode: anthropicCompatFailureStatus(failure),
-	}}
+	body := gin.H{"error": anthropicCompatFailureFields(failure)}
 	if usage != nil && usage.hasObservedTokens() {
 		u := claudeUsageToOpenAIUsage(usage)
 		body["usage"] = apicompat.ChatUsage{
@@ -282,6 +288,8 @@ func writeAnthropicCompatResponsesStreamFailure(c *gin.Context, state *apicompat
 	if responseID == "" {
 		responseID = "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	}
+	fields := anthropicCompatFailureFields(failure)
+	code := firstNonEmpty(fields.Code, fields.Type)
 	evt := apicompat.ResponsesStreamEvent{
 		Type:           "response.failed",
 		SequenceNumber: state.SequenceNumber,
@@ -292,7 +300,7 @@ func writeAnthropicCompatResponsesStreamFailure(c *gin.Context, state *apicompat
 			Model:     state.Model,
 			Status:    "failed",
 			Output:    []apicompat.ResponsesOutput{},
-			Error:     &apicompat.ResponsesError{Code: failure.errType, Message: failure.message, StatusCode: anthropicCompatFailureStatus(failure)},
+			Error:     &apicompat.ResponsesError{Code: code, Message: fields.Message, StatusCode: fields.StatusCode},
 		},
 	}
 	if usage != nil && usage.hasObservedTokens() {

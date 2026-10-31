@@ -881,7 +881,9 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 		}
 
 		if eventName == "error" {
-			return nil, dataLine, nil, &sseStreamErrorEventError{RawData: dataLine}
+			var event map[string]any
+			_ = json.Unmarshal([]byte(dataLine), &event)
+			return nil, dataLine, s.extractSSEUsagePatch(event), &sseStreamErrorEventError{RawData: dataLine}
 		}
 
 		if dataLine == "" {
@@ -1087,6 +1089,10 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				outputBlocks, data, usagePatch, err := processSSEEvent(pendingEventLines)
 				pendingEventLines = pendingEventLines[:0]
 				if err != nil {
+					mergeSSEErrorUsagePatch(usage, usagePatch)
+					if isContentRefusal(anthropicStreamErrorStatus([]byte(data)), []byte(data)) {
+						return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, err
+					}
 					if usage.hasObservedTokens() {
 						if !clientDisconnected {
 							sendErrorEvent("upstream_error", sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage([]byte(data))))
@@ -1216,7 +1222,7 @@ func (s *GatewayService) extractSSEUsagePatch(event map[string]any) *sseUsagePat
 	case "message_start":
 		msg, _ := event["message"].(map[string]any)
 		usageObj, _ = msg["usage"].(map[string]any)
-	case "message_delta":
+	case "message_delta", "error":
 		usageObj, _ = event["usage"].(map[string]any)
 	default:
 		return nil
@@ -1229,7 +1235,7 @@ func (s *GatewayService) extractSSEUsagePatch(event map[string]any) *sseUsagePat
 	patch.inputTokens, patch.hasInputTokens = parseSSEUsageInt(usageObj["input_tokens"])
 	patch.cacheCreationInputTokens, patch.hasCacheCreationInput = parseSSEUsageInt(usageObj["cache_creation_input_tokens"])
 	patch.cacheReadInputTokens, patch.hasCacheReadInput = parseSSEUsageInt(usageObj["cache_read_input_tokens"])
-	if eventType == "message_delta" {
+	if eventType == "message_delta" || eventType == "error" {
 		patch.outputTokens, patch.hasOutputTokens = parseSSEUsageInt(usageObj["output_tokens"])
 	}
 	if cc, ok := usageObj["cache_creation"].(map[string]any); ok {
@@ -1262,6 +1268,32 @@ func mergeSSEUsagePatch(usage *ClaudeUsage, patch *sseUsagePatch) {
 	if patch.hasCacheCreation1h {
 		usage.CacheCreation1hTokens = patch.cacheCreation1hTokens
 	}
+}
+
+func (s *GatewayService) mergeSSEErrorUsageJSON(usage *ClaudeUsage, raw string) {
+	var event map[string]any
+	if json.Unmarshal([]byte(raw), &event) == nil {
+		mergeSSEErrorUsagePatch(usage, s.extractSSEUsagePatch(event))
+	}
+}
+
+// An error is not a completed response receipt. Keep an observed input/cache
+// vector intact; accepting a partial replacement can erase or double-count it.
+func mergeSSEErrorUsagePatch(usage *ClaudeUsage, patch *sseUsagePatch) {
+	if usage == nil || patch == nil {
+		return
+	}
+	inputObserved := usage.InputTokens > 0 || usage.CacheReadInputTokens > 0 ||
+		usage.CacheCreationInputTokens > 0 || usage.CacheCreation5mTokens > 0 || usage.CacheCreation1hTokens > 0
+	output := usage.OutputTokens
+	if inputObserved {
+		if patch.hasOutputTokens {
+			usage.OutputTokens = max(output, patch.outputTokens)
+		}
+		return
+	}
+	mergeSSEUsagePatch(usage, patch)
+	usage.OutputTokens = max(output, usage.OutputTokens)
 }
 
 // SSE counts are cumulative: an explicit nonnegative integer, including zero,

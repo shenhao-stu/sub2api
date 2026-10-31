@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -23,7 +24,7 @@ func isContentRefusal(status int, body []byte) bool {
 			Code string `json:"code"`
 		} `json:"error"`
 	}
-	return json.Unmarshal(body, &doc) == nil && (doc.Error.Type == "content_refusal" || doc.Error.Code == "content_policy_violation")
+	return json.Unmarshal(body, &doc) == nil && (doc.Error.Type == "content_refusal" || doc.Error.Code == "content_policy_violation" || doc.Error.Code == "policy_blocked")
 }
 
 func (s *GatewayService) handleContentRefusalResponse(c *gin.Context, account *Account, resp *http.Response, model, upstreamModel string, stream bool, start time.Time) (*ForwardResult, error, bool) {
@@ -36,7 +37,13 @@ func (s *GatewayService) handleContentRefusalResponse(c *gin.Context, account *A
 	if readErr != nil || !isContentRefusal(resp.StatusCode, body) {
 		return nil, nil, false
 	}
-	fields := boundedOpenAIClientError(body, resp.StatusCode)
+	result, err := s.handleContentRefusalBody(c, account, resp, body, parseClaudeUsageFromResponseBody(body), model, upstreamModel, stream, start)
+	return result, err, true
+}
+
+func (s *GatewayService) handleContentRefusalBody(c *gin.Context, account *Account, resp *http.Response, body []byte, usage *ClaudeUsage, model, upstreamModel string, stream bool, start time.Time) (*ForwardResult, error) {
+	const status = http.StatusForbidden
+	fields := boundedOpenAIClientError(body, status)
 	// Preserve restricted diagnostics under the existing administrator setting.
 	// Client redaction must not erase the evidence used to correlate incidents.
 	detail := ""
@@ -58,15 +65,14 @@ func (s *GatewayService) handleContentRefusalResponse(c *gin.Context, account *A
 			upstreamRequestID = envelope.Error.RequestID
 		}
 	}
-	setOpsUpstreamError(c, resp.StatusCode, fields.Message, detail)
+	setOpsUpstreamError(c, status, fields.Message, detail)
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		AccountID: account.ID, Platform: account.Platform,
-		UpstreamStatusCode: resp.StatusCode, UpstreamRequestID: upstreamRequestID,
+		UpstreamStatusCode: status, UpstreamRequestID: upstreamRequestID,
 		Kind: "request_rejection", Message: fields.Message, Detail: detail,
 	})
 	MarkResponseCommitted(c)
 	payload := gin.H{"type": "error", "error": fields}
-	usage := parseClaudeUsageFromResponseBody(body)
 	var result *ForwardResult
 	if usage.hasObservedTokens() {
 		// A refusal can follow real metering. Preserve that usage for the existing
@@ -79,6 +85,19 @@ func (s *GatewayService) handleContentRefusalResponse(c *gin.Context, account *A
 		result = &ForwardResult{RequestID: resp.Header.Get("x-request-id"), UpstreamHeaders: resp.Header,
 			Usage: *usage, Model: model, UpstreamModel: upstreamModel, Stream: stream, Duration: time.Since(start)}
 	}
-	WriteAnthropicErrorResponse(c, resp.StatusCode, payload)
-	return result, fmt.Errorf("upstream content refusal: %s", fields.Message), true
+	path := ""
+	if c.Request != nil && c.Request.URL != nil {
+		path = strings.TrimRight(c.Request.URL.Path, "/")
+	}
+	if strings.HasSuffix(path, "/chat/completions") || strings.HasSuffix(path, "/responses") {
+		var meter *OpenAIUsage
+		if usage.hasObservedTokens() {
+			converted := claudeUsageToOpenAIUsage(usage)
+			meter = &converted
+		}
+		writeOpenAIErrorFields(c, fields, false, meter)
+	} else {
+		WriteAnthropicErrorResponse(c, status, payload)
+	}
+	return result, fmt.Errorf("upstream content refusal: %s", fields.Message)
 }

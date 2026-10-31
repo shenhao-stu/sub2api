@@ -166,6 +166,10 @@ func (s *GatewayService) ForwardAsResponses(
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
+		if isContentRefusal(resp.StatusCode, respBody) {
+			return s.handleContentRefusalBody(c, account, resp, respBody, parseClaudeUsageFromResponseBody(respBody), originalModel, mappedModel, clientStream, startTime)
+		}
+
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 
@@ -208,6 +212,9 @@ func (s *GatewayService) ForwardAsResponses(
 		switch {
 		case errors.As(handleErr, &sseErr):
 			terminal := result != nil || c.Writer.Size() != writerSizeBeforeStream || IsResponseCommitted(c)
+			if !terminal && isContentRefusal(anthropicStreamErrorStatus([]byte(sseErr.RawData)), []byte(sseErr.RawData)) {
+				return s.handleContentRefusalBody(c, account, resp, []byte(sseErr.RawData), parseClaudeUsageFromResponseBody([]byte(sseErr.RawData)), originalModel, mappedModel, clientStream, startTime)
+			}
 			failure := s.sseStreamErrorEventFailover(ctx, c, account, resp, sseErr.RawData, mappedModel, terminal)
 			if terminal {
 				return result, handleErr
@@ -218,6 +225,15 @@ func (s *GatewayService) ForwardAsResponses(
 		}
 	} else {
 		result, handleErr = s.handleResponsesBufferedStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping)
+	}
+
+	var policyErr *sseStreamErrorEventError
+	if errors.As(handleErr, &policyErr) && isContentRefusal(anthropicStreamErrorStatus([]byte(policyErr.RawData)), []byte(policyErr.RawData)) && !IsResponseCommitted(c) {
+		usage := &ClaudeUsage{}
+		if result != nil {
+			usage = &result.Usage
+		}
+		return s.handleContentRefusalBody(c, account, resp, []byte(policyErr.RawData), usage, originalModel, mappedModel, clientStream, startTime)
 	}
 
 	return result, handleErr
@@ -436,6 +452,11 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		}
 
 		// message_start carries the initial response structure
+		if event.Type == "error" && isContentRefusal(anthropicStreamErrorStatus([]byte(payload)), []byte(payload)) {
+			s.mergeSSEErrorUsageJSON(&usage, payload)
+			return &ForwardResult{RequestID: requestID, UpstreamHeaders: resp.Header, Usage: usage, Model: originalModel, UpstreamModel: mappedModel, ReasoningEffort: reasoningEffort, Duration: time.Since(startTime)}, &sseStreamErrorEventError{RawData: payload}
+		}
+
 		if event.Type == "message_start" && event.Message != nil {
 			finalResp = event.Message
 			mergeAnthropicUsage(&usage, event.Message.Usage)
@@ -699,6 +720,9 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			continue
 		}
 
+		if event.Type == "error" {
+			s.mergeSSEErrorUsageJSON(&usage, payload)
+		}
 		stream.observe(&event, payload)
 		if stream.upstreamErrType != "" {
 			break
