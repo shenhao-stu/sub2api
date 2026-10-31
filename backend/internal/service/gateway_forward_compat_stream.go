@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"go.uber.org/zap"
 )
 
@@ -276,6 +277,10 @@ func writeAnthropicCompatCCStreamFailure(c *gin.Context, failure *anthropicCompa
 			},
 		}
 	}
+	if anthropicCompatFailureFields(failure).Code == "policy_blocked" && usage.hasObservedTokens() {
+		converted := policyClaudeUsageToOpenAIUsage(usage)
+		body["usage"] = policyOpenAIWireUsage(&converted)
+	}
 	payload, _ := json.Marshal(openAIMeteredErrorMetadata(c, body))
 	commitAnthropicCompatStreamFailure(c, failure, "data: "+string(payload)+"\n\n")
 }
@@ -316,6 +321,14 @@ func writeAnthropicCompatResponsesStreamFailure(c *gin.Context, state *apicompat
 	payload, err := json.Marshal(evt)
 	if err != nil {
 		return
+	}
+	if fields.Code == "policy_blocked" && usage.hasObservedTokens() {
+		if split := knownPolicyCacheCreation(usage); split != nil {
+			payload, err = sjson.SetBytes(payload, "response.usage.cache_creation", split)
+			if err != nil {
+				return
+			}
+		}
 	}
 	payloads, _, err := restorer.RestoreEvent(payload)
 	if err != nil {

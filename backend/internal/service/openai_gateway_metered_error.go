@@ -161,7 +161,7 @@ func (s *OpenAIGatewayService) handleMeteredOpenAIHTTPError(ctx context.Context,
 // status or error fields. Only upstream-reported quantities are supplied here.
 func openAIErrorBodyWithUsage(body gin.H, usage ...*OpenAIUsage) gin.H {
 	if len(usage) > 0 && openAIUsageHasTokens(usage[0]) {
-		body["usage"] = usage[0]
+		body["usage"] = policyOpenAIWireUsage(usage[0])
 	}
 	return body
 }
