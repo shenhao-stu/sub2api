@@ -821,6 +821,7 @@ func parseClaudeUsageFromResponseBody(body []byte) *ClaudeUsage {
 		}
 	}
 	normalizeAnthropicCompatiblePromptUsage(usageNode, usage)
+	observePolicyCacheEvent(usage, body)
 	return usage
 }
 

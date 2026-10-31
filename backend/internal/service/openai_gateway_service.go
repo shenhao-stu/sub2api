@@ -222,6 +222,7 @@ func (s *OpenAICodexUsageSnapshot) Normalize() *NormalizedCodexLimits {
 
 // OpenAIUsage represents OpenAI API response usage
 type OpenAIUsage struct {
+	policyCacheCreation      *policyCacheCreationSplit
 	InputTokens              int  `json:"input_tokens"`
 	ImageInputTokens         int  `json:"image_input_tokens,omitempty"`
 	ImageCacheReadTokens     int  `json:"image_cache_read_tokens,omitempty"`

@@ -42,6 +42,7 @@ func (s *GatewayService) handleContentRefusalResponse(c *gin.Context, account *A
 }
 
 func (s *GatewayService) handleContentRefusalBody(c *gin.Context, account *Account, resp *http.Response, body []byte, usage *ClaudeUsage, model, upstreamModel string, stream bool, start time.Time) (*ForwardResult, error) {
+	restorePolicyCacheCreation(usage)
 	const status = http.StatusForbidden
 	fields := boundedOpenAIClientError(body, status)
 	// Preserve restricted diagnostics under the existing administrator setting.
@@ -92,7 +93,7 @@ func (s *GatewayService) handleContentRefusalBody(c *gin.Context, account *Accou
 	if strings.HasSuffix(path, "/chat/completions") || strings.HasSuffix(path, "/responses") {
 		var meter *OpenAIUsage
 		if usage.hasObservedTokens() {
-			converted := claudeUsageToOpenAIUsage(usage)
+			converted := policyClaudeUsageToOpenAIUsage(usage)
 			meter = &converted
 		}
 		writeOpenAIErrorFields(c, fields, false, meter)

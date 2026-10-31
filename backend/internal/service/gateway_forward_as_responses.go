@@ -452,6 +452,9 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		}
 
 		// message_start carries the initial response structure
+		if event.Type != "error" {
+			observePolicyCacheEvent(&usage, []byte(payload))
+		}
 		if event.Type == "error" && isContentRefusal(anthropicStreamErrorStatus([]byte(payload)), []byte(payload)) {
 			s.mergeSSEErrorUsageJSON(&usage, payload)
 			return &ForwardResult{RequestID: requestID, UpstreamHeaders: resp.Header, Usage: usage, Model: originalModel, UpstreamModel: mappedModel, ReasoningEffort: reasoningEffort, Duration: time.Since(startTime)}, &sseStreamErrorEventError{RawData: payload}
@@ -722,6 +725,8 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 		if event.Type == "error" {
 			s.mergeSSEErrorUsageJSON(&usage, payload)
+		} else {
+			observePolicyCacheEvent(&usage, []byte(payload))
 		}
 		stream.observe(&event, payload)
 		if stream.upstreamErrType != "" {

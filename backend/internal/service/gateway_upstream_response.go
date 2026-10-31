@@ -1089,7 +1089,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				outputBlocks, data, usagePatch, err := processSSEEvent(pendingEventLines)
 				pendingEventLines = pendingEventLines[:0]
 				if err != nil {
-					mergeSSEErrorUsagePatch(usage, usagePatch)
+					s.mergeSSEErrorUsageJSON(usage, data)
 					if isContentRefusal(anthropicStreamErrorStatus([]byte(data)), []byte(data)) {
 						return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, err
 					}
@@ -1129,6 +1129,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 						if usagePatch != nil {
 							mergeSSEUsagePatch(usage, usagePatch)
 						}
+						observePolicyCacheEvent(usage, []byte(data))
 						observeReceiptFinality(data, usage)
 						freezeReceiptUsage(usage)
 					}
@@ -1189,6 +1190,7 @@ func (s *GatewayService) parseSSEUsage(data string, usage *ClaudeUsage) {
 	}
 
 	observeReceiptFinality(data, usage)
+	observePolicyCacheEvent(usage, []byte(data))
 	defer freezeReceiptUsage(usage)
 	var event map[string]any
 	if err := json.Unmarshal([]byte(data), &event); err != nil {
@@ -1271,9 +1273,15 @@ func mergeSSEUsagePatch(usage *ClaudeUsage, patch *sseUsagePatch) {
 }
 
 func (s *GatewayService) mergeSSEErrorUsageJSON(usage *ClaudeUsage, raw string) {
+	if !hasObservedInputCache(usage) {
+		observePolicyCacheEvent(usage, []byte(raw))
+	}
 	var event map[string]any
 	if json.Unmarshal([]byte(raw), &event) == nil {
 		mergeSSEErrorUsagePatch(usage, s.extractSSEUsagePatch(event))
+	}
+	if isContentRefusal(anthropicStreamErrorStatus([]byte(raw)), []byte(raw)) {
+		restorePolicyCacheCreation(usage)
 	}
 }
 
@@ -1283,8 +1291,7 @@ func mergeSSEErrorUsagePatch(usage *ClaudeUsage, patch *sseUsagePatch) {
 	if usage == nil || patch == nil {
 		return
 	}
-	inputObserved := usage.InputTokens > 0 || usage.CacheReadInputTokens > 0 ||
-		usage.CacheCreationInputTokens > 0 || usage.CacheCreation5mTokens > 0 || usage.CacheCreation1hTokens > 0
+	inputObserved := hasObservedInputCache(usage)
 	output := usage.OutputTokens
 	if inputObserved {
 		if patch.hasOutputTokens {
