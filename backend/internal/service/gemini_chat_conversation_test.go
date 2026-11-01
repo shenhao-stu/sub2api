@@ -85,3 +85,45 @@ func TestGeminiChatLegacyNameMatchesOnlyUnansweredCalls(t *testing.T) {
 		})
 	}
 }
+
+func TestGeminiChatContentsSplitToolResponseTrailingParts(t *testing.T) {
+	const call = `{"role":"assistant","tool_calls":[{"id":"one","type":"function","function":{"name":"lookup","arguments":"{}"},"extra_content":{"google":{"thought_signature":"preserved-signature"}}}]}`
+	const response = `{"role":"tool","tool_call_id":"one","content":{"value":9007199254740993}}`
+	for _, tc := range []struct{ name, trailing, field, expected string }{
+		{"text", `{"role":"user","content":[{"type":"text","text":"first"},{"type":"text","text":"second"}]}`, "text", "first"},
+		{"remote image", `{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.invalid/image.png","mime_type":"image/png"}}]}`, "fileData.fileUri", "https://example.invalid/image.png"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"messages":[{"role":"user","content":"start"},` + call + `,` + response + `,` + tc.trailing + `]}`)
+			before := string(body)
+			contents, fields := geminiChatContents(body)
+			require.Nil(t, fields)
+			require.Len(t, gjson.ParseBytes(contents).Array(), 4)
+			require.Equal(t, "user", gjson.GetBytes(contents, "2.role").String())
+			require.Len(t, gjson.GetBytes(contents, "2.parts").Array(), 1)
+			require.Equal(t, "9007199254740993", gjson.GetBytes(contents, "2.parts.0.functionResponse.response.value").Raw)
+			require.Equal(t, "user", gjson.GetBytes(contents, "3.role").String())
+			require.Equal(t, tc.expected, gjson.GetBytes(contents, "3.parts.0."+tc.field).String())
+			require.Equal(t, "preserved-signature", gjson.GetBytes(contents, "1.parts.0.thoughtSignature").String())
+			require.Equal(t, before, string(body))
+			if tc.name == "text" {
+				require.Equal(t, "second", gjson.GetBytes(contents, "3.parts.1.text").String())
+			}
+		})
+	}
+}
+
+func TestGeminiChatContentsSplitHistoricalToolTurnsConsistently(t *testing.T) {
+	const history = `{"role":"user","content":"start"},{"role":"assistant","tool_calls":[{"id":"one","type":"function","function":{"name":"lookup","arguments":"{}"}}]},{"role":"tool","tool_call_id":"one","content":"result"},{"role":"user","content":"followup"}`
+	before, fields := geminiChatContents([]byte(`{"messages":[` + history + `]}`))
+	require.Nil(t, fields)
+	after, fields := geminiChatContents([]byte(`{"messages":[` + history + `,{"role":"assistant","content":"done"},{"role":"user","content":"next"}]}`))
+	require.Nil(t, fields)
+	prefix := gjson.ParseBytes(before).Array()
+	require.Len(t, prefix, 4)
+	all := gjson.ParseBytes(after).Array()
+	require.Len(t, all, 6)
+	for i := range prefix {
+		require.JSONEq(t, prefix[i].Raw, all[i].Raw, "history turn %d changed after continuation", i)
+	}
+}
