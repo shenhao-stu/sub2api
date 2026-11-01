@@ -193,11 +193,39 @@ func geminiChatContents(body []byte) ([]byte, *openAIClientErrorFields) {
 	if err := flush("messages"); err != nil {
 		return nil, err
 	}
-	encoded, err := json.Marshal(out)
+	encoded, err := json.Marshal(splitGeminiChatToolResponseTails(out))
 	if err != nil {
 		return nil, geminiChatInputError("messages", "Unable to encode conversation.")
 	}
 	return encoded, nil
+}
+
+// Vertex rejects text/media after a functionResponse in the same user Content.
+// Split that boundary without moving parts. Apply to every historical turn so
+// extending a conversation does not change the already translated prefix.
+func splitGeminiChatToolResponseTails(contents []geminiChatContent) []geminiChatContent {
+	out := make([]geminiChatContent, 0, len(contents))
+	for _, content := range contents {
+		if content.Role != "user" {
+			out = append(out, content)
+			continue
+		}
+		start := 0
+		seenResponse := false
+		for i, part := range content.Parts {
+			if _, isResponse := part["functionResponse"]; isResponse {
+				seenResponse = true
+				continue
+			}
+			if seenResponse {
+				out = append(out, geminiChatContent{Role: content.Role, Parts: content.Parts[start:i]})
+				start = i
+				seenResponse = false
+			}
+		}
+		out = append(out, geminiChatContent{Role: content.Role, Parts: content.Parts[start:]})
+	}
+	return out
 }
 
 func geminiChatSignature(raw json.RawMessage, param string) (string, *openAIClientErrorFields) {
