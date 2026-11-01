@@ -185,6 +185,11 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 			return nil, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", err.Error())
 		}
 		requestIDHeader = idHeader
+		// Authentication may have waited for token refresh. A canceled caller
+		// must not start a new generation after that wait.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 
 		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 		if err != nil {
