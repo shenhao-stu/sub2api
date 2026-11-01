@@ -143,7 +143,11 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		h.handleConcurrencyError(c, err, "user", streamStarted)
 		return
 	}
-	userReleaseFunc = wrapReleaseOnDone(c.Request.Context(), userReleaseFunc)
+	userReleaseCtx := c.Request.Context()
+	if effectiveAPIKeyPlatform(c, apiKey) == service.PlatformGemini {
+		userReleaseCtx = context.WithoutCancel(userReleaseCtx)
+	}
+	userReleaseFunc = wrapReleaseOnDone(userReleaseCtx, userReleaseFunc)
 	if userReleaseFunc != nil {
 		defer userReleaseFunc()
 	}
@@ -281,7 +285,14 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 				reqLog.Warn("gateway.cc.bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 			}
 		}
-		accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
+		accountReleaseCtx := c.Request.Context()
+		if account.Platform == service.PlatformGemini {
+			accountReleaseCtx = context.WithoutCancel(accountReleaseCtx)
+		}
+		accountReleaseFunc = wrapReleaseOnDone(accountReleaseCtx, accountReleaseFunc)
+		if account.Platform == service.PlatformGemini && accountReleaseFunc != nil {
+			defer accountReleaseFunc()
+		}
 
 		if groupPlatform == service.PlatformGemini && account.Platform != service.PlatformGemini {
 			if accountReleaseFunc != nil {
@@ -345,7 +356,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 			stampForwardRequestedReasoningEffort(result, service.RequestedReasoningEffortFromContext(c.Request.Context()))
 			usageFields := clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel)
 			submit := h.submitUsageRecordTask
-			if err != nil {
+			if err != nil || account.Platform == service.PlatformGemini {
 				submit = h.submitMandatoryUsageRecordTask
 			}
 			submit(c.Request.Context(), func(ctx context.Context) {

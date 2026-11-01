@@ -54,6 +54,7 @@ type anthropicCompatStream struct {
 // anthropicCompatStreamFailure 描述客户端在线时上游流未正常结束的原因：
 // err 返回给调用方，errType / message 写入下游的终止错误事件。
 type anthropicCompatStreamFailure struct {
+	fields  *openAIClientErrorFields
 	err     error
 	errType string
 	message string
@@ -231,6 +232,9 @@ func anthropicCompatClientErrorSummary(status int) string {
 }
 
 func anthropicCompatFailureStatus(failure *anthropicCompatStreamFailure) int {
+	if failure.fields != nil {
+		return failure.fields.StatusCode
+	}
 	var sseErr *sseStreamErrorEventError
 	if errors.As(failure.err, &sseErr) {
 		return anthropicStreamErrorStatus([]byte(sseErr.RawData))
@@ -255,6 +259,9 @@ func finishAnthropicCompatStreamFailure(c *gin.Context, writerSizeBeforeStream i
 }
 
 func anthropicCompatFailureFields(failure *anthropicCompatStreamFailure) openAIClientErrorFields {
+	if failure.fields != nil {
+		return *failure.fields
+	}
 	status := anthropicCompatFailureStatus(failure)
 	var upstream *sseStreamErrorEventError
 	if errors.As(failure.err, &upstream) && isContentRefusal(status, []byte(upstream.RawData)) {
