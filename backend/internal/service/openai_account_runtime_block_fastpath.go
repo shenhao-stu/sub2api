@@ -155,6 +155,9 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 		s.rateLimitService.maybeHandleOpenAITeamLinkedError(stateCtx, account, statusCode, responseBody)
 	}
 	stateCtx = withTempUnschedulableModel(stateCtx, canonicalModel)
+	if s.rateLimitService != nil && s.rateLimitService.persistUpstreamModelCooldown(stateCtx, account, statusCode, responseBody, firstRequestedModel(canonicalModel)) {
+		return true
+	}
 	if s.rateLimitService != nil && len(canonicalModel) > 0 && s.rateLimitService.HandleUpstreamModelNotFound(stateCtx, account, canonicalModel[0], statusCode, responseBody) {
 		return true
 	}

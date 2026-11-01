@@ -2478,6 +2478,15 @@ func (r *accountRepository) SetRateLimitedIfUnchanged(
 }
 
 func (r *accountRepository) SetModelRateLimit(ctx context.Context, id int64, scope string, resetAt time.Time, reason ...string) error {
+	return r.setModelRateLimit(ctx, id, scope, resetAt, false, reason...)
+}
+
+// SetModelRateLimitIfLater preserves a newer reset observed by a concurrent request.
+func (r *accountRepository) SetModelRateLimitIfLater(ctx context.Context, id int64, scope string, resetAt time.Time, reason ...string) error {
+	return r.setModelRateLimit(ctx, id, scope, resetAt, true, reason...)
+}
+
+func (r *accountRepository) setModelRateLimit(ctx context.Context, id int64, scope string, resetAt time.Time, onlyExtend bool, reason ...string) error {
 	if scope == "" {
 		return nil
 	}
@@ -2503,7 +2512,11 @@ func (r *accountRepository) SetModelRateLimit(ctx context.Context, id int64, sco
 			extra = jsonb_set(
 				jsonb_set(COALESCE(extra, '{}'::jsonb), '{model_rate_limits}'::text[], COALESCE(extra->'model_rate_limits', '{}'::jsonb), true),
 				ARRAY['model_rate_limits', $1]::text[],
-				$2::jsonb,
+				CASE WHEN $4::boolean THEN CASE WHEN
+					(extra #>> ARRAY['model_rate_limits', $1, 'rate_limit_reset_at'])::timestamptz >
+					($2::jsonb->>'rate_limit_reset_at')::timestamptz
+				THEN extra #> ARRAY['model_rate_limits', $1] ELSE $2::jsonb END
+				ELSE $2::jsonb END,
 				true
 			),
 			updated_at = NOW()
@@ -2511,6 +2524,7 @@ func (r *accountRepository) SetModelRateLimit(ctx context.Context, id int64, sco
 		scope,
 		raw,
 		id,
+		onlyExtend,
 	)
 	if err != nil {
 		return err

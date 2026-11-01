@@ -340,6 +340,10 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 	// 同请求内与 fastpath 调用点的重复触发由方法内去重吸收。
 	s.maybeHandleOpenAITeamLinkedError(ctx, account, statusCode, responseBody)
 	customErrorCodesEnabled := account.IsCustomErrorCodesEnabled()
+	if s.persistUpstreamModelCooldown(ctx, account, statusCode, responseBody,
+		modelRateLimitKeyForUpstreamModelNotFound(ctx, account, firstRequestedModel(requestedModel))) {
+		return true
+	}
 
 	// 池模式默认不标记本地账号状态；但管理员显式配置的临时不可调度规则优先。
 	// 401 只在非凭据级且命中显式模型级规则时由规则处理，其余保留池模式现有的认证处理。
