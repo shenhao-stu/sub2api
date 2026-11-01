@@ -92,8 +92,8 @@ func TestGeminiChatFinalTurnValidation(t *testing.T) {
 	for _, tc := range []struct{ name, messages, code, param string }{
 		{"prefill text", `{"role":"user","content":"hello"},{"role":"assistant","content":"prefix"}`, "unsupported_assistant_prefill", "messages[1].content"},
 		{"prefill parts", `{"role":"user","content":"hello"},{"role":"assistant","content":[{"type":"text","text":"prefix"}]}`, "unsupported_assistant_prefill", "messages[1].content"},
-		{"remote image", history + `{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.invalid/private-image.png"}}]}`, "unsupported_conversation_turn", "messages[2]"},
-		{"late tool result", call + `,{"role":"user","content":"notice"},{"role":"assistant","content":"working"},{"role":"tool","tool_call_id":"call_1","content":"found"}`, "unsupported_conversation_turn", "messages[3]"},
+		{"remote image", history + `{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.invalid/private-image.png"}}]}`, "unsupported_conversation_turn", "messages[2].content[0].image_url.mime_type"},
+		{"late tool result", call + `,{"role":"user","content":"notice"},{"role":"assistant","content":"working"},{"role":"tool","tool_call_id":"call_1","content":"found"}`, "unsupported_conversation_turn", "messages[2]"},
 		{"empty user", history + `{"role":"user","content":""}`, "unsupported_conversation_turn", "messages[2]"},
 		{"blank user", history + `{"role":"user","content":"   "}`, "unsupported_conversation_turn", "messages[2]"},
 	} {
