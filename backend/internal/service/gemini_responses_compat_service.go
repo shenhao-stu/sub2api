@@ -48,14 +48,23 @@ func geminiResponsesToChat(body []byte) ([]byte, *geminiResponsesOutput, error) 
 			return nil, nil, fmt.Errorf("%s is not supported by the Gemini compatibility endpoint", field)
 		}
 	}
-	if value := gjson.GetBytes(body, "text.format.type").String(); value != "" && value != "text" {
-		return nil, nil, errors.New("structured text.format is not supported by the Gemini compatibility endpoint")
-	}
 	if value := gjson.GetBytes(body, "service_tier").String(); value != "" && value != "auto" && value != "default" {
 		return nil, nil, errors.New("requested service_tier cannot be guaranteed by the Gemini compatibility endpoint")
 	}
 	if value := gjson.GetBytes(body, "truncation").String(); value != "" && value != "disabled" {
 		return nil, nil, errors.New("automatic history truncation is not supported by the Gemini compatibility endpoint")
+	}
+	if format := gjson.GetBytes(body, "text.format"); format.Exists() && format.Type != gjson.Null {
+		if !format.IsObject() {
+			return nil, nil, errors.New("text.format must be an object")
+		}
+		allowed := []string{"type"}
+		if format.Get("type").String() == "json_schema" {
+			allowed = append(allowed, "name", "description", "strict", "schema")
+		}
+		if err := geminiFormatFields(format, allowed...); err != nil {
+			return nil, nil, err
+		}
 	}
 	adapted, mapping, err := adaptResponsesClientToolsForAnthropic(body)
 	if err != nil {

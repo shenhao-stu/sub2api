@@ -122,6 +122,10 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 	if err != nil {
 		return nil, s.writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
+	geminiReq, err = applyGeminiResponseFormat(geminiReq, chatReq.ResponseFormat)
+	if err != nil {
+		return nil, s.writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+	}
 	geminiReq = applyGeminiCompatThinkingConfig(geminiReq, claudeBody, mappedModel, clientStream)
 	geminiReq, err = sjson.SetRawBytes(geminiReq, "contents", nativeContents)
 	if err != nil {
