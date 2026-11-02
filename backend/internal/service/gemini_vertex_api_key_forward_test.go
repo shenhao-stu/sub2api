@@ -116,8 +116,8 @@ func (s *geminiVertex429SequenceUpstream) DoWithTLS(req *http.Request, proxyURL 
 	return s.Do(req, proxyURL, accountID, accountConcurrency)
 }
 
-// Vertex 共享容量不足的 429 在同一账号上退避重试，成功后账号状态不变；绑定显式缓存的请求同样如此。
-func TestGeminiForwardNative_VertexSharedCapacity429RetriesSameAccountWithoutCooldown(t *testing.T) {
+// 明确容量拒绝不在同一账号重试；原生缓存绑定仍由 handler 保持，不换用另一账号的缓存。
+func TestGeminiForwardNative_VertexSharedCapacity429StopsRetryWithModelCooldown(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	sharedCapacity := `{"error":{"code":429,"message":"Resource exhausted. Please try again later.","status":"RESOURCE_EXHAUSTED"}}`
 	tests := []struct {
@@ -141,25 +141,23 @@ func TestGeminiForwardNative_VertexSharedCapacity429RetriesSameAccountWithoutCoo
 					Body:       io.NopCloser(strings.NewReader(geminiVertexAPIKeyTestResponse)),
 				},
 			}}
-			repo := &geminiBoundCacheRateLimitRepo{}
+			repo, account := vertexCooldownFixture()
 			svc := &GeminiMessagesCompatService{
 				httpUpstream:     upstream,
 				cfg:              &config.Config{Gateway: config.GatewayConfig{MaxSameAccountRetriesGemini: 1}},
 				accountRepo:      repo,
 				rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil),
 			}
-			c, rec := newGeminiNativeTestContext(t)
+			c, _ := newGeminiNativeTestContext(t)
 
-			result, err := svc.ForwardNative(tt.ctx, c, geminiVertexAPIKeyTestAccount("my-project"),
-				"gemini-3.7-flash", "generateContent", false, []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`))
-			require.NoError(t, err)
-			require.NotNil(t, result)
-			require.Equal(t, http.StatusOK, rec.Code)
-			require.Equal(t, 2, upstream.calls, "429 后在同一账号上重试")
-			require.Zero(t, repo.rateLimitedCalls, "不写账号级限流")
-			require.Zero(t, repo.tempCalls)
-			require.Zero(t, repo.setErrCalls)
-			require.Empty(t, repo.modelRateLimitCalls)
+			result, err := svc.ForwardNative(tt.ctx, c, account,
+				"gemini-3.8-flash", "generateContent", false, []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`))
+			require.Error(t, err)
+			require.Nil(t, result)
+			require.Equal(t, 1, upstream.calls)
+			require.Zero(t, repo.accountWrites)
+			require.Equal(t, 1, repo.writes)
+			require.NotNil(t, repo.accountsByID[account.ID].modelRateLimitResetAt("gemini-3.8-flash"))
 		})
 	}
 }

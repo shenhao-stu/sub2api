@@ -214,8 +214,14 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 				}
 				break
 			}
+			if delay, _ := vertexModelCooldown(account, resp.StatusCode, resp.Header, respBody, mappedModel, time.Now()); delay > 0 {
+				// A definite capacity rejection can use the existing failover path;
+				// retrying this same account immediately defeats the advertised backoff.
+				resp.Body = io.NopCloser(bytes.NewReader(respBody))
+				break
+			}
 			if resp.StatusCode == http.StatusTooManyRequests {
-				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, mappedModel)
 			}
 			if attempt < maxAttempts {
 				upstreamReqID := resp.Header.Get(requestIDHeader)
@@ -272,7 +278,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		// 与 messages 兼容层一致：只有 None / Matched 才走账号状态处理。
 		// Skipped（池模式、或自定义错误码未命中）与 TempUnscheduled 已由策略层裁决完毕。
 		if policy == ErrorPolicyNone || policy == ErrorPolicyMatched {
-			s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+			s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, mappedModel)
 		}
 		evBody := unwrapIfNeeded(account.Type == AccountTypeOAuth, respBody)
 

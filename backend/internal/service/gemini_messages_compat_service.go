@@ -47,7 +47,7 @@ const (
 	// RetryInfo.retryDelay 的上限，防止异常值导致账号长时间不可用
 	geminiRetryInfoMaxDelay = 15 * time.Minute
 	// Vertex（service_account）账号自身的 429（按量付费的项目配额、预留吞吐超额等）无法解析重置时间时的兜底冷却：
-	// 这类限速是短窗口 RPM/TPM，没有每日配额，不适用 PST 午夜重置；共享容量不足的 429 不冷却
+	// 这类限速是短窗口 RPM/TPM，没有每日配额，不适用 PST 午夜重置；共享容量不足按实际模型暂避
 	geminiVertexFallbackCooldown = time.Minute
 )
 
@@ -838,9 +838,15 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				}
 				break
 			}
+			if delay, _ := vertexModelCooldown(account, resp.StatusCode, resp.Header, respBody, mappedModel, time.Now()); delay > 0 {
+				// A definite capacity rejection can use the existing failover path;
+				// retrying this same account immediately defeats the advertised backoff.
+				resp.Body = io.NopCloser(bytes.NewReader(respBody))
+				break
+			}
 			if resp.StatusCode == 429 {
 				// Apply account-scoped 429 handling early so concurrent requests avoid a rate-limited account.
-				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, mappedModel)
 			}
 			retryAttempt := attempt - signatureRetryStage
 			if retryAttempt < maxAttempts {
@@ -911,7 +917,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				return nil, s.writeGeminiMappedError(c, account, resp.StatusCode, upstreamReqID, respBody)
 			case ErrorPolicyMatched, ErrorPolicyTempUnscheduled:
 				if policy == ErrorPolicyMatched {
-					s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+					s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, mappedModel)
 				}
 				upstreamReqID := resp.Header.Get(requestIDHeader)
 				if upstreamReqID == "" {
@@ -944,7 +950,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		}
 
 		// ErrorPolicyNone → 原有逻辑
-		s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+		s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, mappedModel)
 		// 精确匹配服务端配置类 400 错误，触发 failover + 临时封禁
 		if resp.StatusCode == http.StatusBadRequest {
 			msg400 := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
@@ -1129,6 +1135,11 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 	mappedModel := originalModel
 	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
 		mappedModel = account.GetMappedModel(originalModel)
+	}
+	// Token counting has its own estimate fallback and does not prove generation capacity.
+	cooldownModel := mappedModel
+	if action == "countTokens" {
+		cooldownModel = ""
 	}
 	if err := rejectDisabledModels(c, s.cfg, originalModel, mappedModel); err != nil {
 		return nil, err
@@ -1346,8 +1357,14 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				}
 				break
 			}
+			if delay, _ := vertexModelCooldown(account, resp.StatusCode, resp.Header, respBody, cooldownModel, time.Now()); delay > 0 {
+				// A definite capacity rejection can use the existing failover path;
+				// retrying this same account immediately defeats the advertised backoff.
+				resp.Body = io.NopCloser(bytes.NewReader(respBody))
+				break
+			}
 			if resp.StatusCode == 429 {
-				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, cooldownModel)
 			}
 			if attempt < maxAttempts {
 				upstreamReqID := resp.Header.Get(requestIDHeader)
@@ -1462,7 +1479,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				return nil, s.writeGeminiNativeUpstreamError(c, account, resp, respBody, requestID, isOAuth)
 			case ErrorPolicyMatched, ErrorPolicyTempUnscheduled:
 				if policy == ErrorPolicyMatched {
-					s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+					s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, cooldownModel)
 				}
 				evBody := unwrapIfNeeded(isOAuth, respBody)
 				upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(evBody))
@@ -1492,7 +1509,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		}
 
 		// ErrorPolicyNone → 原有逻辑
-		s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+		s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, cooldownModel)
 		// 精确匹配服务端配置类 400 错误，触发 failover + 临时封禁
 		if resp.StatusCode == http.StatusBadRequest {
 			msg400 := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
@@ -3163,7 +3180,10 @@ func asInt(v any) (int, bool) {
 	}
 }
 
-func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, body []byte) {
+func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, body []byte, canonicalModel ...string) {
+	if len(canonicalModel) > 0 && s.persistVertexModelCooldown(ctx, account, statusCode, headers, body, canonicalModel[0]) {
+		return
+	}
 	// 遵守自定义错误码策略：未命中则跳过所有限流处理
 	if !account.ShouldHandleErrorCode(statusCode) {
 		return
