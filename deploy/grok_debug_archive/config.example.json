@@ -1,0 +1,16 @@
+{
+  "root": "/Users/ozer/AgentNAS/Backups/netcup-grok-test",
+  "group_id": 78,
+  "source_dir": "/opt/getoken-consolidated/builds/pool-kiro-pricing-20261020/sub2api-g4/data/request-debug/grok-test",
+  "helper_path": "/opt/getoken-consolidated/builds/grok-test-20261102/archive/source_helper.py",
+  "ssh_host": "netcup",
+  "max_objects": 100,
+  "max_bytes": 1073741824,
+  "max_payload_bytes": 536870912,
+  "max_raw_bytes": 268435456,
+  "min_free_bytes": 107374182400,
+  "max_seconds": 240,
+  "max_retention_deletes": 100,
+  "max_namespace_bytes": 549755813888,
+  "max_retention_scan": 1000
+}

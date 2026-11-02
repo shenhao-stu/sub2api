@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>tech.getoken.netcup-grok-debug-archive</string>
+  <key>UserName</key><string>ozer</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON_EXECUTABLE__</string>
+    <string>__ARCHIVE_SCRIPT__</string>
+    <string>--config</string>
+    <string>__CONFIG_PATH__</string>
+  </array>
+  <key>StartInterval</key><integer>300</integer>
+  <key>RunAtLoad</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>LowPriorityIO</key><true/>
+  <key>Nice</key><integer>15</integer>
+  <key>ThrottleInterval</key><integer>60</integer>
+  <key>StandardOutPath</key><string>/Users/ozer/AgentHost/logs/netcup-grok-debug-archive.log</string>
+  <key>StandardErrorPath</key><string>/Users/ozer/AgentHost/logs/netcup-grok-debug-archive.log</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>PYTHONUNBUFFERED</key><string>1</string><key>TZ</key><string>UTC</string></dict>
+</dict>
+</plist>
