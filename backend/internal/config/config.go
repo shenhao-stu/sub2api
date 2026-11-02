@@ -106,6 +106,8 @@ type Config struct {
 	BatchImage              BatchImageConfig              `mapstructure:"batch_image"`
 	ImageStorage            ImageStorageConfig            `mapstructure:"image_storage"`
 	Plugins                 PluginConfig                  `mapstructure:"plugins"`
+	// RequestCapture is intentionally environment-only and default-off.
+	RequestCapture RequestCaptureConfig `mapstructure:"-" json:"-" yaml:"-"`
 
 	// Enforce only API-key spending windows in simple mode.
 	SimpleModeKeyRateLimitEnabled bool `mapstructure:"simple_mode_key_rate_limit_enabled" yaml:"simple_mode_key_rate_limit_enabled"`
@@ -1880,6 +1882,11 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	if err := viper.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config error: %w", err)
 	}
+	captureConfig, err := LoadRequestCaptureFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	cfg.RequestCapture = captureConfig
 	if trustedProxiesEnvConfigured {
 		cfg.Server.TrustedProxies = normalizeStringSlice(strings.Split(trustedProxiesEnv, ","))
 	}
@@ -2733,6 +2740,9 @@ func setEnvReachableDefaults() {
 }
 
 func (c *Config) Validate() error {
+	if err := c.RequestCapture.Validate(c.RequestCaptureBodyLimit()); err != nil {
+		return err
+	}
 	for _, pattern := range c.Gateway.DisabledModels {
 		if strings.TrimSpace(pattern) == "" {
 			return fmt.Errorf("gateway.disabled_models must not contain empty patterns")
