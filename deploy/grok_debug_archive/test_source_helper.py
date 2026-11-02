@@ -32,7 +32,7 @@ class Producer:
         path = self.root / name; path.write_bytes(raw); path.chmod(0o600)
 
     def add(self, raw=b'{"messages":[{"role":"user","content":"synthetic"}]}', when=None,
-            complete=True, outcome=False, group=78):
+            complete=True, outcome=False, group=78, headers=None):
         cid = str(uuid.uuid4()); when = when or NOW - dt.timedelta(minutes=1)
         compressed = gzip.compress(raw, mtime=0)
         manifest = {'schema_version':1,'capture_id':cid,'captured_at':stamp(when),'sealed_at':stamp(when),
@@ -42,6 +42,15 @@ class Producer:
                     'raw_bytes':len(raw),'raw_sha256':sha(raw),'compressed_bytes':len(compressed),
                     'compressed_sha256':sha(compressed),'body_complete':complete,
                     'read_error':'' if complete else 'context_canceled'}
+        if headers is not None:
+            header_raw = source.encode({'schema_version':1,'policy':'credential_names_v1',
+                                       'headers':headers,'redacted_count':sum(v == ['[REDACTED]'] for v in headers.values())})
+            packed = gzip.compress(header_raw,mtime=0)
+            manifest.update(schema_version=2,headers_file=cid+'.headers.gz',headers_raw_bytes=len(header_raw),
+                headers_raw_sha256=sha(header_raw),headers_compressed_bytes=len(packed),
+                headers_compressed_sha256=sha(packed),headers_policy='credential_names_v1',
+                headers_redacted_count=sum(v == ['[REDACTED]'] for v in headers.values()))
+            self.put(cid+'.headers.gz',packed)
         self.put(cid+'.request.gz', compressed); self.put(cid+'.input.json', source.encode(manifest))
         if outcome: self.finish(cid,released=complete)
         return cid
@@ -69,7 +78,7 @@ class LocalTransport:
     def fetch(self,name,destination,timeout,max_bytes):
         require_name = name[:36]
         source.capture_id(require_name)
-        assert name in {require_name+s for s in ['.input.json','.request.gz','.outcome.json']}
+        assert name in {require_name+s for s in ['.input.json','.request.gz','.headers.gz','.outcome.json']}
         fd=os.open(self.root/name,os.O_RDONLY|os.O_NOFOLLOW)
         with os.fdopen(fd,'rb') as src, destination.open('wb') as target:
             shutil.copyfileobj(src,target)
@@ -116,6 +125,118 @@ class SourceBehavior(unittest.TestCase):
         self.assertEqual(before,{p.name:p.read_bytes()for p in self.root.iterdir()})
         with self.store() as store: self.assertEqual(store.ack_status(cid,'input'),{'schema_version':1,'accepted':False})
         self.assertFalse((self.root/'.archive-helper').exists())
+
+    def test_v2_roundtrip_with_real_helper_header_bytes_and_late_outcome(self):
+        headers={'Host':['example.invalid'],'X-Fingerprint':['one','two'],
+                 'Authorization':['[REDACTED]'],'X-Goog-Api-Key':['[REDACTED]'],
+                 'X-Codex-Turn-Metadata':['full synthetic diagnostic'],
+                 'X-Tokenize':['keep'],'Secretariat':['keep'],'Monkey':['keep']}
+        cid=self.producer.add(raw=b'raw entity\x00\xff',headers=headers)
+        item=self.listing()['items'][0]
+        packed=(self.root/(cid+'.headers.gz')).read_bytes()
+        self.assertEqual(item['headers'],{'path':cid+'.headers.gz','bytes':len(packed),'sha256':sha(packed)})
+        config=nas.Config(root=self.base/'netcup-grok-test',group_id=78,source_dir=str(self.root),
+                          helper_path=str(source.INSTALL_PATH),min_free_bytes=0)
+        transport=LocalTransport(self.root,config,self.state_root)
+        first=nas.Puller(config,transport,NOW).run();self.assertEqual(first['status'],'ok')
+        self.assertEqual(transport.ack_calls,[(cid,'input')])
+        directory=config.root/'captures'/cid
+        self.assertEqual(json.loads(gzip.decompress((directory/(cid+'.headers.gz')).read_bytes()))['headers'],headers)
+        receipt=json.loads((directory/(cid+'.input-receipt.json')).read_bytes())
+        self.assertEqual(receipt['schema_version'],2);self.assertEqual(receipt['headers_compressed_sha256'],sha(packed))
+        self.producer.finish(cid,released=False)
+        second=nas.Puller(config,transport,NOW).run();self.assertEqual(second['status'],'ok')
+        self.assertEqual(transport.ack_calls,[(cid,'input'),(cid,'outcome')])
+
+    def test_v2_sensitive_header_policy_never_lists_or_acknowledges_values(self):
+        for name in ['Authorization','Cookie','Set-Cookie','X-Api-Key','X-Jwt','X-Authentication',
+                     'X-Session','X-Csrf','X-Xsrf','X-Credentials','Proxy-Authorization','X-Signature']:
+            with self.subTest(name=name):
+                cid=self.producer.add(headers={name:['synthetic forbidden']})
+                listing=self.listing();self.assertNotIn(cid,[i['capture_id']for i in listing['items']])
+                self.assertIn('unredacted_credential_header',listing['rejected'])
+                with self.assertRaises(source.HelperError):self.ack(cid,'input')
+                self.assertNotIn('synthetic forbidden',json.dumps(listing))
+
+    def replace_headers(self,cid,raw):
+        packed=gzip.compress(raw,mtime=0);self.producer.put(cid+'.headers.gz',packed)
+        self.producer.change(cid,lambda v:v.update(headers_raw_bytes=len(raw),headers_raw_sha256=sha(raw),
+                             headers_compressed_bytes=len(packed),headers_compressed_sha256=sha(packed)))
+
+    def test_v2_missing_bad_gzip_raw_hash_size_count_and_policy_never_ack(self):
+        for variant in ['missing','compressed','gzip','rawhash','expansion','count','policy','oversize','path']:
+            with self.subTest(variant=variant):
+                cid=self.producer.add(headers={'X-Trace':['one','two']});path=self.root/(cid+'.headers.gz')
+                if variant=='missing':path.unlink()
+                elif variant=='compressed':path.write_bytes(path.read_bytes()+b'changed')
+                elif variant=='gzip':
+                    path.write_bytes(b'not gzip')
+                    self.producer.change(cid,lambda v:v.update(headers_compressed_bytes=8,headers_compressed_sha256=sha(b'not gzip')))
+                elif variant=='rawhash':self.producer.change(cid,lambda v:v.update(headers_raw_sha256='0'*64))
+                elif variant=='expansion':self.producer.change(cid,lambda v:v.update(headers_raw_bytes=1))
+                elif variant=='count':self.producer.change(cid,lambda v:v.update(headers_redacted_count=1))
+                elif variant=='policy':self.producer.change(cid,lambda v:v.update(headers_policy='unknown'))
+                elif variant=='oversize':self.producer.change(cid,lambda v:v.update(headers_raw_bytes=source.MAX_HEADERS_RAW+1))
+                else:self.producer.change(cid,lambda v:v.update(headers_file='../escape.headers.gz'))
+                self.assertNotIn(cid,[x['capture_id']for x in self.listing()['items']])
+                with self.assertRaises(source.HelperError):self.ack(cid,'input')
+                with self.store()as store:self.assertFalse(store.ack_status(cid,'input')['accepted'])
+
+    def test_v2_header_symlink_and_hardlink_never_list_or_ack(self):
+        for link in ['symlink','hardlink']:
+            cid=self.producer.add(headers={'X-Trace':['synthetic']});path=self.root/(cid+'.headers.gz')
+            outside=self.base/uuid.uuid4().hex;outside.write_bytes(path.read_bytes());outside.chmod(0o600);path.unlink()
+            if link=='symlink':path.symlink_to(outside)
+            else:os.link(outside,path)
+            self.assertNotIn(cid,[x['capture_id']for x in self.listing()['items']])
+            with self.assertRaises(source.HelperError):self.ack(cid,'input')
+            self.assertTrue(outside.exists())
+
+    def test_v2_header_json_duplicate_keys_invalid_names_and_values_are_rejected(self):
+        bad=[b'{"schema_version":1,"policy":"credential_names_v1","headers":{"X-Trace":["a"],"X-Trace":["b"]},"redacted_count":0}\n',
+             source.encode({'schema_version':1,'policy':'credential_names_v1','headers':{'X-Trace':['a\n']},'redacted_count':0}),
+             source.encode({'schema_version':1,'policy':'credential_names_v1','headers':{'x-trace':['a']},'redacted_count':0})]
+        for raw in bad:
+            cid=self.producer.add(headers={'X-Trace':['a']});self.replace_headers(cid,raw)
+            self.assertNotIn(cid,[x['capture_id']for x in self.listing()['items']])
+            with self.assertRaises(source.HelperError):self.ack(cid,'input')
+
+    def test_v2_raw_body_must_verify_before_source_input_ack(self):
+        cid=self.producer.add(headers={'X-Trace':['a']})
+        self.producer.change(cid,lambda v:v.update(raw_sha256='0'*64))
+        with self.assertRaisesRegex(source.HelperError,'payload_raw_hash_or_size_mismatch'):self.ack(cid,'input')
+
+    def test_v2_list_and_gc_bytes_include_headers_and_keep_v1_extra_headers(self):
+        old=self.producer.add(when=NOW-dt.timedelta(days=2),outcome=True,headers={'X-Trace':['a']})
+        item=self.listing()['items'][0];size=sum(item[k]['bytes']for k in ['input','payload','headers','outcome'])
+        self.assertEqual(self.listing(size=size-1)['items'],[])
+        self.both(old);self.assertEqual(self.gc(max_bytes=size-1)['deleted'],0)
+        result=self.gc(max_bytes=size);self.assertEqual(result['deleted'],1);self.assertEqual(result['deleted_bytes'],size)
+        self.assertFalse((self.root/(old+'.headers.gz')).exists())
+        with self.store()as store:self.assertTrue(store.ack_status(old,'input')['accepted'])
+        legacy=self.producer.add(when=NOW-dt.timedelta(days=2),outcome=True);self.both(legacy)
+        self.producer.put(legacy+'.headers.gz',b'unknown v1 sidecar')
+        self.assertEqual(self.gc()['deleted'],0);self.assertTrue((self.root/(legacy+'.headers.gz')).exists())
+
+    def test_v2_partial_active_unacked_and_unknown_files_preserved(self):
+        when=NOW-dt.timedelta(days=2)
+        active=self.producer.add(when=when,headers={});self.ack(active,'input')
+        unacked=self.producer.add(when=when,outcome=True,headers={})
+        partial=self.producer.add(when=when,outcome=True,headers={});self.both(partial)
+        self.producer.put(partial+'.headers.gz.partial',b'preserve')
+        terminal=self.producer.add(when=when,outcome=True,headers={},complete=False);self.both(terminal)
+        self.assertEqual(self.gc()['deleted'],1)
+        for cid in [active,unacked,partial]:self.assertTrue((self.root/(cid+'.headers.gz')).exists())
+
+    def test_v2_source_gc_rechecks_header_identity_before_unlink(self):
+        cid=self.producer.add(when=NOW-dt.timedelta(days=2),outcome=True,headers={});self.both(cid)
+        with self.store()as store:
+            original=store.headers_descriptor
+            def changed(capture,manifest):
+                result=original(capture,manifest);self.producer.put(capture+'.headers.gz',b'changed');return result
+            with mock.patch.object(store,'headers_descriptor',side_effect=changed):result=store.gc()
+        self.assertEqual(result['deleted'],0);self.assertIn('gc_source_changed',result['rejected'])
+        self.assertTrue((self.root/(cid+'.input.json')).exists())
 
     def test_producer_chown_damaged_legacy_state_cannot_block_external_ack_namespace(self):
         cid=self.producer.add(outcome=True)
