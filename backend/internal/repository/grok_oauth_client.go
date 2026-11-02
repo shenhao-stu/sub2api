@@ -175,6 +175,9 @@ func createGrokSSOHTTPClient(proxyURL string) (*http.Client, error) {
 }
 
 func grokSSOConversionError(err error) error {
+	if errors.Is(err, xai.ErrSSOBrowserVerificationRequired) {
+		return infraerrors.New(http.StatusForbidden, "GROK_SSO_BROWSER_VERIFICATION_REQUIRED", "xAI requires browser verification. Complete Device OAuth authorization in a browser.")
+	}
 	if errors.Is(err, xai.ErrSSOUnauthorized) {
 		return infraerrors.New(http.StatusUnauthorized, "GROK_SSO_UNAUTHORIZED", "Grok Web SSO cookie is invalid or expired")
 	}

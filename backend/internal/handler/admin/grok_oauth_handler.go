@@ -2,8 +2,10 @@ package admin
 
 import (
 	"context"
-	"fmt"
+	"encoding/base64"
+	"encoding/json"
 	"log/slog"
+	"net/mail"
 	"strconv"
 	"strings"
 	"sync"
@@ -334,16 +336,22 @@ type GrokSSOToOAuthRequest struct {
 }
 
 type GrokSSOToOAuthItemResult struct {
-	Index   int          `json:"index"`
-	Name    string       `json:"name,omitempty"`
-	Email   string       `json:"email,omitempty"`
-	Account *dto.Account `json:"account,omitempty"`
-	Error   string       `json:"error,omitempty"`
+	Index                     int          `json:"index"`
+	Name                      string       `json:"name,omitempty"`
+	Email                     string       `json:"email,omitempty"`
+	Account                   *dto.Account `json:"account,omitempty"`
+	Error                     string       `json:"error,omitempty"`
+	Code                      string       `json:"code,omitempty"`
+	NeedsBrowserAuthorization bool         `json:"needs_browser_authorization"`
 }
 
 type GrokSSOToOAuthResponse struct {
-	Created []GrokSSOToOAuthItemResult `json:"created"`
-	Failed  []GrokSSOToOAuthItemResult `json:"failed"`
+	Created                        []GrokSSOToOAuthItemResult `json:"created"`
+	Failed                         []GrokSSOToOAuthItemResult `json:"failed"`
+	Total                          int                        `json:"total"`
+	CreatedCount                   int                        `json:"created_count"`
+	FailedCount                    int                        `json:"failed_count"`
+	NeedsBrowserAuthorizationCount int                        `json:"needs_browser_authorization_count"`
 }
 
 type grokSSOImportJob struct {
@@ -392,6 +400,7 @@ func (h *GrokOAuthHandler) CreateAccountsFromSSO(c *gin.Context) {
 	wg.Wait()
 
 	result := GrokSSOToOAuthResponse{
+		Total:   len(tokens),
 		Created: make([]GrokSSOToOAuthItemResult, 0, len(tokens)),
 		Failed:  make([]GrokSSOToOAuthItemResult, 0),
 	}
@@ -400,19 +409,25 @@ func (h *GrokOAuthHandler) CreateAccountsFromSSO(c *gin.Context) {
 			result.Created = append(result.Created, item.item)
 		} else {
 			result.Failed = append(result.Failed, item.item)
+			if item.item.NeedsBrowserAuthorization {
+				result.NeedsBrowserAuthorizationCount++
+			}
 		}
 	}
+	result.CreatedCount = len(result.Created)
+	result.FailedCount = len(result.Failed)
 	response.Success(c, result)
 }
 
 func (h *GrokOAuthHandler) safeCreateAccountFromSSOToken(ctx context.Context, req GrokSSOToOAuthRequest, token string, index, total int) (result grokSSOImportWorkerResult) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			slog.Error("grok_sso_import_worker_panic", "index", index, "recover", recovered)
+			slog.Error("grok_sso_import_worker_panic", "index", index)
 			result = grokSSOImportWorkerResult{
 				item: GrokSSOToOAuthItemResult{
 					Index: index,
-					Error: fmt.Sprintf("internal worker panic: %v", recovered),
+					Error: "GROK_SSO_IMPORT_WORKER_PANIC: import worker failed",
+					Code:  "GROK_SSO_IMPORT_WORKER_PANIC",
 				},
 			}
 		}
@@ -423,7 +438,7 @@ func (h *GrokOAuthHandler) safeCreateAccountFromSSOToken(ctx context.Context, re
 func (h *GrokOAuthHandler) createAccountFromSSOToken(ctx context.Context, req GrokSSOToOAuthRequest, token string, index, total int) grokSSOImportWorkerResult {
 	tokenInfo, err := h.grokOAuthService.ConvertFromSSO(ctx, token, req.ProxyID)
 	if err != nil {
-		return grokSSOImportWorkerResult{item: GrokSSOToOAuthItemResult{Index: index, Error: grokSSOImportErrorMessage(err)}}
+		return grokSSOImportWorkerResult{item: grokSSOImportFailure(index, err)}
 	}
 
 	credentials := grokSSOImportCredentials(h.grokOAuthService.BuildAccountCredentials(tokenInfo), req.Credentials)
@@ -446,7 +461,9 @@ func (h *GrokOAuthHandler) createAccountFromSSOToken(ctx context.Context, req Gr
 		AutoPauseOnExpired: autoPauseOnExpired,
 	})
 	if err != nil {
-		return grokSSOImportWorkerResult{item: GrokSSOToOAuthItemResult{Index: index, Name: name, Email: tokenInfo.Email, Error: grokSSOImportErrorMessage(err)}}
+		item := grokSSOImportFailure(index, err)
+		item.Name, item.Email = name, tokenInfo.Email
+		return grokSSOImportWorkerResult{item: item}
 	}
 	h.scheduleGrokImportProbe(account)
 	return grokSSOImportWorkerResult{
@@ -546,20 +563,108 @@ func normalizeSSOImportTokens(tokens []string, single string) []string {
 	items = append(items, tokens...)
 	seen := make(map[string]struct{}, len(items))
 	result := make([]string, 0, len(items))
+	appendToken := func(token string) {
+		if token == "" {
+			return
+		}
+		if _, ok := seen[token]; ok {
+			return
+		}
+		seen[token] = struct{}{}
+		result = append(result, token)
+	}
 	for _, item := range items {
-		parts := strings.Split(strings.NewReplacer(",", "\n", "\r", "\n").Replace(item), "\n")
-		for _, token := range parts {
-			if token = xai.NormalizeSSOToken(token); token == "" {
-				continue
+		for _, line := range strings.FieldsFunc(item, func(r rune) bool { return r == '\r' || r == '\n' }) {
+			line = strings.TrimSpace(line)
+			if strings.Contains(line, "---") {
+				if ssoImportRecordLabel(line) {
+					appendToken(extractSSOImportRecordToken(line))
+					continue
+				}
+				if !explicitSSOImportCookie(line) && !validSSOImportJWT(line) {
+					continue
+				}
 			}
-			if _, ok := seen[token]; ok {
-				continue
+			for _, token := range strings.Split(line, ",") {
+				appendToken(xai.NormalizeSSOToken(token))
 			}
-			seen[token] = struct{}{}
-			result = append(result, token)
 		}
 	}
 	return result
+}
+
+func explicitSSOImportCookie(value string) bool {
+	if strings.HasPrefix(strings.ToLower(value), "cookie:") {
+		value = strings.TrimSpace(value[len("cookie:"):])
+	}
+	for _, part := range strings.Split(value, ";") {
+		name, _, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok || strings.Contains(name, "---") {
+			return false
+		}
+		if strings.EqualFold(name, "sso") || strings.EqualFold(name, "sso-rw") {
+			return true
+		}
+	}
+	return false
+}
+
+// Only the final JWT field is a credential. Email is an untrusted label and
+// everything between the first and last delimiter is discarded as a password.
+func ssoImportRecordLabel(value string) bool {
+	label, _, _ := strings.Cut(value, "---")
+	label = strings.TrimSpace(label)
+	if fields := strings.Fields(label); len(fields) == 2 {
+		if n, err := strconv.ParseUint(strings.TrimSuffix(fields[0], "."), 10, 64); err == nil && n > 0 {
+			label = fields[1]
+		}
+	}
+	address, err := mail.ParseAddress(label)
+	return err == nil && address.Address == label
+}
+
+func extractSSOImportRecordToken(value string) string {
+	first, last := strings.Index(value, "---"), strings.LastIndex(value, "---")
+	if first == last {
+		return ""
+	}
+	token := strings.TrimSpace(value[last+3:])
+	if !validSSOImportJWT(token) {
+		return ""
+	}
+	return xai.NormalizeSSOToken(token)
+}
+
+func validSSOImportJWT(value string) bool {
+	if value == "" || xai.NormalizeSSOToken(value) != value {
+		return false
+	}
+	parts := strings.Split(value, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for i, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, ch := range part {
+			if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '-' || ch == '_') {
+				return false
+			}
+		}
+		decoded, err := base64.RawURLEncoding.DecodeString(part)
+		if err != nil || len(decoded) == 0 {
+			return false
+		}
+		if i == 2 {
+			continue
+		}
+		var object map[string]any
+		if json.Unmarshal(decoded, &object) != nil || object == nil {
+			return false
+		}
+	}
+	return true
 }
 
 func grokSSOImportAccountName(base string, tokenInfo *service.GrokTokenInfo, index, total int) string {
@@ -585,6 +690,14 @@ func grokSSOImportErrorMessage(err error) string {
 		return status.Reason + ": " + status.Message
 	}
 	return status.Message
+}
+
+func grokSSOImportFailure(index int, err error) GrokSSOToOAuthItemResult {
+	code := infraerrors.Reason(err)
+	if code == "" {
+		code = "GROK_SSO_IMPORT_FAILED"
+	}
+	return GrokSSOToOAuthItemResult{Index: index, Error: grokSSOImportErrorMessage(err), Code: code, NeedsBrowserAuthorization: code == "GROK_SSO_BROWSER_VERIFICATION_REQUIRED"}
 }
 
 func (h *GrokOAuthHandler) QueryQuota(c *gin.Context) {
