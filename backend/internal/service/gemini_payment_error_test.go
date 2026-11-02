@@ -190,15 +190,18 @@ func TestGeminiPaymentCooldownPreservesLongerWindowAndSurvivesCancellation(t *te
 }
 
 func TestGeminiPaymentHonorsPolicyAndProviderBoundaries(t *testing.T) {
-	for _, mode := range []string{"custom-skip", "pool", "other-platform", "vertex"} {
+	for _, mode := range []string{"custom-skip", "custom-match", "pool", "other-platform", "vertex"} {
 		t.Run(mode, func(t *testing.T) {
 			repo, a := geminiPaymentAccounts()
-			svc := &GeminiMessagesCompatService{accountRepo: repo}
+			svc := &GeminiMessagesCompatService{accountRepo: repo, rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil)}
 			c, _ := newGeminiNativeTestContext(t)
 			switch mode {
 			case "custom-skip":
 				a.Credentials["custom_error_codes_enabled"] = true
 				a.Credentials["custom_error_codes"] = []any{float64(429)}
+			case "custom-match":
+				a.Credentials["custom_error_codes_enabled"] = true
+				a.Credentials["custom_error_codes"] = []any{float64(402)}
 			case "pool":
 				a.Credentials["pool_mode"] = true
 			case "other-platform":
@@ -215,7 +218,7 @@ func TestGeminiPaymentHonorsPolicyAndProviderBoundaries(t *testing.T) {
 			}
 			require.NotNil(t, fail)
 			require.False(t, fail.RetryableOnSameAccount)
-			if mode == "custom-skip" {
+			if mode == "custom-skip" || mode == "pool" {
 				require.Zero(t, repo.writes)
 			} else {
 				require.Equal(t, 1, repo.writes)

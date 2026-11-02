@@ -104,12 +104,15 @@ func (s *GeminiMessagesCompatService) geminiPaymentFailover(ctx context.Context,
 	}
 	if account.ShouldHandleErrorCode(resp.StatusCode) {
 		policy := ErrorPolicyNone
+		if account.IsPoolMode() && !account.IsCustomErrorCodesEnabled() {
+			policy = ErrorPolicySkipped
+		}
 		if s.rateLimitService != nil {
 			stateCtx, cancel := openAIAccountStateContext(ctx)
 			policy = s.rateLimitService.CheckErrorPolicy(stateCtx, account, resp.StatusCode, body, model)
 			cancel()
 		}
-		if policy != ErrorPolicyTempUnscheduled {
+		if policy == ErrorPolicyNone || policy == ErrorPolicyMatched {
 			s.persistGeminiPaymentCooldown(ctx, account, resp.Header)
 		}
 	}
