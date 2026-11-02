@@ -1144,6 +1144,10 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 		}
 
 		status := c.Writer.Status()
+		if status == http.StatusNotFound && c.Request.Method == http.MethodGet &&
+			c.FullPath() == "/v1/sub2api/usage/:request_id" && c.GetBool(opsReceiptLookupMissKey) {
+			return
+		}
 		if lateStatus := w.capturedErrorStatus(); status < 400 && lateStatus >= 400 {
 			status = lateStatus
 		}
