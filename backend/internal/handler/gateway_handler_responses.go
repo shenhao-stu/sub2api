@@ -430,7 +430,10 @@ func (h *GatewayHandler) handleResponsesFailoverExhausted(c *gin.Context, lastEr
 	}
 	status, code, message := statusCode, "server_error", "All available accounts exhausted"
 	errorCode := ""
-	if lastErr != nil && lastErr.IsCredentialFailure() {
+	if lastErr != nil && lastErr.Reason == service.GeminiPaymentRequiredReason {
+		service.SetOpsUpstreamError(c, http.StatusPaymentRequired, service.GeminiPaymentRequiredMessage, "")
+		status, code, message = http.StatusPaymentRequired, "billing_error", service.GeminiPaymentRequiredMessage
+	} else if lastErr != nil && lastErr.IsCredentialFailure() {
 		status, message = credentialFailoverClientResponse(lastErr)
 	} else if lastErr != nil && lastErr.IsOpenAICapacityShed() && strings.TrimSpace(lastErr.ClientMessage) != "" {
 		status = lastErr.ClientStatusCode

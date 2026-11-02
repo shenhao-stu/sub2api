@@ -907,6 +907,12 @@ func (h *GatewayHandler) handleGeminiFailoverExhausted(c *gin.Context, failoverE
 		return
 	}
 
+	if failoverErr.Reason == service.GeminiPaymentRequiredReason {
+		service.SetOpsUpstreamError(c, http.StatusPaymentRequired, service.GeminiPaymentRequiredMessage, "")
+		googleError(c, http.StatusPaymentRequired, service.GeminiPaymentRequiredMessage)
+		return
+	}
+
 	statusCode := failoverErr.StatusCode
 	responseBody := failoverErr.ResponseBody
 

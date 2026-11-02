@@ -440,6 +440,11 @@ func (h *GatewayHandler) handleCCFailoverExhausted(c *gin.Context, lastErr *serv
 	if lastErr != nil {
 		copyFailoverRetryAfter(c, lastErr.ResponseHeaders)
 	}
+	if lastErr != nil && lastErr.Reason == service.GeminiPaymentRequiredReason {
+		service.SetOpsUpstreamError(c, http.StatusPaymentRequired, service.GeminiPaymentRequiredMessage, "")
+		h.chatCompletionsErrorResponse(c, http.StatusPaymentRequired, "billing_error", service.GeminiPaymentRequiredMessage)
+		return
+	}
 	if lastErr != nil && lastErr.IsCredentialFailure() {
 		status, message := credentialFailoverClientResponse(lastErr)
 		h.chatCompletionsErrorResponse(c, status, "server_error", message)

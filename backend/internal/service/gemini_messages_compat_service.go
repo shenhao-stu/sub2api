@@ -746,6 +746,10 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 			return nil, s.handleUpstreamTransportError(ctx, c, account, err)
 		}
 
+		if paymentErr := s.geminiPaymentFailover(ctx, c, account, resp, mappedModel); paymentErr != nil {
+			return nil, paymentErr
+		}
+
 		// Special-case: signature/thought_signature validation errors are not transient, but may be fixed by
 		// downgrading Claude thinking/tool history to plain text (conservative two-stage retry).
 		if resp.StatusCode == http.StatusBadRequest && signatureRetryStage < 2 {
@@ -1326,6 +1330,12 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				}, nil
 			}
 			return nil, transportErr
+		}
+
+		if action != "countTokens" {
+			if paymentErr := s.geminiPaymentFailover(ctx, c, account, resp, mappedModel); paymentErr != nil {
+				return nil, paymentErr
+			}
 		}
 
 		// 引用缓存不存在、上游网关持有缓存的账号不可用先于错误策略识别：错误策略会写临时不可调度，
@@ -1983,6 +1993,8 @@ func (s *GeminiMessagesCompatService) writeGeminiMappedError(c *gin.Context, acc
 	}
 
 	switch upstreamStatus {
+	case http.StatusPaymentRequired:
+		statusCode, errType, errMsg = http.StatusPaymentRequired, "billing_error", "Upstream payment required; please contact the administrator"
 	case 400:
 		if statusCode == 0 {
 			statusCode = http.StatusBadRequest
