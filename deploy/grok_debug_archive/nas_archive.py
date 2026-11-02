@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 import uuid
+import zlib
 from dataclasses import dataclass
 
 UTC = dt.timezone.utc
@@ -28,6 +29,22 @@ UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 SHA_RE = re.compile(r"[0-9a-f]{64}\Z")
 REMOTE_PATH_RE = re.compile(r"/[A-Za-z0-9_./-]+\Z")
 HEADER_NAMES = {"content-type", "content-encoding", "accept"}
+MAX_HEADERS_RAW = 8 * 1024 ** 2
+MAX_HEADERS_COMPRESSED = 16 * 1024 ** 2
+HEADERS_POLICY = "credential_names_v1"
+CREDENTIAL_COMPONENTS = {"authorization","cookie","key","apikey","token","secret","password","credential",
+                         "signature","auth","authentication","jwt","session","csrf","xsrf","credentials"}
+HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
+HEADER_FIELDS = {"headers_file","headers_raw_bytes","headers_raw_sha256","headers_compressed_bytes",
+                 "headers_compressed_sha256","headers_policy","headers_redacted_count"}
+INPUT_FIELDS = {"schema_version","capture_id","captured_at","sealed_at","group_id","api_key_id","user_id",
+                "request_id","method","route","headers","content_length","body_present","payload_file",
+                "raw_bytes","raw_sha256","compressed_bytes","compressed_sha256","body_complete","read_error"}
+HEADER_REJECTION_CODES = {"invalid_headers_document","invalid_headers_map","invalid_header_name","invalid_header_values",
+    "header_value_count_limit","invalid_header_value","unredacted_credential_header","headers_redacted_count_mismatch",
+    "unsafe_headers_file","invalid_headers_policy","invalid_headers_size","invalid_headers_redacted_count",
+    "headers_size_mismatch","headers_hash_mismatch","headers_invalid_gzip","headers_raw_expansion_limit",
+    "headers_raw_hash_or_size_mismatch"}
 
 
 class ArchiveError(Exception):
@@ -127,6 +144,28 @@ def decode(raw):
         raise ArchiveError("invalid_json") from None
     require(isinstance(result, dict), "json_not_object")
     return result
+
+
+def validate_headers(value, expected_count):
+    require(set(value) == {"schema_version","policy","headers","redacted_count"}
+            and type(value["schema_version"]) is int and value["schema_version"] == 1
+            and value["policy"] == HEADERS_POLICY, "invalid_headers_document")
+    headers = value["headers"]
+    # These bounds follow from the encoded 8 MiB cap, rather than imposing
+    # smaller arbitrary limits on otherwise valid parsed HTTP headers.
+    require(isinstance(headers,dict) and len(headers) <= MAX_HEADERS_RAW // 5, "invalid_headers_map")
+    count = 0; values = 0
+    for name, items in headers.items():
+        require(isinstance(name,str) and len(name) <= MAX_HEADERS_RAW and HEADER_NAME_RE.fullmatch(name)
+                and name == "-".join(p[:1].upper()+p[1:].lower() for p in name.split("-")), "invalid_header_name")
+        require(isinstance(items,list) and all(isinstance(v,str) for v in items), "invalid_header_values")
+        values += len(items); require(values <= MAX_HEADERS_RAW // 3, "header_value_count_limit")
+        require(all(len(v) <= MAX_HEADERS_RAW and not any(ord(c) < 32 and c != "\t" or ord(c) == 127 for c in v)
+                    for v in items), "invalid_header_value")
+        if CREDENTIAL_COMPONENTS.intersection(re.split("[^a-z0-9]+",name.lower())):
+            require(items == ["[REDACTED]"], "unredacted_credential_header"); count += 1
+    require(type(value["redacted_count"]) is int and value["redacted_count"] == count == expected_count,
+            "headers_redacted_count_mismatch")
 
 
 def atomic_json(path, value):
@@ -245,7 +284,8 @@ class SSHTransport:
 
     def fetch(self, relative_path, destination, timeout, max_bytes):
         # These names were schema checked before this method; check again at the boundary.
-        require(re.fullmatch(r"[0-9a-f-]{36}\.(input\.json|request\.gz|outcome\.json)", relative_path), "unsafe_fetch_path")
+        require(isinstance(relative_path,str) and UUID_RE.fullmatch(relative_path[:36])
+                and relative_path[36:] in {".input.json",".request.gz",".headers.gz",".outcome.json"}, "unsafe_fetch_path")
         source = self.config.ssh_host + ":" + self.config.source_dir.rstrip("/") + "/" + relative_path
         self.run(["scp", "-q", *self.options(), "--", source, str(destination)], timeout=timeout,
                  output_limit=65536,file_size_limit=max_bytes)
@@ -293,7 +333,10 @@ class Puller:
         require(all(type(n)is int and 0<=n<=1000000 for n in counts.values()),"invalid_source_rejection_count")
         count=sum(counts.values())
         if count:
-            self.result["errors"].append({"code":"source_"+stage+"_rejected","count":count})
+            error={"code":"source_"+stage+"_rejected","count":count}
+            reasons={code:n for code,n in counts.items() if code in HEADER_REJECTION_CODES and n}
+            if reasons: error["reasons"]=reasons
+            self.result["errors"].append(error)
 
     def validate_listing(self, listing):
         require(listing.get("schema_version") == 1 and type(listing.get("group_id")) is int
@@ -308,9 +351,13 @@ class Puller:
             seen.add(cid)
             self.descriptor(item.get("input"),cid,".input.json",65536)
             self.descriptor(item.get("payload"),cid,".request.gz",self.config.max_payload_bytes)
+            require(set(item) in [{"capture_id","input","payload","outcome"},
+                                  {"capture_id","input","payload","headers","outcome"}], "invalid_listing_item_fields")
+            if "headers" in item:
+                self.descriptor(item["headers"],cid,".headers.gz",MAX_HEADERS_COMPRESSED)
             if item.get("outcome") is not None:
                 self.descriptor(item["outcome"],cid,".outcome.json",65536)
-            total += sum(item[k]["bytes"] for k in ["input","payload","outcome"] if item.get(k) is not None)
+            total += sum(item[k]["bytes"] for k in ["input","payload","headers","outcome"] if item.get(k) is not None)
         require(total <= self.config.max_bytes, "listing_byte_limit")
         return items
 
@@ -352,7 +399,9 @@ class Puller:
 
     def input_manifest(self, path, cid):
         value = decode(read_small(path,65536))
-        require(value.get("schema_version") == 1 and value.get("capture_id") == cid, "invalid_input_identity")
+        version = value.get("schema_version")
+        require(type(version) is int and version in [1,2] and value.get("capture_id") == cid, "invalid_input_identity")
+        require((set(value) == INPUT_FIELDS | HEADER_FIELDS if version == 2 else not HEADER_FIELDS.intersection(value)), "invalid_input_header_fields")
         require(type(value.get("group_id")) is int and value["group_id"] == self.config.group_id, "wrong_input_group")
         captured = parse_time(value.get("captured_at")); sealed = parse_time(value.get("sealed_at"))
         require(captured <= sealed <= self.now + dt.timedelta(minutes=5), "invalid_capture_time")
@@ -362,6 +411,16 @@ class Puller:
         require(value["raw_bytes"] <= self.config.max_raw_bytes and 0 < value["compressed_bytes"] <= self.config.max_payload_bytes, "body_size_limit")
         for key in ["raw_sha256","compressed_sha256"]:
             require(isinstance(value.get(key),str) and SHA_RE.fullmatch(value[key]), "invalid_body_hash")
+        if version == 2:
+            require(value["headers_file"] == cid + ".headers.gz", "unsafe_headers_file")
+            require(value["headers_policy"] == HEADERS_POLICY, "invalid_headers_policy")
+            require(type(value["headers_raw_bytes"]) is int and 0 < value["headers_raw_bytes"] <= MAX_HEADERS_RAW
+                    and type(value["headers_compressed_bytes"]) is int and 0 < value["headers_compressed_bytes"] <= MAX_HEADERS_COMPRESSED,
+                    "invalid_headers_size")
+            for key in ["headers_raw_sha256","headers_compressed_sha256"]:
+                require(isinstance(value[key],str) and SHA_RE.fullmatch(value[key]), "invalid_headers_hash")
+            require(type(value["headers_redacted_count"]) is int and 0 <= value["headers_redacted_count"] <= MAX_HEADERS_RAW // 5,
+                    "invalid_headers_redacted_count")
         require(type(value.get("body_complete")) is bool and type(value.get("body_present")) is bool, "invalid_body_flags")
         headers = value.get("headers")
         require(isinstance(headers,dict) and all(isinstance(k,str) and k.lower() in HEADER_NAMES
@@ -370,21 +429,36 @@ class Puller:
         require(value["body_complete"] == (value["read_error"] == ""), "contradictory_body_state")
         return value
 
-    def verify_raw(self, path, manifest):
-        size = 0; h = hashlib.sha256()
+    def verify_raw(self, path, manifest, headers=False):
+        size = 0; h = hashlib.sha256(); chunks = []
+        prefix = "headers_" if headers else ""
+        cap = MAX_HEADERS_RAW if headers else self.config.max_raw_bytes
+        label = "headers_" if headers else ""
         try:
             fd = os.open(path,os.O_RDONLY | os.O_NOFOLLOW)
             with os.fdopen(fd,"rb") as source, gzip.GzipFile(fileobj=source,mode="rb") as raw:
                 while True:
                     self.time_budget()
-                    block = raw.read(1024 ** 2)
+                    block = raw.read(65536)
                     if not block: break
                     size += len(block)
-                    require(size <= manifest["raw_bytes"] and size <= self.config.max_raw_bytes, "raw_expansion_limit")
+                    require(size <= manifest[prefix+"raw_bytes"] and size <= cap, label+"raw_expansion_limit")
                     h.update(block)
-        except (OSError, EOFError):
-            raise ArchiveError("invalid_gzip") from None
-        require(size == manifest["raw_bytes"] and h.hexdigest() == manifest["raw_sha256"], "raw_hash_or_size_mismatch")
+                    if headers: chunks.append(block)
+        except (OSError, EOFError, zlib.error):
+            raise ArchiveError(label+"invalid_gzip") from None
+        require(size == manifest[prefix+"raw_bytes"] and h.hexdigest() == manifest[prefix+"raw_sha256"], label+"raw_hash_or_size_mismatch")
+        if headers: validate_headers(decode(b"".join(chunks)),manifest["headers_redacted_count"])
+
+    def input_receipt(self, cid, manifest, input_sha):
+        value = {"schema_version":1,"group_id":self.config.group_id,"capture_id":cid,
+                 "captured_at":manifest["captured_at"],"input_sha256":input_sha,
+                 "compressed_sha256":manifest["compressed_sha256"],"compressed_bytes":manifest["compressed_bytes"],
+                 "raw_sha256":manifest["raw_sha256"],"raw_bytes":manifest["raw_bytes"],"body_complete":manifest["body_complete"]}
+        if manifest["schema_version"] == 2:
+            value["schema_version"] = 2
+            value.update({key:manifest[key] for key in HEADER_FIELDS})
+        return value
 
     def expected_ack(self,cid,kind,object_sha,receipt_sha):
         return {"schema_version":1,"group_id":self.config.group_id,"capture_id":cid,"kind":kind,
@@ -468,12 +542,14 @@ class Puller:
                 and item["payload"]["sha256"] == manifest["compressed_sha256"], "payload_descriptor_conflict")
         payload = self.fetch(directory,item["payload"])
         self.verify_raw(payload,manifest)
+        require(("headers" in item) == (manifest["schema_version"] == 2), "headers_descriptor_missing_or_unexpected")
+        if manifest["schema_version"] == 2:
+            require(item["headers"]["bytes"] == manifest["headers_compressed_bytes"]
+                    and item["headers"]["sha256"] == manifest["headers_compressed_sha256"], "headers_descriptor_conflict")
+            header_path = self.fetch(directory,item["headers"])
+            self.verify_raw(header_path,manifest,headers=True)
         input_receipt = directory / (cid + ".input-receipt.json")
-        atomic_json(input_receipt,{"schema_version":1,"group_id":self.config.group_id,"capture_id":cid,
-                    "captured_at":manifest["captured_at"],"input_sha256":item["input"]["sha256"],
-                    "compressed_sha256":manifest["compressed_sha256"],"compressed_bytes":manifest["compressed_bytes"],
-                    "raw_sha256":manifest["raw_sha256"],"raw_bytes":manifest["raw_bytes"],
-                    "body_complete":manifest["body_complete"]})
+        atomic_json(input_receipt,self.input_receipt(cid,manifest,item["input"]["sha256"]))
         self.result["input_archived"] += 1
         self.acknowledge(directory,cid,"input",item["input"]["sha256"],input_receipt)
         if item.get("outcome") is not None:
@@ -517,15 +593,22 @@ class Puller:
                 private_dir(directory)
                 manifest = self.input_manifest(directory / (cid+".input.json"),cid)
                 if parse_time(manifest["captured_at"]) >= cutoff: continue
+                capture_suffixes = allowed_suffixes | ({".headers.gz"} if manifest["schema_version"] == 2 else set())
                 children=list(directory.iterdir())
                 # Unexpected files or pending transfers prevent deletion, never broaden it.
-                require(all(f.name.startswith(cid) and f.name[len(cid):] in allowed_suffixes for f in children), "retention_unknown_file")
+                require(all(f.name.startswith(cid) and f.name[len(cid):] in capture_suffixes for f in children), "retention_unknown_file")
                 for f in children: regular(f)
                 receipt=directory/(cid+".input-receipt.json")
                 require(receipt.exists(),"retention_missing_receipt")
                 r=decode(read_small(receipt,65536))
-                require(r.get("group_id")==self.config.group_id and r.get("capture_id")==cid
-                        and r.get("input_sha256")==digest(read_small(directory/(cid+".input.json"),65536)),"retention_receipt_conflict")
+                input_sha=digest(read_small(directory/(cid+".input.json"),65536))
+                require(r == self.input_receipt(cid,manifest,input_sha),"retention_receipt_conflict")
+                artifacts=[(".request.gz", "")]
+                if manifest["schema_version"] == 2: artifacts.append((".headers.gz", "headers_"))
+                for suffix,prefix in artifacts:
+                    artifact=directory/(cid+suffix)
+                    self.verify_file(artifact,{"bytes":manifest[prefix+"compressed_bytes"],"sha256":manifest[prefix+"compressed_sha256"]})
+                    self.verify_raw(artifact,manifest,headers=bool(prefix))
                 expected=self.expected_ack(cid,"input",r["input_sha256"],digest(read_small(receipt,65536)))
                 require(decode(read_small(directory/(cid+".input-ack.done.json"),65536))==expected,"retention_input_unacked")
                 outcome_path=directory/(cid+".outcome.json")

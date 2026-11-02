@@ -35,26 +35,33 @@ type requestCapture struct {
 }
 
 type requestCaptureInput struct {
-	SchemaVersion    int               `json:"schema_version"`
-	CaptureID        string            `json:"capture_id"`
-	CapturedAt       time.Time         `json:"captured_at"`
-	SealedAt         time.Time         `json:"sealed_at"`
-	GroupID          int64             `json:"group_id"`
-	APIKeyID         int64             `json:"api_key_id"`
-	UserID           int64             `json:"user_id"`
-	RequestID        string            `json:"request_id"`
-	Method           string            `json:"method"`
-	Route            string            `json:"route"`
-	Headers          map[string]string `json:"headers"`
-	ContentLength    int64             `json:"content_length"`
-	BodyPresent      bool              `json:"body_present"`
-	PayloadFile      string            `json:"payload_file"`
-	RawBytes         int64             `json:"raw_bytes"`
-	RawSHA256        string            `json:"raw_sha256"`
-	CompressedBytes  int64             `json:"compressed_bytes"`
-	CompressedSHA256 string            `json:"compressed_sha256"`
-	BodyComplete     bool              `json:"body_complete"`
-	ReadError        string            `json:"read_error"`
+	SchemaVersion           int               `json:"schema_version"`
+	CaptureID               string            `json:"capture_id"`
+	CapturedAt              time.Time         `json:"captured_at"`
+	SealedAt                time.Time         `json:"sealed_at"`
+	GroupID                 int64             `json:"group_id"`
+	APIKeyID                int64             `json:"api_key_id"`
+	UserID                  int64             `json:"user_id"`
+	RequestID               string            `json:"request_id"`
+	Method                  string            `json:"method"`
+	Route                   string            `json:"route"`
+	Headers                 map[string]string `json:"headers"`
+	ContentLength           int64             `json:"content_length"`
+	BodyPresent             bool              `json:"body_present"`
+	PayloadFile             string            `json:"payload_file"`
+	RawBytes                int64             `json:"raw_bytes"`
+	RawSHA256               string            `json:"raw_sha256"`
+	CompressedBytes         int64             `json:"compressed_bytes"`
+	CompressedSHA256        string            `json:"compressed_sha256"`
+	BodyComplete            bool              `json:"body_complete"`
+	ReadError               string            `json:"read_error"`
+	HeadersFile             string            `json:"headers_file"`
+	HeadersRawBytes         int64             `json:"headers_raw_bytes"`
+	HeadersRawSHA256        string            `json:"headers_raw_sha256"`
+	HeadersCompressedBytes  int64             `json:"headers_compressed_bytes"`
+	HeadersCompressedSHA256 string            `json:"headers_compressed_sha256"`
+	HeadersPolicy           string            `json:"headers_policy"`
+	HeadersRedactedCount    int               `json:"headers_redacted_count"`
 }
 
 type requestCaptureOutcome struct {
@@ -146,7 +153,7 @@ func (s *requestCapture) begin(c *gin.Context, key *service.APIKey) (finish func
 		fail("capture_id_unavailable", http.StatusServiceUnavailable)
 		return nil, false
 	}
-	input := requestCaptureInput{SchemaVersion: 1, CaptureID: id.String(), CapturedAt: time.Now().UTC(), GroupID: *key.GroupID, APIKeyID: key.ID, UserID: key.UserID, Method: c.Request.Method, Route: c.FullPath(), ContentLength: c.Request.ContentLength, BodyPresent: c.Request.Body != nil, PayloadFile: id.String() + ".request.gz", Headers: make(map[string]string)}
+	input := requestCaptureInput{SchemaVersion: 2, CaptureID: id.String(), CapturedAt: time.Now().UTC(), GroupID: *key.GroupID, APIKeyID: key.ID, UserID: key.UserID, Method: c.Request.Method, Route: c.FullPath(), ContentLength: c.Request.ContentLength, BodyPresent: c.Request.Body != nil, PayloadFile: id.String() + ".request.gz", Headers: make(map[string]string), HeadersFile: id.String() + ".headers.gz", HeadersPolicy: captureHeadersPolicy}
 	input.RequestID, _ = c.Request.Context().Value(ctxkey.RequestID).(string)
 	for _, name := range []string{"Content-Type", "Content-Encoding", "Accept"} {
 		if value := c.Request.Header.Get(name); value != "" && len(value) <= 4096 {
@@ -174,6 +181,11 @@ func (s *requestCapture) begin(c *gin.Context, key *service.APIKey) (finish func
 				slog.Error("request_capture_outcome_failed", "capture_id", input.CaptureID, "code", "outcome_write_failed")
 			}
 		})
+	}
+	if err := capturePublishHeaders(c.Request, root, &input); err != nil {
+		code = "capture_headers_failed"
+		fail(code, http.StatusServiceUnavailable)
+		return finish, false
 	}
 	readErr, storageErr := s.spool(c, root, &input)
 	if storageErr != nil {
@@ -260,6 +272,9 @@ func (s *requestCapture) spool(c *gin.Context, root *os.Root, input *requestCapt
 			}
 		}
 	}
+	if readErr == nil {
+		readErr = c.Request.Context().Err()
+	}
 	if readErr == nil && input.ContentLength > 0 && input.RawBytes != input.ContentLength {
 		readErr = io.ErrUnexpectedEOF
 	}
@@ -289,6 +304,9 @@ func (s *requestCapture) spool(c *gin.Context, root *os.Root, input *requestCapt
 		return readErr, err
 	}
 	if err := root.Rename(partial, input.PayloadFile); err != nil {
+		return readErr, err
+	}
+	if err := captureVerifyHeaders(root, input.HeadersFile, input); err != nil {
 		return readErr, err
 	}
 	input.SealedAt = time.Now().UTC()

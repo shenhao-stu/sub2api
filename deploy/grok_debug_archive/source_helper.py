@@ -6,6 +6,7 @@ import argparse
 import contextlib
 import datetime as dt
 import fcntl
+import gzip
 import hashlib
 import json
 import os
@@ -15,6 +16,7 @@ import stat
 import sys
 import time
 import uuid
+import zlib
 
 GROUP_ID = 78
 SOURCE_DIR = Path('/opt/getoken-consolidated/builds/pool-kiro-pricing-20261020/sub2api-g4/data/request-debug/grok-test')
@@ -24,6 +26,12 @@ SOURCE_UID = 1000
 MAX_RAW = 256 * 1024 ** 2
 MAX_PAYLOAD = 512 * 1024 ** 2
 MAX_METADATA = 65536
+MAX_HEADERS_RAW = 8 * 1024 ** 2
+MAX_HEADERS_COMPRESSED = 16 * 1024 ** 2
+HEADERS_POLICY = 'credential_names_v1'
+CREDENTIAL_COMPONENTS = {'authorization','cookie','key','apikey','token','secret','password','credential',
+                         'signature','auth','authentication','jwt','session','csrf','xsrf','credentials'}
+HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
 MAX_RESPONSE = 2 * 1024 ** 2
 MAX_SCAN = 100000
 UUID_RE = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z')
@@ -31,6 +39,8 @@ SHA_RE = re.compile(r'[0-9a-f]{64}\Z')
 INPUT_FIELDS = {'schema_version','capture_id','captured_at','sealed_at','group_id','api_key_id','user_id',
                 'request_id','method','route','headers','content_length','body_present','payload_file',
                 'raw_bytes','raw_sha256','compressed_bytes','compressed_sha256','body_complete','read_error'}
+HEADER_FIELDS = {'headers_file','headers_raw_bytes','headers_raw_sha256','headers_compressed_bytes',
+                 'headers_compressed_sha256','headers_policy','headers_redacted_count'}
 OUTCOME_FIELDS = {'schema_version','capture_id','finished_at','http_status','context_canceled','error_code','request_released'}
 ACK_FIELDS = {'schema_version','group_id','capture_id','kind','object_sha256','receipt_sha256','accepted'}
 
@@ -85,6 +95,26 @@ def sha(value):
 def bounds(objects, size):
     require(type(objects) is int and 1 <= objects <= 1000, 'invalid_object_limit')
     require(type(size) is int and 1 <= size <= 10 * 1024 ** 3, 'invalid_byte_limit')
+
+
+def validate_headers(value, expected_count):
+    require(set(value) == {'schema_version','policy','headers','redacted_count'}
+            and type(value['schema_version']) is int and value['schema_version'] == 1
+            and value['policy'] == HEADERS_POLICY, 'invalid_headers_document')
+    headers = value['headers']
+    require(isinstance(headers,dict) and len(headers) <= MAX_HEADERS_RAW // 5, 'invalid_headers_map')
+    count = 0; values = 0
+    for name, items in headers.items():
+        require(isinstance(name,str) and len(name) <= MAX_HEADERS_RAW and HEADER_NAME_RE.fullmatch(name)
+                and name == '-'.join(p[:1].upper()+p[1:].lower() for p in name.split('-')), 'invalid_header_name')
+        require(isinstance(items,list) and all(isinstance(v,str) for v in items), 'invalid_header_values')
+        values += len(items); require(values <= MAX_HEADERS_RAW // 3, 'header_value_count_limit')
+        require(all(len(v) <= MAX_HEADERS_RAW and not any(ord(c) < 32 and c != '\t' or ord(c) == 127 for c in v)
+                    for v in items), 'invalid_header_value')
+        if CREDENTIAL_COMPONENTS.intersection(re.split('[^a-z0-9]+',name.lower())):
+            require(items == ['[REDACTED]'], 'unredacted_credential_header'); count += 1
+    require(type(value['redacted_count']) is int and value['redacted_count'] == count == expected_count,
+            'headers_redacted_count_mismatch')
 
 
 class SourceStore:
@@ -151,8 +181,9 @@ class SourceStore:
             require(self.identity(info) == self.identity(os.fstat(source.fileno())), 'source_object_changed')
         return raw, info
 
-    def payload_descriptor(self, cid, manifest):
-        name = cid + '.request.gz'
+    def compressed_descriptor(self, cid, manifest, headers=False, verify_raw=False):
+        prefix = 'headers_' if headers else ''
+        name = cid + ('.headers.gz' if headers else '.request.gz')
         try:
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self.fd)
         except FileNotFoundError:
@@ -161,19 +192,46 @@ class SourceStore:
             raise HelperError('unsafe_source_file') from None
         with os.fdopen(fd, 'rb') as source:
             info = os.fstat(source.fileno()); self.regular(info, self.source_uid)
-            require(info.st_size == manifest['compressed_bytes'], 'payload_size_mismatch')
+            label = 'headers' if headers else 'payload'
+            require(info.st_size == manifest[prefix+'compressed_bytes'], label+'_size_mismatch')
             digest = hashlib.sha256()
             for block in iter(lambda: source.read(1024 ** 2), b''):
                 self.budget(); digest.update(block)
             require(self.identity(info) == self.identity(os.fstat(source.fileno())), 'source_object_changed')
-            require(digest.hexdigest() == manifest['compressed_sha256'], 'payload_hash_mismatch')
+            require(digest.hexdigest() == manifest[prefix+'compressed_sha256'], label+'_hash_mismatch')
+            if verify_raw or headers:
+                source.seek(0); size = 0; raw_hash = hashlib.sha256(); chunks = []
+                try:
+                    with gzip.GzipFile(fileobj=source,mode='rb') as raw:
+                        while True:
+                            self.budget(); block = raw.read(65536)
+                            if not block: break
+                            size += len(block)
+                            require(size <= manifest[prefix+'raw_bytes'] and size <= (MAX_HEADERS_RAW if headers else MAX_RAW),
+                                    label+'_raw_expansion_limit')
+                            raw_hash.update(block)
+                            if headers: chunks.append(block)
+                except (OSError,EOFError,zlib.error):
+                    raise HelperError(label+'_invalid_gzip') from None
+                require(size == manifest[prefix+'raw_bytes'] and raw_hash.hexdigest() == manifest[prefix+'raw_sha256'],
+                        label+'_raw_hash_or_size_mismatch')
+                if headers: validate_headers(decode(b''.join(chunks)),manifest['headers_redacted_count'])
+                require(self.identity(info) == self.identity(os.fstat(source.fileno())), 'source_object_changed')
         return {'path': name, 'bytes': info.st_size, 'sha256': digest.hexdigest()}, info
+
+    def payload_descriptor(self, cid, manifest):
+        return self.compressed_descriptor(cid,manifest)
+
+    def headers_descriptor(self, cid, manifest):
+        return self.compressed_descriptor(cid,manifest,headers=True) if manifest['schema_version'] == 2 else (None,None)
 
     def input(self, cid):
         raw, info = self.read(cid + '.input.json', MAX_METADATA)
         value = decode(raw)
-        require(set(value) == INPUT_FIELDS, 'invalid_input_fields')
-        require(type(value['schema_version']) is int and value['schema_version'] == 1
+        version = value.get('schema_version')
+        require(type(version) is int and version in [1,2], 'invalid_input_identity')
+        require(set(value) == INPUT_FIELDS | (HEADER_FIELDS if version == 2 else set()), 'invalid_input_fields')
+        require(type(value['schema_version']) is int and value['schema_version'] in [1,2]
                 and value['capture_id'] == cid, 'invalid_input_identity')
         require(type(value['group_id']) is int and value['group_id'] == GROUP_ID, 'wrong_input_group')
         captured, sealed = timestamp(value['captured_at']), timestamp(value['sealed_at'])
@@ -182,6 +240,15 @@ class SourceStore:
         require(type(value['raw_bytes']) is int and 0 <= value['raw_bytes'] <= MAX_RAW
                 and type(value['compressed_bytes']) is int and 0 < value['compressed_bytes'] <= MAX_PAYLOAD, 'invalid_body_size')
         sha(value['raw_sha256']); sha(value['compressed_sha256'])
+        if version == 2:
+            require(value['headers_file'] == cid + '.headers.gz', 'unsafe_headers_file')
+            require(value['headers_policy'] == HEADERS_POLICY, 'invalid_headers_policy')
+            require(type(value['headers_raw_bytes']) is int and 0 < value['headers_raw_bytes'] <= MAX_HEADERS_RAW
+                    and type(value['headers_compressed_bytes']) is int and 0 < value['headers_compressed_bytes'] <= MAX_HEADERS_COMPRESSED,
+                    'invalid_headers_size')
+            sha(value['headers_raw_sha256']); sha(value['headers_compressed_sha256'])
+            require(type(value['headers_redacted_count']) is int and 0 <= value['headers_redacted_count'] <= MAX_HEADERS_RAW // 5,
+                    'invalid_headers_redacted_count')
         require(type(value['body_complete']) is bool and type(value['body_present']) is bool, 'invalid_body_flags')
         require(value['read_error'] in ['', 'read_error', 'context_canceled', 'body_too_large']
                 and value['body_complete'] == (value['read_error'] == ''), 'invalid_body_state')
@@ -337,11 +404,14 @@ class SourceStore:
             try:
                 manifest, inp, _ = self.input(cid)
                 outcome, _ = self.outcome(cid, manifest)
-                size = inp['bytes'] + manifest['compressed_bytes'] + (outcome['bytes'] if outcome else 0)
+                size = inp['bytes'] + manifest['compressed_bytes'] + manifest.get('headers_compressed_bytes',0) + (outcome['bytes'] if outcome else 0)
                 if size > max_bytes - total:
                     continue
                 payload, _ = self.payload_descriptor(cid, manifest)
-                items.append({'capture_id':cid,'input':inp,'payload':payload,'outcome':outcome}); total += size
+                headers, _ = self.headers_descriptor(cid,manifest)
+                item = {'capture_id':cid,'input':inp,'payload':payload,'outcome':outcome}
+                if headers is not None: item['headers'] = headers
+                items.append(item); total += size
             except HelperError as exc:
                 reject(exc); continue
             if len(items) >= max_objects:
@@ -360,7 +430,8 @@ class SourceStore:
                 require(old == expected, 'ack_conflict')
                 return old
             manifest, inp, _ = self.input(cid)
-            self.payload_descriptor(cid,manifest)
+            self.compressed_descriptor(cid,manifest,verify_raw=True)
+            self.headers_descriptor(cid,manifest)
             outcome, _ = self.outcome(cid,manifest)
             obj = inp if kind == 'input' else outcome
             require(obj is not None and obj['sha256'] == object_sha, 'ack_object_mismatch')
@@ -382,12 +453,16 @@ class SourceStore:
                     self.budget(); require(count <= MAX_SCAN, 'namespace_scan_limit')
                     cid = entry.name[:36]
                     if UUID_RE.fullmatch(cid) and (entry.name == cid or entry.name.startswith(cid + '.')):
-                        if entry.name not in {cid + s for s in ['.input.json','.request.gz','.outcome.json']}:
+                        if entry.name not in {cid + s for s in ['.input.json','.request.gz','.headers.gz','.outcome.json']}:
                             blocked.add(cid)
             for cid in self.names():
                 self.budget(); result['scanned'] += 1
                 try:
                     manifest, inp, ii = self.input(cid)
+                    if manifest['schema_version'] == 1:
+                        try: os.stat(cid+'.headers.gz',dir_fd=self.fd,follow_symlinks=False)
+                        except FileNotFoundError: pass
+                        else: raise HelperError('gc_partial_or_unknown_file')
                     if timestamp(manifest['captured_at']) >= self.now - dt.timedelta(hours=24):
                         result['preserved'] += 1; continue
                     ia, oa = self.ack_record(cid,'input',state,durable=True), self.ack_record(cid,'outcome',state,durable=True)
@@ -398,11 +473,13 @@ class SourceStore:
                         result['preserved'] += 1; continue
                     require(ia['object_sha256'] == inp['sha256'] and oa['object_sha256'] == outcome['sha256'], 'gc_ack_object_conflict')
                     require(cid not in blocked, 'gc_partial_or_unknown_file')
-                    size = inp['bytes'] + manifest['compressed_bytes'] + outcome['bytes']
+                    size = inp['bytes'] + manifest['compressed_bytes'] + manifest.get('headers_compressed_bytes',0) + outcome['bytes']
                     if size > max_bytes - result['deleted_bytes']:
                         result['preserved'] += 1; continue
                     payload, pi = self.payload_descriptor(cid,manifest)
                     snapshots = [(inp,ii),(payload,pi),(outcome,oi)]
+                    headers, hi = self.headers_descriptor(cid,manifest)
+                    if headers is not None: snapshots.append((headers,hi))
                     for desc, info in snapshots:
                         current = os.stat(desc['path'],dir_fd=self.fd,follow_symlinks=False)
                         self.regular(current,self.source_uid)
@@ -410,7 +487,8 @@ class SourceStore:
                     # Remove ready marker first; a crash can leave acknowledged orphan
                     # payload/outcome, never a ready input pointing at deleted payload.
                     os.unlink(inp['path'],dir_fd=self.fd); os.fsync(self.fd)
-                    os.unlink(payload['path'],dir_fd=self.fd); os.unlink(outcome['path'],dir_fd=self.fd); os.fsync(self.fd)
+                    for desc,_ in snapshots[1:]: os.unlink(desc['path'],dir_fd=self.fd)
+                    os.fsync(self.fd)
                     result['deleted'] += 1; result['deleted_bytes'] += size
                     if result['deleted'] >= max_objects:
                         break
