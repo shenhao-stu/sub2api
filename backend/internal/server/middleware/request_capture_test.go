@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -289,7 +290,7 @@ func (r *generatedCaptureBody) Read(p []byte) (int, error) {
 }
 func (r *generatedCaptureBody) Close() error { r.closed = true; return nil }
 
-func TestRequestCaptureBusyInputRejectsOnlySelectedGroupAndRecovers(t *testing.T) {
+func TestRequestCaptureBusyInputQueuesOnlySelectedGroupAndRecovers(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "capture")
 	router, _, _ := captureAuthFixture(t, dir, func(cfg *config.Config, _ map[string]*service.APIKey) { cfg.RequestCapture.MaxConcurrent = 1 })
 	started, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
@@ -306,26 +307,74 @@ func TestRequestCaptureBusyInputRejectsOnlySelectedGroupAndRecovers(t *testing.T
 		close(release)
 		t.Fatal("first request never started reading")
 	}
-	for _, key := range []string{"synthetic-selected", "synthetic-other"} {
+	send := func(key string) int {
 		req := httptest.NewRequest(http.MethodPost, "/capture", strings.NewReader("second"))
 		req.Header.Set("x-api-key", key)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
-		if key == "synthetic-selected" {
-			require.Equal(t, http.StatusServiceUnavailable, w.Code)
-		} else {
-			require.Equal(t, http.StatusCreated, w.Code)
-		}
+		return w.Code
+	}
+	second := make(chan int, 1)
+	go func() { second <- send("synthetic-selected") }()
+	require.Equal(t, http.StatusCreated, send("synthetic-other"))
+	select {
+	case status := <-second:
+		close(release)
+		<-done
+		t.Fatalf("expected the second selected request to wait for storage, got %d", status)
+	case <-time.After(50 * time.Millisecond):
 	}
 	close(release)
 	<-done
 	require.Equal(t, http.StatusCreated, w1.Code)
-	third := httptest.NewRequest(http.MethodPost, "/capture", strings.NewReader("third"))
-	third.Header.Set("x-api-key", "synthetic-selected")
-	w3 := httptest.NewRecorder()
-	router.ServeHTTP(w3, third)
-	require.Equal(t, http.StatusCreated, w3.Code)
+	require.Equal(t, http.StatusCreated, <-second)
 	require.Len(t, captureJSONFiles(t, dir, ".input.json"), 2)
+}
+
+func TestRequestCaptureQueueCancellationAndOverload(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cfg := &config.Config{RequestCapture: config.RequestCaptureConfig{GroupIDs: []int64{42}, MaxConcurrent: 1}}
+		capture := newRequestCapture(cfg)
+		group := int64(42)
+		key := &service.APIKey{GroupID: &group}
+		capture.slots <- struct{}{}
+		router := gin.New()
+		router.POST("/capture", func(c *gin.Context) {
+			_, ok := capture.begin(c, key)
+			if ok {
+				t.Error("a request reached the handler without an input slot")
+			}
+		})
+		send := func(ctx context.Context, body *captureUnreadBody) *httptest.ResponseRecorder {
+			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/capture", body)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			return w
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		body := &captureUnreadBody{}
+		done := make(chan *httptest.ResponseRecorder, 1)
+		go func() { done <- send(ctx, body) }()
+		synctest.Wait()
+		require.Len(t, capture.waiters, 1)
+		for i := 1; i < cap(capture.waiters); i++ {
+			capture.waiters <- struct{}{}
+		}
+		overflow := &captureUnreadBody{}
+		w := send(context.Background(), overflow)
+		require.Equal(t, http.StatusTooManyRequests, w.Code)
+		require.Equal(t, "1", w.Header().Get("Retry-After"))
+		require.False(t, overflow.read)
+		cancel()
+		require.Equal(t, 499, (<-done).Code)
+		require.False(t, body.read)
+		require.Len(t, capture.waiters, cap(capture.waiters)-1)
+		expired := &captureUnreadBody{}
+		require.Equal(t, http.StatusTooManyRequests, send(context.Background(), expired).Code)
+		require.False(t, expired.read)
+		require.Len(t, capture.waiters, cap(capture.waiters)-1)
+	})
 }
 
 type blockingCaptureBody struct{ started, release chan struct{} }

@@ -3,6 +3,7 @@ package middleware
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -23,12 +24,19 @@ import (
 	"github.com/shirou/gopsutil/v4/disk"
 )
 
+// Bound open requests separately from expensive compression and disk I/O.
+const (
+	maxCaptureWaiters   = 512
+	captureQueueTimeout = 90 * time.Second
+)
+
 // This captures inbound entity bytes only. It never wraps the response writer,
 // parses JSON, dispatches a model request, or captures upgraded WS messages.
 type requestCapture struct {
 	cfg       config.RequestCaptureConfig
 	bodyLimit int64
 	slots     chan struct{}
+	waiters   chan struct{}
 	rootMu    sync.Mutex
 	root      *os.Root
 	invalid   bool
@@ -82,7 +90,13 @@ func newRequestCapture(cfg *config.Config) *requestCapture {
 	if concurrent < 1 || concurrent > 16 {
 		concurrent = 1
 	}
-	return &requestCapture{cfg: cfg.RequestCapture, bodyLimit: cfg.RequestCaptureBodyLimit(), slots: make(chan struct{}, concurrent), invalid: cfg.RequestCapture.Validate(cfg.RequestCaptureBodyLimit()) != nil}
+	return &requestCapture{
+		cfg:       cfg.RequestCapture,
+		bodyLimit: cfg.RequestCaptureBodyLimit(),
+		slots:     make(chan struct{}, concurrent),
+		waiters:   make(chan struct{}, maxCaptureWaiters),
+		invalid:   cfg.RequestCapture.Validate(cfg.RequestCaptureBodyLimit()) != nil,
+	}
 }
 
 func (s *requestCapture) matches(key *service.APIKey) bool {
@@ -125,6 +139,31 @@ func (s *requestCapture) diskAvailable() bool {
 	return err == nil && usage.Free >= s.cfg.MinFreeBytes
 }
 
+// Waiting requests own only a queue entry. They do not read a body, open a
+// capture file or start billing until a writer is available.
+func (s *requestCapture) acquireWriter(ctx context.Context) bool {
+	select {
+	case s.slots <- struct{}{}:
+		return true
+	default:
+	}
+	select {
+	case s.waiters <- struct{}{}:
+		defer func() { <-s.waiters }()
+	default:
+		return false
+	}
+	timer := time.NewTimer(captureQueueTimeout)
+	defer timer.Stop()
+	select {
+	case s.slots <- struct{}{}:
+		return true
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+	return false
+}
+
 // begin returns a small outcome callback even for a retained partial input.
 // The input slot is released before billing/handlers/SSE, never after a model
 // response; only bounded input compression/publication holds it.
@@ -136,11 +175,19 @@ func (s *requestCapture) begin(c *gin.Context, key *service.APIKey) (finish func
 		slog.Warn("request_capture_rejected", "code", code)
 		AbortWithError(c, status, "REQUEST_CAPTURE_UNAVAILABLE", "Test group request capture is unavailable")
 	}
-	select {
-	case s.slots <- struct{}{}:
-		defer func() { <-s.slots }()
-	default:
-		fail("capture_busy", http.StatusServiceUnavailable)
+	ctx := c.Request.Context()
+	if !s.acquireWriter(ctx) {
+		if ctx.Err() != nil {
+			c.AbortWithStatus(499)
+		} else {
+			c.Header("Retry-After", "1")
+			AbortWithError(c, http.StatusTooManyRequests, "REQUEST_CAPTURE_BUSY", "Test group request capture is busy. Please retry shortly.")
+		}
+		return nil, false
+	}
+	defer func() { <-s.slots }()
+	if ctx.Err() != nil {
+		c.AbortWithStatus(499)
 		return nil, false
 	}
 	root, err := s.openRoot()

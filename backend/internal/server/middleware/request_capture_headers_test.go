@@ -215,12 +215,13 @@ func TestRequestCaptureHeaderFailuresNeverPublishReadyInput(t *testing.T) {
 				c.Request = req
 				finish, ok := newRequestCapture(cfg).begin(c, keys["synthetic-selected"])
 				require.False(t, ok)
-				if finish != nil {
-					finish(false)
-				}
-			} else {
-				router.ServeHTTP(w, req)
+				require.Nil(t, finish)
+				require.Equal(t, 499, w.Code)
+				_, err := os.Stat(dir)
+				require.ErrorIs(t, err, os.ErrNotExist)
+				return
 			}
+			router.ServeHTTP(w, req)
 			require.Equal(t, http.StatusServiceUnavailable, w.Code)
 			require.Zero(t, calls)
 			require.Empty(t, captureJSONFiles(t, dir, ".input.json"))
