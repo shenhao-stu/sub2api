@@ -374,6 +374,9 @@ func isGrokBillingQuotaText(low string) bool {
 	if strings.Contains(low, "insufficient_quota") {
 		return true
 	}
+	if isGrokUsageLimitReachedText(low) {
+		return true
+	}
 	if strings.Contains(low, "billing") && strings.Contains(low, "quota") {
 		return true
 	}
@@ -572,7 +575,7 @@ func (s *OpenAIGatewayService) applyGrokUpstreamFailureDecision(
 		markGrokTeamModelRateLimit(account, decision.Model, until)
 	case GrokFailureBilling:
 		low := strings.ToLower(decision.Reason)
-		if strings.Contains(low, "spending") || strings.Contains(low, "credits") {
+		if strings.Contains(low, "spending") || strings.Contains(low, "credits") || isGrokUsageLimitReachedText(low) {
 			// Spending-limit/credit exhaustion is a billing-window condition. Keep
 			// the account recoverable and let the normal rate-limit recovery clear it.
 			s.rateLimitGrok(ctx, account, grokSpendingLimitResetAt(account, time.Now()))

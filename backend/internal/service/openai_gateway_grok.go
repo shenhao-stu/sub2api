@@ -2190,7 +2190,7 @@ func isGrokSpendingLimitError(responseBody []byte) bool {
 		gjson.GetBytes(responseBody, "message").String(),
 	)))
 	return strings.Contains(message, "spending limit") ||
-		strings.Contains(message, "run out of credits")
+		strings.Contains(message, "run out of credits") || isGrokUsageLimitReachedText(message) || isGrokUsageLimitReachedText(code)
 }
 
 func (s *OpenAIGatewayService) tempUnscheduleGrok(ctx context.Context, account *Account, cooldown time.Duration, reason string) {
