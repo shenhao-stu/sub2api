@@ -19,6 +19,7 @@ import uuid
 GROUP_ID = 78
 SOURCE_DIR = Path('/opt/getoken-consolidated/builds/pool-kiro-pricing-20261020/sub2api-g4/data/request-debug/grok-test')
 INSTALL_PATH = Path('/opt/getoken-consolidated/builds/grok-test-20261102/archive/source_helper.py')
+ACK_STATE_DIR = Path('/opt/getoken-consolidated/builds/grok-test-20261102/archive/ack-state')
 SOURCE_UID = 1000
 MAX_RAW = 256 * 1024 ** 2
 MAX_PAYLOAD = 512 * 1024 ** 2
@@ -88,12 +89,14 @@ def bounds(objects, size):
 
 class SourceStore:
     """Tests inject a temporary root/UID; the public CLI exposes no such override."""
-    def __init__(self, root=SOURCE_DIR, source_uid=SOURCE_UID, now=None, max_seconds=35):
+    def __init__(self, root=SOURCE_DIR, source_uid=SOURCE_UID, now=None, max_seconds=35, state_root=ACK_STATE_DIR):
         self.root = Path(root)
+        self.state_root = Path(state_root)
         self.source_uid = source_uid
         self.now = now or dt.datetime.now(dt.timezone.utc)
         self.deadline = time.monotonic() + max_seconds
         self.fd = None
+        self.state_parent_fd = None
 
     def __enter__(self):
         require(self.root.is_absolute() and '..' not in self.root.parts, 'unsafe_source_root')
@@ -111,6 +114,8 @@ class SourceStore:
         return self
 
     def __exit__(self, *args):
+        if self.state_parent_fd is not None:
+            os.close(self.state_parent_fd)
         os.close(self.fd)
 
     def budget(self):
@@ -216,16 +221,41 @@ class SourceStore:
                     if UUID_RE.fullmatch(cid):
                         yield cid
 
+    def state_parent(self):
+        """Open the independent root control plane, never under producer data."""
+        if self.state_parent_fd is not None:
+            return self.state_parent_fd
+        require(self.state_root.is_absolute() and '..' not in self.state_root.parts
+                and self.state_root.name == 'ack-state', 'unsafe_ack_root')
+        require(not self.state_root.is_relative_to(self.root), 'ack_root_inside_source')
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for part in self.state_root.parent.parts[1:]:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                os.close(fd); fd = child
+                info = os.fstat(fd); mode = stat.S_IMODE(info.st_mode)
+                # Root-owned sticky temp ancestors are safe for private test
+                # roots. Production /opt ancestors are root-owned/nonwritable.
+                trusted_sticky = info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
+                require(info.st_uid in {0,os.geteuid()} and (mode & 0o022 == 0 or trusted_sticky), 'unsafe_ack_ancestor')
+            info = os.fstat(fd)
+            require(info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o700, 'unsafe_ack_parent')
+            self.state_parent_fd = fd
+            return fd
+        except BaseException:
+            os.close(fd); raise
+
     def state(self, create=False):
+        parent = self.state_parent()
         if create:
             try:
-                os.mkdir('.archive-helper', 0o700, dir_fd=self.fd)
+                os.mkdir('ack-state', 0o700, dir_fd=parent)
             except FileExistsError:
                 pass
             # Also settle a directory entry left visible by an earlier failed fsync.
-            os.fsync(self.fd)
+            os.fsync(parent)
         try:
-            fd = os.open('.archive-helper', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=self.fd)
+            fd = os.open('ack-state', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
         except FileNotFoundError:
             return None
         except OSError:
@@ -273,7 +303,7 @@ class SourceStore:
                 # though directory fsync failed. Read-only reconciliation must
                 # settle that existing entry before claiming it is accepted. No
                 # filename/content is created or rewritten by these barriers.
-                os.fsync(state); os.fsync(self.fd)
+                os.fsync(state); os.fsync(self.state_parent())
             return value
         finally:
             if owned:
@@ -339,7 +369,7 @@ class SourceStore:
             with os.fdopen(fd,'wb') as output:
                 output.write(encode(expected)); output.flush(); os.fsync(output.fileno())
             os.link(temp, name, src_dir_fd=state, dst_dir_fd=state, follow_symlinks=False)
-            os.unlink(temp,dir_fd=state); os.fsync(state); os.fsync(self.fd)
+            os.unlink(temp,dir_fd=state); os.fsync(state); os.fsync(self.state_parent())
         return expected
 
     def gc(self, max_objects=100, max_bytes=1024 ** 3):
