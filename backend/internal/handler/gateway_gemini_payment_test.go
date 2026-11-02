@@ -4,6 +4,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -74,7 +75,8 @@ func TestGeminiPaymentHTTPFailoverBillsOnlySuccessfulAccount(t *testing.T) {
 					defer cleanup()
 					cfg := &config.Config{}
 					cfg.Default.RateMultiplier = 1
-					logs := &cachedBillingUsageRepo{}
+					logs := &geminiPaymentReceiptRepo{}
+					h.usageService = service.NewUsageService(logs, nil, nil, nil)
 					billing := &mediaCompletionBillingRepo{apply: func(ctx context.Context) error { require.NoError(t, ctx.Err()); return nil }}
 					snapshot := service.NewSchedulerSnapshotService(&fakeSchedulerCache{accounts: accounts}, nil, nil, nil, nil)
 					h.gatewayService = service.NewGatewayService(nil, &fakeGroupRepo{group: group}, logs, billing, nil, nil, nil, nil, cfg, snapshot, nil, service.NewBillingService(cfg, nil), nil, nil, nil, nil, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
@@ -104,6 +106,8 @@ func TestGeminiPaymentHTTPFailoverBillsOnlySuccessfulAccount(t *testing.T) {
 					}
 					rec := httptest.NewRecorder()
 					c, _ := gin.CreateTestContext(rec)
+					const requestID = "2c4e888b-836b-4992-9ff1-dc1699488902"
+					requestCtx = context.WithValue(requestCtx, ctxkey.ClientRequestID, requestID)
 					c.Request = httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)).WithContext(context.WithValue(requestCtx, ctxkey.Group, group))
 					key := &service.APIKey{ID: 20, UserID: 10, GroupID: &group.ID, Group: group, User: &service.User{ID: 10, Balance: 100}}
 					c.Set(string(middleware.ContextKeyAPIKey), key)
@@ -127,6 +131,9 @@ func TestGeminiPaymentHTTPFailoverBillsOnlySuccessfulAccount(t *testing.T) {
 						require.Equal(t, 10, billing.commands[0].InputTokens)
 						require.Equal(t, 5, billing.commands[0].OutputTokens)
 						require.Equal(t, int64(812), logs.first().AccountID)
+						require.Equal(t, "client:"+requestID, billing.commands[0].RequestID)
+						require.Equal(t, int64(812), billing.commands[0].AccountID)
+						require.Equal(t, "client:"+requestID, logs.first().RequestID)
 					} else {
 						require.Equal(t, []int64{811}, hits, "pool policy cannot retry an explicitly depleted wallet")
 						require.Equal(t, 402, rec.Code, rec.Body.String())
@@ -134,8 +141,67 @@ func TestGeminiPaymentHTTPFailoverBillsOnlySuccessfulAccount(t *testing.T) {
 						require.NotContains(t, rec.Body.String(), "provider.example")
 						require.Empty(t, billing.commands)
 					}
+					// Native Gemini uses the existing provider v1 receipt, not
+					// OpenAI Chat's negotiated v2 claim/ACK protocol. Read the
+					// real owned-receipt handler after recording final usage.
+					readCtx, readRec := newKeyBillingContext(key)
+					readCtx.Params = gin.Params{{Key: "request_id", Value: requestID}}
+					h.KeyUsageReceipt(readCtx)
+					if scenario == "vertex" && stream && path != "/v1/messages" {
+						require.Equal(t, http.StatusOK, readRec.Code, readRec.Body.String())
+						require.Equal(t, 1, logs.receiptWrites, "rejected account cannot add a final receipt")
+						var receipt service.UsageReceipt
+						require.NoError(t, json.Unmarshal(readRec.Body.Bytes(), &receipt))
+						require.Equal(t, 1, receipt.Version)
+						require.Equal(t, "wire_final", receipt.Source)
+						require.Equal(t, requestID, receipt.RequestID)
+						require.Equal(t, path, receipt.InboundEndpoint)
+						require.Equal(t, "gemini-4-argon", receipt.Model)
+						require.Equal(t, 10, receipt.InputTokens)
+						require.Equal(t, 5, receipt.OutputTokens)
+						require.Equal(t, "no-store", readRec.Header().Get("Cache-Control"))
+						otherCtx, otherRec := newKeyBillingContext(&service.APIKey{ID: 21})
+						otherCtx.Params = readCtx.Params
+						h.KeyUsageReceipt(otherCtx)
+						require.Equal(t, http.StatusNotFound, otherRec.Code)
+					} else {
+						// No final receipt for a rejection/cancel, and no new
+						// claim of receipt support for existing buffered v1 or
+						// the native Gemini Messages converter.
+						require.Zero(t, logs.receiptWrites)
+						require.Equal(t, http.StatusNotFound, readRec.Code)
+						require.NotContains(t, readRec.Body.String(), "output_tokens")
+					}
 				})
 			}
 		}
 	}
+}
+
+// Receipt persistence is captured at the existing repository seam. Settlement,
+// provider parsing and the owned receipt HTTP reader remain the real services.
+type geminiPaymentReceiptRepo struct {
+	cachedBillingUsageRepo
+	receiptWrites int
+	receiptKey    int64
+	receipt       *service.UsageReceipt
+}
+
+func (r *geminiPaymentReceiptRepo) SaveUsageReceipt(_ context.Context, key int64, receipt *service.UsageReceipt) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.receiptWrites++
+	r.receiptKey = key
+	copy := *receipt
+	r.receipt = &copy
+	return nil
+}
+func (r *geminiPaymentReceiptRepo) GetUsageReceipt(_ context.Context, key int64, id string) (*service.UsageReceipt, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.receipt == nil || r.receiptKey != key || r.receipt.RequestID != id {
+		return nil, service.ErrUsageLogNotFound
+	}
+	copy := *r.receipt
+	return &copy, nil
 }
