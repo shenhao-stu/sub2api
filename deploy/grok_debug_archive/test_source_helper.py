@@ -60,10 +60,10 @@ class Producer:
 
 class LocalTransport:
     """NAS transport seam backed by the real source helper and source files."""
-    def __init__(self, root, config):
-        self.root=root; self.config=config; self.uncertain=False; self.ack_calls=[]; self.status_calls=[]
+    def __init__(self, root, config, state_root):
+        self.root=root; self.config=config; self.state_root=state_root; self.uncertain=False; self.ack_calls=[]; self.status_calls=[]
 
-    def store(self): return source.SourceStore(self.root,os.geteuid(),NOW)
+    def store(self): return source.SourceStore(self.root,os.geteuid(),NOW,state_root=self.state_root)
     def manifest_list(self):
         with self.store() as store: return store.list(self.config.max_objects,self.config.max_bytes)
     def fetch(self,name,destination,timeout,max_bytes):
@@ -90,9 +90,11 @@ class SourceBehavior(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(); self.base=Path(self.temp.name).resolve()
         self.root=self.base/'source'; self.root.mkdir(mode=0o700); self.producer=Producer(self.root)
+        self.state_parent=self.base/'root-control'; self.state_parent.mkdir(mode=0o700)
+        self.state_root=self.state_parent/'ack-state'
 
     def tearDown(self): self.temp.cleanup()
-    def store(self,now=NOW): return source.SourceStore(self.root,os.geteuid(),now)
+    def store(self,now=NOW): return source.SourceStore(self.root,os.geteuid(),now,state_root=self.state_root)
     def listing(self,n=100,size=1024**3):
         with self.store() as store: return store.list(n,size)
     def ack(self,cid,kind):
@@ -115,12 +117,57 @@ class SourceBehavior(unittest.TestCase):
         with self.store() as store: self.assertEqual(store.ack_status(cid,'input'),{'schema_version':1,'accepted':False})
         self.assertFalse((self.root/'.archive-helper').exists())
 
+    def test_producer_chown_damaged_legacy_state_cannot_block_external_ack_namespace(self):
+        cid=self.producer.add(outcome=True)
+        legacy=self.root/'.archive-helper';legacy.mkdir(mode=0o700)
+        (legacy/'helper.lock').write_bytes(b'');legacy.chmod(0o777)
+        # The producer's recursive ownership/mode changes must affect only its
+        # data tree. A damaged retired state directory there is not authoritative.
+        self.assertEqual([item['capture_id']for item in self.listing()['items']],[cid])
+        first=self.ack(cid,'input');self.assertTrue(first['accepted'])
+        self.assertEqual((legacy/'helper.lock').read_bytes(),b'')
+
     def test_cli_rejects_foreign_group_before_opening_source_and_has_no_path_override(self):
         script=Path(source.__file__)
         result=subprocess.run([sys.executable,str(script),'manifest-list','--group-id','79','--max-objects','1','--max-bytes','1000'],capture_output=True,text=True)
         self.assertEqual(result.returncode,1); self.assertEqual(json.loads(result.stdout)['code'],'wrong_group')
         result=subprocess.run([sys.executable,str(script),'gc','--group-id','78','--source-dir',str(self.root)],capture_output=True,text=True)
         self.assertEqual(result.returncode,2)
+        result=subprocess.run([sys.executable,str(script),'gc','--group-id','78','--state-root',str(self.state_root)],capture_output=True,text=True)
+        self.assertEqual(result.returncode,2)
+
+    def test_bad_legacy_ack_and_symlink_are_preserved_but_never_authoritative(self):
+        cid=self.producer.add(outcome=True);outside=self.base/'legacy-outside';outside.mkdir(mode=0o700)
+        (outside/(cid+'.input.ack.json')).write_bytes(b'invalid retired ack')
+        legacy=self.root/'.archive-helper';legacy.symlink_to(outside,target_is_directory=True)
+        self.assertEqual([x['capture_id']for x in self.listing()['items']],[cid])
+        self.both(cid)
+        self.assertEqual((outside/(cid+'.input.ack.json')).read_bytes(),b'invalid retired ack')
+        self.assertTrue(legacy.is_symlink())
+
+    def test_recursive_producer_tree_chown_does_not_touch_external_ack_tombstones(self):
+        cid=self.producer.add(outcome=True);expected=self.both(cid)
+        ackpath=self.state_root/(cid+'.input.ack.json');before=(ackpath.stat().st_ino,ackpath.stat().st_uid,ackpath.read_bytes())
+        # Run the same ownership operation over the producer tree with the
+        # fixture UID, which is available without administrator permissions.
+        for path in [self.root,*self.root.rglob('*')]:os.chown(path,os.geteuid(),os.getegid())
+        after=(ackpath.stat().st_ino,ackpath.stat().st_uid,ackpath.read_bytes())
+        self.assertEqual(after,before)
+        with self.store()as store:
+            self.assertEqual(store.ack_status(cid,'input'),expected[0]);self.assertEqual(store.ack_status(cid,'outcome'),expected[1])
+
+    def test_external_ack_parent_must_be_private_and_cannot_be_under_source(self):
+        cid=self.producer.add();self.state_parent.chmod(0o777)
+        with self.assertRaises(source.HelperError):self.ack(cid,'input')
+        self.state_parent.chmod(0o700)
+        with source.SourceStore(self.root,os.geteuid(),NOW,state_root=self.root/'ack-state')as store:
+            with self.assertRaises(source.HelperError):store.ack_status(cid,'input')
+
+    def test_ack_parent_symlink_is_not_followed(self):
+        cid=self.producer.add();linked=self.base/'linked-control';linked.symlink_to(self.state_parent,target_is_directory=True)
+        with source.SourceStore(self.root,os.geteuid(),NOW,state_root=linked/'ack-state')as store:
+            with self.assertRaises(OSError):store.ack_status(cid,'input')
+        self.assertFalse(self.state_root.exists())
 
     def test_orphans_partial_files_and_noncanonical_names_are_never_ready(self):
         cid=str(uuid.uuid4())
@@ -192,7 +239,7 @@ class SourceBehavior(unittest.TestCase):
 
     def test_ack_is_immutable_durable_and_does_not_modify_producer_input(self):
         cid=self.producer.add(outcome=True); before={p.name:p.read_bytes()for p in self.root.iterdir()}
-        ack=self.ack(cid,'input'); path=self.root/'.archive-helper'/(cid+'.input.ack.json'); original=path.read_bytes()
+        ack=self.ack(cid,'input'); path=self.state_root/(cid+'.input.ack.json'); original=path.read_bytes()
         self.assertEqual(path.stat().st_mode&0o777,0o600); self.assertEqual(path.stat().st_nlink,1)
         with self.store() as store:
             self.assertEqual(store.ack_status(cid,'input'),ack)
@@ -214,20 +261,20 @@ class SourceBehavior(unittest.TestCase):
         with mock.patch.object(source.os,'fsync',side_effect=fail_file):
             with self.assertRaises(OSError): self.ack(cid,'input')
         with self.store() as store: self.assertFalse(store.ack_status(cid,'input')['accepted'])
-        self.assertTrue(list((self.root/'.archive-helper').glob('*.pending-*')))
+        self.assertTrue(list(self.state_root.glob('*.pending-*')))
         self.assertTrue((self.root/(cid+'.input.json')).exists())
 
     def test_directory_fsync_failure_cannot_be_confirmed_until_durability_recovers(self):
         cid=self.producer.add(); real=os.fsync
         def fail_ack_directory(fd):
-            state=self.root/'.archive-helper'; info=os.fstat(fd)
+            state=self.state_root; info=os.fstat(fd)
             if state.exists() and stat.S_ISDIR(info.st_mode) and info.st_ino==state.stat().st_ino:
                 raise OSError('synthetic ACK directory fsync failure')
             return real(fd)
         with mock.patch.object(source.os,'fsync',side_effect=fail_ack_directory):
             with self.assertRaises(OSError): self.ack(cid,'input')
             # Publication may already be visible; visibility alone is not commit.
-            path=self.root/'.archive-helper'/(cid+'.input.ack.json')
+            path=self.state_root/(cid+'.input.ack.json')
             self.assertTrue(path.exists()); value=json.loads(path.read_bytes())
             with self.store() as store:
                 with self.assertRaises(OSError): store.ack_status(cid,'input')
@@ -236,13 +283,28 @@ class SourceBehavior(unittest.TestCase):
             self.assertEqual(store.ack_status(cid,'input'),value)
             self.assertEqual(store.ack(cid,'input',value['object_sha256'],value['receipt_sha256']),value)
 
+    def test_external_ack_parent_fsync_failure_is_not_settled_by_source_fsync(self):
+        cid=self.producer.add();real=os.fsync;parent_inode=self.state_parent.stat().st_ino
+        ackpath=self.state_root/(cid+'.input.ack.json')
+        def fail_ack_parent_after_publish(fd):
+            info=os.fstat(fd)
+            if stat.S_ISDIR(info.st_mode)and info.st_ino==parent_inode and ackpath.exists():
+                raise OSError('synthetic external parent fsync failure')
+            return real(fd)
+        with mock.patch.object(source.os,'fsync',side_effect=fail_ack_parent_after_publish):
+            with self.assertRaises(OSError):self.ack(cid,'input')
+            self.assertTrue(ackpath.exists())
+            with self.store()as store:
+                with self.assertRaises(OSError):store.ack_status(cid,'input')
+        with self.store()as store:self.assertTrue(store.ack_status(cid,'input')['accepted'])
+
     def test_symlink_ack_state_and_hardlinked_ack_are_rejected(self):
         cid=self.producer.add(); outside=self.base/'outside'; outside.mkdir(mode=0o700)
-        (self.root/'.archive-helper').symlink_to(outside,target_is_directory=True)
+        self.state_root.symlink_to(outside,target_is_directory=True)
         with self.assertRaises(source.HelperError): self.ack(cid,'input')
         self.assertEqual(list(outside.iterdir()),[])
-        (self.root/'.archive-helper').unlink(); self.ack(cid,'input')
-        ackpath=self.root/'.archive-helper'/(cid+'.input.ack.json'); os.link(ackpath,outside/'ack')
+        self.state_root.unlink(); self.ack(cid,'input')
+        ackpath=self.state_root/(cid+'.input.ack.json'); os.link(ackpath,outside/'ack')
         with self.store() as store:
             with self.assertRaises(source.HelperError): store.ack_status(cid,'input')
 
@@ -320,7 +382,7 @@ class SourceBehavior(unittest.TestCase):
     def test_nas_archives_immediate_input_then_late_outcome_using_actual_helper(self):
         cid=self.producer.add(); config=nas.Config(root=self.base/'netcup-grok-test',group_id=78,
              source_dir=str(self.root),helper_path=str(source.INSTALL_PATH),min_free_bytes=0)
-        transport=LocalTransport(self.root,config)
+        transport=LocalTransport(self.root,config,self.state_root)
         first=nas.Puller(config,transport,NOW).run(); self.assertEqual(first['status'],'ok')
         self.assertEqual(transport.ack_calls,[(cid,'input')])
         self.producer.finish(cid,released=False)
@@ -331,7 +393,7 @@ class SourceBehavior(unittest.TestCase):
         cid=self.producer.add(when=NOW-dt.timedelta(days=2),outcome=True)
         config=nas.Config(root=self.base/'netcup-grok-test',group_id=78,source_dir=str(self.root),
                           helper_path=str(source.INSTALL_PATH),min_free_bytes=0)
-        transport=LocalTransport(self.root,config); transport.uncertain=True
+        transport=LocalTransport(self.root,config,self.state_root); transport.uncertain=True
         first=nas.Puller(config,transport,NOW).run(); self.assertEqual(first['acks_pending'],2)
         self.assertEqual(first['source_deleted'],1)
         self.assertEqual(transport.gc()['deleted'],0); self.assertEqual(transport.manifest_list()['items'],[])
