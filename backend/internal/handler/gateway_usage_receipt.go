@@ -9,6 +9,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const opsReceiptLookupMissKey = "ops_receipt_lookup_miss"
+
 // KeyUsageReceipt reads one already-recorded request. It never starts generation,
 // changes a balance, or accepts a caller-supplied owner/key ID.
 func (h *GatewayHandler) KeyUsageReceipt(c *gin.Context) {
@@ -39,7 +41,10 @@ func (h *GatewayHandler) KeyUsageReceipt(c *gin.Context) {
 		return
 	}
 	if errors.Is(err, service.ErrUsageLogNotFound) {
-		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Usage receipt is not available for this API key")
+		// A key-scoped lookup miss carries no usage evidence. Keep the 404 for
+		// reconciliation, without counting each poll as a failed model request.
+		c.Set(opsReceiptLookupMissKey, true)
+		h.errorResponseWithCode(c, http.StatusNotFound, "not_found_error", "usage_receipt_not_found", "No recorded final usage receipt for this request")
 		return
 	}
 	if err != nil {
