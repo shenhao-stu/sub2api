@@ -13,28 +13,7 @@ import (
 const grokSpendingLimitProbeCooldown = 10 * time.Minute
 
 func grokSpendingLimitResetAt(account *Account, now time.Time) time.Time {
-	probeAt := now.Add(grokSpendingLimitProbeCooldown)
-	if account == nil {
-		return probeAt
-	}
-	billing, err := grokBillingSnapshotFromExtra(account.Extra)
-	if err != nil || billing == nil {
-		return probeAt
-	}
-	var resetAt time.Time
-	if billing.PeriodType == "weekly" {
-		resetAt = grokExhaustedBillingWindowReset(billing.UsagePercent, billing.PeriodStart, billing.PeriodEnd,
-			billing.WeeklyUpdatedAt, billing.WeeklyStatusCode, now)
-	}
-	monthlyReset := grokExhaustedBillingWindowReset(billing.UsedPercent, billing.BillingPeriodStart, billing.BillingPeriodEnd,
-		billing.MonthlyUpdatedAt, billing.MonthlyStatusCode, now)
-	if monthlyReset.After(resetAt) {
-		resetAt = monthlyReset
-	}
-	if resetAt.IsZero() {
-		return probeAt
-	}
-	return resetAt
+	return grokQuotaWaitPlan(account, now).RetryAt
 }
 
 // A calendar boundary alone does not identify which quota rejected the request.
