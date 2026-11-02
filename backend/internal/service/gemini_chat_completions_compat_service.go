@@ -196,6 +196,10 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 			return nil, s.handleUpstreamTransportError(ctx, c, account, err)
 		}
 
+		if paymentErr := s.geminiPaymentFailover(ctx, c, account, resp, mappedModel); paymentErr != nil {
+			return nil, paymentErr
+		}
+
 		checked, rebuilt := s.checkErrorPolicyInLoop(ctx, account, resp, mappedModel)
 		resp = rebuilt
 		checkedPolicy = checked
@@ -1114,6 +1118,8 @@ func (s *GeminiMessagesCompatService) writeGeminiChatCompletionsMappedError(
 	}
 
 	switch upstreamStatus {
+	case http.StatusPaymentRequired:
+		statusCode, errType, errMsg = http.StatusPaymentRequired, "billing_error", "Upstream payment required; please contact the administrator"
 	case http.StatusBadRequest:
 		if statusCode == http.StatusBadGateway {
 			statusCode = http.StatusBadRequest

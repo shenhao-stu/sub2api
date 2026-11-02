@@ -3567,6 +3567,11 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 		h.handleFailoverExhaustedSimple(c, http.StatusBadGateway, streamStarted)
 		return
 	}
+	if failoverErr.Reason == service.GeminiPaymentRequiredReason {
+		service.SetOpsUpstreamError(c, http.StatusPaymentRequired, service.GeminiPaymentRequiredMessage, "")
+		h.handleStreamingAwareError(c, http.StatusPaymentRequired, "billing_error", service.GeminiPaymentRequiredMessage, streamStarted)
+		return
+	}
 	copyFailoverRetryAfter(c, failoverErr.ResponseHeaders)
 	if service.WriteConversationGuardError(c, failoverErr.StatusCode, failoverErr.ResponseBody, streamStarted) {
 		return

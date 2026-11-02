@@ -1947,6 +1947,11 @@ func (h *GatewayHandler) handleAccountSelectionPolicyError(c *gin.Context, err e
 }
 
 func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, platform string, streamStarted bool) {
+	if failoverErr.Reason == service.GeminiPaymentRequiredReason {
+		service.SetOpsUpstreamError(c, http.StatusPaymentRequired, service.GeminiPaymentRequiredMessage, "")
+		h.handleStreamingAwareError(c, http.StatusPaymentRequired, "billing_error", service.GeminiPaymentRequiredMessage, streamStarted)
+		return
+	}
 	statusCode := failoverErr.StatusCode
 	responseBody := failoverErr.ResponseBody
 	if service.IsOpenAISilentRefusalErrorBody(responseBody) {
