@@ -5,14 +5,33 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGrokSSOConversionBrowserVerificationHasStableSafeReason(t *testing.T) {
+	err := grokSSOConversionError(fmt.Errorf("approve failed: %w", xai.ErrSSOBrowserVerificationRequired))
+	require.Equal(t, http.StatusForbidden, infraerrors.Code(err))
+	require.Equal(t, "GROK_SSO_BROWSER_VERIFICATION_REQUIRED", infraerrors.Reason(err))
+	require.Contains(t, infraerrors.Message(err), "browser")
+	require.NotContains(t, infraerrors.Message(err), "invalid or expired")
+}
+
+func TestGrokSSOConversionPreservesUnauthorizedAndOrdinaryForbiddenDistinction(t *testing.T) {
+	unauthorized := grokSSOConversionError(fmt.Errorf("failed: %w", xai.ErrSSOUnauthorized))
+	require.Equal(t, http.StatusUnauthorized, infraerrors.Code(unauthorized))
+	require.Equal(t, "GROK_SSO_UNAUTHORIZED", infraerrors.Reason(unauthorized))
+	ordinaryForbidden := grokSSOConversionError(fmt.Errorf("failed: %w", xai.SSOHTTPError{Status: http.StatusForbidden}))
+	require.Equal(t, http.StatusForbidden, infraerrors.Code(ordinaryForbidden))
+	require.Equal(t, "GROK_SSO_UPSTREAM_FAILED", infraerrors.Reason(ordinaryForbidden))
+}
 
 func TestGrokOAuthClientExchangeAndRefreshUseFormFields(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

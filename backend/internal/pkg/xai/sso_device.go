@@ -35,8 +35,9 @@ const (
 )
 
 var (
-	ErrSSOUnauthorized        = errors.New("xai sso unauthorized")
-	ErrSSOAuthorizationDenied = errors.New("xai device authorization denied")
+	ErrSSOUnauthorized                = errors.New("xai sso unauthorized")
+	ErrSSOAuthorizationDenied         = errors.New("xai device authorization denied")
+	ErrSSOBrowserVerificationRequired = errors.New("xai device approval requires browser verification")
 )
 
 type SSOHTTPError struct{ Status int }
@@ -171,12 +172,15 @@ func (f *ssoDeviceFlow) convert(ctx context.Context) (*TokenResponse, error) {
 		approval.Set("consent_token", consentToken)
 	}
 	consentURL, _ := url.Parse(finalURL) // f.do only returns validated xAI URLs.
-	status, finalURL, _, err = f.do(ctx, http.MethodPost, SSOApproveURL, approval, http.Header{
+	status, finalURL, body, err = f.do(ctx, http.MethodPost, SSOApproveURL, approval, http.Header{
 		"Origin":  {consentURL.Scheme + "://" + consentURL.Host},
 		"Referer": {finalURL},
 	})
 	if err != nil {
 		return nil, err
+	}
+	if status == http.StatusForbidden && ssoBrowserVerificationRequired(body) {
+		return nil, ErrSSOBrowserVerificationRequired
 	}
 	if status < 200 || status >= 400 {
 		return nil, fmt.Errorf("approve xAI device code: %w", SSOHTTPError{Status: status})
@@ -186,6 +190,11 @@ func (f *ssoDeviceFlow) convert(ctx context.Context) (*TokenResponse, error) {
 	}
 
 	return f.pollToken(ctx, device.DeviceCode, time.Duration(device.Interval)*time.Second, time.Duration(device.ExpiresIn)*time.Second)
+}
+
+func ssoBrowserVerificationRequired(body []byte) bool {
+	text := strings.ToLower(string(body))
+	return strings.Contains(text, "could not verify this browser") || strings.Contains(text, "request could not be verified")
 }
 
 // xAI binds device approval to a hidden token on the consent page. Keep it in
