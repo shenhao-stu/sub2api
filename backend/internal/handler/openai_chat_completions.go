@@ -113,7 +113,11 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	setOpsRequestContext(c, reqModel, reqStream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
 
-	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIChat, reqModel, body); decision != nil && !decision.AllowNextStage {
+	auditProtocol := service.ContentModerationProtocolOpenAIChat
+	if service.IsResponsesShapedChatRequest(body) {
+		auditProtocol = service.ContentModerationProtocolOpenAIResponses
+	}
+	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, auditProtocol, reqModel, body); decision != nil && !decision.AllowNextStage {
 		h.openAISecurityAuditError(c, decision)
 		return
 	}

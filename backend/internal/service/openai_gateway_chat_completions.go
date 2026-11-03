@@ -133,12 +133,7 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	// Cursor compatibility: some clients send a Responses-shaped body to the
 	// /v1/chat/completions URL. Detect it before protocol routing so adaptive
 	// accounts never forward the body unchanged to a Chat Completions endpoint.
-	// Serializers may retain messages:null or messages:[] beside Responses
-	// input. Treat only those empty forms as absent; meaningful or malformed
-	// messages must retain the Chat validation/conversion path.
-	messages := gjson.GetBytes(body, "messages")
-	isResponsesShape := gjson.GetBytes(body, "input").Exists() &&
-		(messages.Type == gjson.Null || (messages.IsArray() && len(messages.Array()) == 0))
+	isResponsesShape := IsResponsesShapedChatRequest(body)
 	inbound := APIProtocolChatCompletions
 	if isResponsesShape {
 		inbound = APIProtocolResponses
