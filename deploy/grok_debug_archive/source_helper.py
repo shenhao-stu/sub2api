@@ -277,16 +277,23 @@ class SourceStore:
         require(isinstance(value['error_code'], str) and re.fullmatch(r'[a-z0-9_]{0,96}',value['error_code']), 'invalid_outcome_code')
         return {'path':cid + '.outcome.json','bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()}, info
 
+    def entries(self):
+        # Four sealed files per schema-2 capture, plus bounded partial files.
+        with os.scandir(self.fd) as entries:
+            for count, entry in enumerate(entries, 1):
+                self.budget()
+                require(count <= 8 * MAX_SCAN, 'namespace_scan_limit')
+                yield entry.name
+
     def names(self):
         count = 0
-        with os.scandir(self.fd) as entries:
-            for entry in entries:
-                self.budget(); count += 1
-                require(count <= MAX_SCAN, 'namespace_scan_limit')
-                if entry.name.endswith('.input.json'):
-                    cid = entry.name[:-len('.input.json')]
-                    if UUID_RE.fullmatch(cid):
-                        yield cid
+        for name in self.entries():
+            if name.endswith('.input.json'):
+                cid = name[:-len('.input.json')]
+                if UUID_RE.fullmatch(cid):
+                    count += 1
+                    require(count <= MAX_SCAN, 'capture_scan_limit')
+                    yield cid
 
     def state_parent(self):
         """Open the independent root control plane, never under producer data."""
@@ -448,13 +455,11 @@ class SourceStore:
         result = {'schema_version':1,'group_id':GROUP_ID,'scanned':0,'deleted':0,'deleted_bytes':0,'preserved':0,'rejected':{}}
         with self.locked() as state:
             blocked = set()
-            with os.scandir(self.fd) as entries:
-                for count, entry in enumerate(entries, 1):
-                    self.budget(); require(count <= MAX_SCAN, 'namespace_scan_limit')
-                    cid = entry.name[:36]
-                    if UUID_RE.fullmatch(cid) and (entry.name == cid or entry.name.startswith(cid + '.')):
-                        if entry.name not in {cid + s for s in ['.input.json','.request.gz','.headers.gz','.outcome.json']}:
-                            blocked.add(cid)
+            for name in self.entries():
+                cid = name[:36]
+                if UUID_RE.fullmatch(cid) and (name == cid or name.startswith(cid + '.')):
+                    if name not in {cid + s for s in ['.input.json','.request.gz','.headers.gz','.outcome.json']}:
+                        blocked.add(cid)
             for cid in self.names():
                 self.budget(); result['scanned'] += 1
                 try:

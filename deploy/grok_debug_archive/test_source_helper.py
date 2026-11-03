@@ -102,6 +102,26 @@ class SourceBehavior(unittest.TestCase):
         self.state_parent=self.base/'root-control'; self.state_parent.mkdir(mode=0o700)
         self.state_root=self.state_parent/'ack-state'
 
+    def test_scan_budget_counts_captures_not_schema2_companion_files(self):
+        ids=[self.producer.add(when=NOW-dt.timedelta(days=2), outcome=True,
+                              headers={'X-Request-Id':['one','two']}) for _ in range(2)]
+        with mock.patch.object(source,'MAX_SCAN',2):
+            self.assertEqual({x['capture_id'] for x in self.listing()['items']},set(ids))
+            for cid in ids:
+                self.ack(cid,'input');self.ack(cid,'outcome')
+            with self.store() as store:result=store.gc()
+            self.assertEqual(result['deleted'],2)
+
+    def test_capture_count_and_unknown_file_flood_remain_bounded(self):
+        for _ in range(3):self.producer.add(outcome=True,headers={})
+        with mock.patch.object(source,'MAX_SCAN',2),self.assertRaises(source.HelperError):
+            self.listing()
+        for p in self.root.iterdir():p.unlink()
+        for i in range(17):self.producer.put('unknown-'+str(i),b'x')
+        with mock.patch.object(source,'MAX_SCAN',2):
+            with self.assertRaises(source.HelperError):self.listing()
+            with self.store() as store,self.assertRaises(source.HelperError):store.gc()
+
     def tearDown(self): self.temp.cleanup()
     def store(self,now=NOW): return source.SourceStore(self.root,os.geteuid(),now,state_root=self.state_root)
     def listing(self,n=100,size=1024**3):
