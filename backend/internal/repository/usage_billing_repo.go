@@ -32,6 +32,12 @@ func (r *usageBillingRepository) Apply(ctx context.Context, cmd *service.UsageBi
 		return nil, service.ErrUsageBillingRequestIDRequired
 	}
 
+	release, err := acquireBillingUser(ctx, r.db, cmd.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -173,6 +179,12 @@ func (r *usageBillingRepository) applyBatchImageBalanceHold(
 	if cmd.RequestID == "" {
 		return nil, service.ErrUsageBillingRequestIDRequired
 	}
+
+	release, err := acquireBillingUser(ctx, r.db, cmd.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
