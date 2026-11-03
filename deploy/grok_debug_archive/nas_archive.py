@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 import threading
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 import uuid
 import zlib
@@ -249,7 +250,7 @@ class SSHTransport:
                 "-o", "ControlPersist=60", "-o", "ControlPath=" + self.control]
 
     @staticmethod
-    def run(args, timeout=45, output_limit=2 * 1024 ** 2, file_size_limit=None):
+    def run(args, timeout=45, output_limit=2 * 1024 ** 2, file_size_limit=None, guard=None):
         """Bound stdout/stderr while the child runs, including failed SSH responses."""
         if file_size_limit is not None:
             # preexec_fn can deadlock after fork in a threaded archiver.
@@ -266,6 +267,7 @@ class SSHTransport:
         try:
             while selector.get_map():
                 require(time.monotonic() < deadline, "transport_timeout")
+                if guard is not None: guard()
                 for key, _ in selector.select(min(0.2, max(0, deadline - time.monotonic()))):
                     chunk = os.read(key.fileobj.fileno(), 65536)
                     if not chunk:
@@ -307,6 +309,37 @@ class SSHTransport:
     def ack_status(self, capture_id, kind):
         return self.helper("ack-status", "--capture-id", capture_id, "--kind", kind)
 
+    def ack_batch(self, claims):
+        return self.helper("ack-batch","--claims",encode(claims).decode())
+
+    def fetch_batch(self, descriptors, directory, timeout):
+        # One SSH/SFTP round trip per file dominates on intercontinental links.
+        # rsync transfers only this bounded, schema-checked list into a new private
+        # staging directory. Nothing is trusted until Puller verifies every hash.
+        require(0<len(descriptors)<=512,"invalid_transfer_batch")
+        expected={d['path']:d['bytes'] for d in descriptors}
+        require(len(expected)==len(descriptors),"duplicate_batch_path")
+        for name in expected:
+            require(UUID_RE.fullmatch(name[:36]) and name[36:] in
+                    {'.input.json','.request.gz','.headers.gz','.outcome.json'},'unsafe_fetch_path')
+        names=directory/'files.txt'
+        fd=os.open(names,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        with os.fdopen(fd,'w')as f:f.write('\n'.join(expected)+'\n')
+        target=directory/'files';private_dir(target,create=True)
+        def guard():
+            for path in target.iterdir():
+                require(path.name in expected,'unexpected_batch_file')
+                info=path.lstat()
+                require(stat.S_ISREG(info.st_mode) and info.st_nlink==1 and info.st_uid==os.geteuid()
+                        and info.st_size<=expected[path.name],'unsafe_or_oversized_batch_file')
+        source=self.config.ssh_host+':'+self.config.source_dir.rstrip('/')+'/'
+        self.run(['rsync','--inplace','--no-implied-dirs','--files-from='+str(names),
+                  '--max-size='+str(max(expected.values())),'-e',shlex.join(['ssh',*self.options()]),
+                  '--',source,str(target)+'/'],timeout=timeout,output_limit=65536,
+                  file_size_limit=max(expected.values()),guard=guard)
+        guard()
+        return target
+
     def gc(self):
         return self.helper("gc", "--max-objects", str(self.config.max_objects), "--max-bytes", str(self.config.max_bytes))
 
@@ -329,6 +362,8 @@ class Puller:
         self.namespace_bytes = 0
         self.reconciled = set()
         self.gc_ready = set()
+        self.pending_acks = {}
+        self.prefetched = {}
         self.transport = transport
         self.result = {"status":"ok", "listed":0, "input_archived":0, "outcome_archived":0,
                        "acks_confirmed":0, "acks_pending":0, "expired":0, "errors":[], "bytes_fetched":0}
@@ -414,6 +449,15 @@ class Puller:
             self.verify_file(destination, desc)
             return destination
         size = desc["bytes"]
+        staged=self.prefetched.pop(desc['path'],None)
+        if staged is not None:
+            self.verify_file(staged,desc)
+            fd=os.open(staged,os.O_RDONLY|os.O_NOFOLLOW)
+            try:os.fsync(fd)
+            finally:os.close(fd)
+            os.link(staged,destination,follow_symlinks=False)
+            staged.unlink();fsync_dir(directory)
+            return destination
         with self.state_lock:
             if self.fetched_bytes + size > self.config.max_bytes:
                 raise LimitReached("run_byte_limit")
@@ -517,6 +561,15 @@ class Puller:
         if done.exists() or done.is_symlink():
             require(decode(read_small(done,65536)) == expected, "local_ack_conflict")
             return
+        if allow_reissue and hasattr(self.transport,'ack_batch'):
+            # Only process(), after full content/receipt verification, can queue
+            # these idempotent exact claims. An uncertain batch is never retried
+            # here, and cannot authorize source GC without the exact reply.
+            if intent.exists() or intent.is_symlink():
+                require(decode(read_small(intent,65536))==expected,'ack_intent_conflict')
+            else:atomic_json(intent,expected)
+            with self.state_lock:self.pending_acks[(cid,kind)]=(directory,expected)
+            return
         if intent.exists() or intent.is_symlink():
             require(decode(read_small(intent,65536)) == expected, "ack_intent_conflict")
             # Read-only observation is the only permitted recovery after intent.
@@ -585,6 +638,52 @@ class Puller:
         replace_state(state,{"last_uuid":last})
         if any(True for _ in candidates("")):
             self.result["status"]="pending"
+
+    def flush_acks(self):
+        queued=list(self.pending_acks.values());self.pending_acks.clear()
+        for offset in range(0,len(queued),64):
+            batch=queued[offset:offset+64]
+            claims=[{k:value[k]for k in ['capture_id','kind','object_sha256','receipt_sha256']}for _,value in batch]
+            try:
+                self.time_budget()
+                result=self.transport.ack_batch(claims)
+                require(result.get('schema_version')==1 and result.get('group_id')==self.config.group_id
+                        and isinstance(result.get('results'),list) and len(result['results'])==len(batch),'invalid_ack_batch_response')
+                for (directory,expected),actual in zip(batch,result['results']):
+                    if actual!=expected:
+                        self.increment('acks_pending');continue
+                    cid=expected['capture_id'];kind=expected['kind']
+                    atomic_json(directory/(cid+'.'+kind+'-ack.done.json'),expected)
+                    self.increment('acks_confirmed')
+                    if all((directory/(cid+'.'+k+'-ack.done.json')).exists()for k in ['input','outcome']):
+                        self.gc_ready.add(cid)
+            except Exception:
+                self.result['acks_pending']+=len(batch)
+                self.record_error({'code':'ack_batch_outcome_unknown'})
+
+    def process_batch(self,items,captures):
+        if not hasattr(self.transport,'fetch_batch'):
+            with ThreadPoolExecutor(max_workers=self.config.workers)as pool:
+                list(pool.map(lambda item:self.process_bounded(item,captures),items))
+            return
+        with tempfile.TemporaryDirectory(prefix='transfer-',dir=self.config.root/'.run')as folder:
+            descriptors=[]
+            for item in items:
+                for key in ['input','payload','headers','outcome']:
+                    desc=item.get(key)
+                    if desc and not (captures/item['capture_id']/desc['path']).exists():descriptors.append(desc)
+            if descriptors:
+                size=sum(d['bytes']for d in descriptors)
+                require(self.fetched_bytes+size<=self.config.max_bytes,'run_byte_limit')
+                require(self.namespace_bytes+size<=self.config.max_namespace_bytes,'namespace_space_limit')
+                require(shutil.disk_usage(self.config.root).free-size>=self.config.min_free_bytes,'nas_free_space_limit')
+                self.fetched_bytes+=size;self.namespace_bytes+=size
+                target=self.transport.fetch_batch(descriptors,Path(folder),self.time_budget())
+                self.prefetched={d['path']:target/d['path']for d in descriptors}
+            with ThreadPoolExecutor(max_workers=self.config.workers)as pool:
+                list(pool.map(lambda item:self.process_bounded(item,captures),items))
+            self.prefetched.clear()
+            self.flush_acks()
 
     def process(self,item,captures):
         cid = item["capture_id"]
@@ -712,9 +811,13 @@ class Puller:
             listing=self.transport.manifest_list()
             items=self.validate_listing(listing); self.result["listed"]=len(items)
             self.source_rejections(listing,"list")
-            self.reconcile(root/"captures")
-            with ThreadPoolExecutor(max_workers=self.config.workers) as pool:
-                list(pool.map(lambda item:self.process_bounded(item,root/"captures"),items))
+            # Reprocess listed intents after verifying their files. Scanning all
+            # historic intents first can consume the whole transfer window.
+            if not hasattr(self.transport,'ack_batch'):self.reconcile(root/"captures")
+            for offset in range(0,len(items),128):
+                try:self.process_batch(items[offset:offset+128],root/'captures')
+                except ArchiveError as exc:
+                    self.record_error({'code':str(exc)});break
             try:
                 self.cleanup_reserve = 0
                 if isinstance(self.transport,SSHTransport): self.transport.deadline=self.deadline
