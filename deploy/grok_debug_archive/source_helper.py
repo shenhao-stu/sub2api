@@ -571,7 +571,9 @@ def main(argv=None):
             elif args.action == 'ack': result = store.ack(args.capture_id,args.kind,args.object_sha256,args.receipt_sha256)
             elif args.action == 'ack-batch':
                 require(len(args.claims)<=32768,'ack_batch_size_limit')
-                result=store.ack_batch(decode(args.claims.encode()))
+                envelope=decode(args.claims.encode())
+                require(set(envelope)=={'claims'},'invalid_ack_envelope')
+                result=store.ack_batch(envelope['claims'])
             elif args.action == 'ack-status': result = store.ack_status(args.capture_id,args.kind)
             else: result = store.gc(args.max_objects,args.max_bytes,None if args.capture_ids is None else args.capture_ids.split(','))
         sys.stdout.buffer.write(encode(result)); return 0
