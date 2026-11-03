@@ -64,3 +64,20 @@ class BatchArchive(SourceBehavior):
                 target=Path(d)/'files'/name;target.write_bytes(raw+b'x');kwargs['guard']()
             with mock.patch.object(t,'run',side_effect=malicious):
                 with self.assertRaises(nas.ArchiveError):t.fetch_batch([desc],Path(d),10)
+    def test_real_cli_and_transport_envelope_roundtrip(self):
+        import io,contextlib
+        cid=self.producer.add(outcome=True);cfg=replace(self.config(),root=Path('/tmp/getoken-batch-test'))
+        with self.store()as store:
+            _,desc,_=store.input(cid)
+            claim={'capture_id':cid,'kind':'input','object_sha256':desc['sha256'],'receipt_sha256':'1'*64}
+            t=nas.SSHTransport(cfg)
+            def helper(action,*args):
+                output=io.BytesIO();writer=io.TextIOWrapper(output)
+                original_uid=os.geteuid;calls=[0]
+                def root_entry_only():
+                    calls[0]+=1;return 0 if calls[0]==1 else original_uid()
+                with mock.patch.object(source,'SourceStore',return_value=contextlib.nullcontext(store)),mock.patch.object(source.os,'geteuid',side_effect=root_entry_only),mock.patch.object(source.sys,'stdout',writer):
+                    code=source.main([action,'--group-id','78',*args]);writer.flush();result=json.loads(output.getvalue())
+                self.assertEqual(code,0);return result
+            with mock.patch.object(t,'helper',side_effect=helper):
+                result=t.ack_batch([claim]);self.assertTrue(result['results'][0]['accepted'])

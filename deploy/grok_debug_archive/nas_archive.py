@@ -310,7 +310,7 @@ class SSHTransport:
         return self.helper("ack-status", "--capture-id", capture_id, "--kind", kind)
 
     def ack_batch(self, claims):
-        return self.helper("ack-batch","--claims",encode(claims).decode())
+        return self.helper("ack-batch","--claims",encode({'claims':claims}).decode())
 
     def fetch_batch(self, descriptors, directory, timeout):
         # One SSH/SFTP round trip per file dominates on intercontinental links.
