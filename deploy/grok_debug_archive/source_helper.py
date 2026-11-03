@@ -435,25 +435,31 @@ class SourceStore:
 
     def ack(self, cid, kind, object_sha, receipt_sha):
         capture_id(cid); require(kind in ['input','outcome'], 'invalid_ack_kind'); sha(object_sha); sha(receipt_sha)
+        with self.locked(wait=True) as state:
+            result = self.ack_locked(cid,kind,object_sha,receipt_sha,state)
+            os.fsync(state); os.fsync(self.state_parent())
+        return result
+
+    def ack_locked(self, cid, kind, object_sha, receipt_sha, state):
+        """Prepare one checked claim; the lock owner must commit before replying."""
         expected = {'schema_version':1,'group_id':GROUP_ID,'capture_id':cid,'kind':kind,
                     'object_sha256':object_sha,'receipt_sha256':receipt_sha,'accepted':True}
-        with self.locked(wait=True) as state:
-            old = self.ack_record(cid,kind,state,durable=True)
-            if old is not None:
-                require(old == expected, 'ack_conflict')
-                return old
-            manifest, inp, _ = self.input(cid)
-            self.compressed_descriptor(cid,manifest,verify_raw=True)
-            self.headers_descriptor(cid,manifest)
-            outcome, _ = self.outcome(cid,manifest)
-            obj = inp if kind == 'input' else outcome
-            require(obj is not None and obj['sha256'] == object_sha, 'ack_object_mismatch')
-            name = cid + '.' + kind + '.ack.json'; temp = '.' + name + '.pending-' + uuid.uuid4().hex
-            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=state)
-            with os.fdopen(fd,'wb') as output:
-                output.write(encode(expected)); output.flush(); os.fsync(output.fileno())
-            os.link(temp, name, src_dir_fd=state, dst_dir_fd=state, follow_symlinks=False)
-            os.unlink(temp,dir_fd=state); os.fsync(state); os.fsync(self.state_parent())
+        old = self.ack_record(cid,kind,state)
+        if old is not None:
+            require(old == expected, 'ack_conflict')
+            return old
+        manifest, inp, _ = self.input(cid)
+        self.compressed_descriptor(cid,manifest,verify_raw=True)
+        self.headers_descriptor(cid,manifest)
+        outcome, _ = self.outcome(cid,manifest)
+        obj = inp if kind == 'input' else outcome
+        require(obj is not None and obj['sha256'] == object_sha, 'ack_object_mismatch')
+        name = cid + '.' + kind + '.ack.json'; temp = '.' + name + '.pending-' + uuid.uuid4().hex
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=state)
+        with os.fdopen(fd,'wb') as output:
+            output.write(encode(expected)); output.flush(); os.fsync(output.fileno())
+        os.link(temp, name, src_dir_fd=state, dst_dir_fd=state, follow_symlinks=False)
+        os.unlink(temp,dir_fd=state)
         return expected
 
     def ack_batch(self, claims):
@@ -467,11 +473,16 @@ class SourceStore:
             require(claim['kind'] in ['input','outcome'] and key not in seen,'duplicate_or_invalid_ack_claim')
             seen.add(key)
         results=[]
-        for claim in claims:
-            try:
-                results.append(self.ack(claim['capture_id'],claim['kind'],claim['object_sha256'],claim['receipt_sha256']))
-            except HelperError as exc:
-                results.append({'capture_id':claim['capture_id'],'kind':claim['kind'],'accepted':False,'code':str(exc)})
+        with self.locked(wait=True) as state:
+            for claim in claims:
+                try:
+                    results.append(self.ack_locked(claim['capture_id'],claim['kind'],claim['object_sha256'],claim['receipt_sha256'],state))
+                except HelperError as exc:
+                    results.append({'capture_id':claim['capture_id'],'kind':claim['kind'],'accepted':False,'code':str(exc)})
+            # Every new ACK file was fsynced before publication. These shared
+            # barriers also settle visible ACKs from an interrupted earlier batch.
+            # A failed barrier aborts the reply: no claim is reported accepted.
+            os.fsync(state); os.fsync(self.state_parent())
         return {'schema_version':1,'group_id':GROUP_ID,'results':results}
 
     def gc(self, max_objects=100, max_bytes=1024 ** 3, capture_ids=None):
@@ -481,6 +492,9 @@ class SourceStore:
             for cid in capture_ids: capture_id(cid)
         result = {'schema_version':1,'group_id':GROUP_ID,'scanned':0,'deleted':0,'deleted_bytes':0,'preserved':0,'rejected':{}}
         with self.locked() as state:
+            # No ACK publisher can change this namespace while we hold its lock.
+            # Settle all existing records before any source deletion, once per GC.
+            os.fsync(state); os.fsync(self.state_parent())
             blocked = set()
             for name in self.entries():
                 cid = name[:36]
@@ -498,7 +512,7 @@ class SourceStore:
                         else: raise HelperError('gc_partial_or_unknown_file')
                     if capture_ids is None and timestamp(manifest['captured_at']) >= self.now - dt.timedelta(hours=24):
                         result['preserved'] += 1; continue
-                    ia, oa = self.ack_record(cid,'input',state,durable=True), self.ack_record(cid,'outcome',state,durable=True)
+                    ia, oa = self.ack_record(cid,'input',state), self.ack_record(cid,'outcome',state)
                     if ia is None or oa is None:
                         result['preserved'] += 1; continue
                     outcome, oi = self.outcome(cid,manifest)
