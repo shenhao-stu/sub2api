@@ -34,6 +34,8 @@ REMOTE_PATH_RE = re.compile(r"/[A-Za-z0-9_./-]+\Z")
 HEADER_NAMES = {"content-type", "content-encoding", "accept"}
 MAX_HEADERS_RAW = 8 * 1024 ** 2
 MAX_HEADERS_COMPRESSED = 16 * 1024 ** 2
+MAX_ACK_CLAIMS = 256
+MAX_ACK_BATCH_BYTES = 98304
 HEADERS_POLICY = "credential_names_v1"
 CREDENTIAL_COMPONENTS = {"authorization","cookie","key","apikey","token","secret","password","credential",
                          "signature","auth","authentication","jwt","session","csrf","xsrf","credentials"}
@@ -310,7 +312,10 @@ class SSHTransport:
         return self.helper("ack-status", "--capture-id", capture_id, "--kind", kind)
 
     def ack_batch(self, claims):
-        return self.helper("ack-batch","--claims",encode({'claims':claims}).decode())
+        require(isinstance(claims,list) and 0<len(claims)<=MAX_ACK_CLAIMS,'invalid_ack_batch')
+        raw=encode({'claims':claims})
+        require(len(raw)<=MAX_ACK_BATCH_BYTES,'ack_batch_size_limit')
+        return self.helper("ack-batch","--claims",raw.decode())
 
     def fetch_batch(self, descriptors, directory, timeout):
         # One SSH/SFTP round trip per file dominates on intercontinental links.
@@ -641,8 +646,8 @@ class Puller:
 
     def flush_acks(self):
         queued=list(self.pending_acks.values());self.pending_acks.clear()
-        for offset in range(0,len(queued),64):
-            batch=queued[offset:offset+64]
+        for offset in range(0,len(queued),MAX_ACK_CLAIMS):
+            batch=queued[offset:offset+MAX_ACK_CLAIMS]
             claims=[{k:value[k]for k in ['capture_id','kind','object_sha256','receipt_sha256']}for _,value in batch]
             try:
                 self.time_budget()
