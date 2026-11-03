@@ -161,7 +161,7 @@ func receiptJournalName(key int64, id string) string {
 }
 
 func validJournalClaim(c *service.ChatUsageReceiptClaim) bool {
-	if c == nil || c.APIKeyID <= 0 || !service.ValidUsageReceiptID(c.RequestID) || !service.ValidUsageReceiptID(c.Token) || c.Endpoint != service.ChatReceiptEndpoint || c.Model == "" || len(c.Model) > 256 || strings.ContainsAny(c.Model, "\r\n\x00") || strings.Contains(c.Model, "://") || len(c.PayloadHash) != 64 {
+	if c == nil || c.APIKeyID <= 0 || !service.ValidUsageReceiptID(c.RequestID) || !service.ValidUsageReceiptID(c.Token) || (c.Endpoint != service.ChatReceiptEndpoint && c.Endpoint != "/v1/messages") || c.Model == "" || len(c.Model) > 256 || strings.ContainsAny(c.Model, "\r\n\x00") || strings.Contains(c.Model, "://") || len(c.PayloadHash) != 64 {
 		return false
 	}
 	_, err := hex.DecodeString(c.PayloadHash)
@@ -174,6 +174,9 @@ func validJournalEnvelope(e chatReceiptEnvelope) bool {
 	}
 	if e.State == "pending" {
 		return e.Receipt == nil && e.AccountID == 0 && e.BillingRequestID == ""
+	}
+	if e.Claim.Endpoint == "/v1/messages" {
+		return validAnthropicJournalEnvelope(e)
 	}
 	return e.State == "final" && e.AccountID > 0 && e.BillingRequestID != "" && len(e.BillingRequestID) <= 256 && !strings.ContainsAny(e.BillingRequestID, "\r\n\x00") && !strings.Contains(e.BillingRequestID, "://") && service.ValidateChatUsageReceipt(e.Receipt) && e.Receipt.RequestID == e.Claim.RequestID && e.Receipt.Model == e.Claim.Model && e.Receipt.InboundEndpoint == e.Claim.Endpoint
 }

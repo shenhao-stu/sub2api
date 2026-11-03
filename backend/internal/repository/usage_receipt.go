@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 
@@ -38,6 +37,9 @@ func (r *usageLogRepository) GetUsageReceipt(ctx context.Context, apiKeyID int64
 			return nil, err
 		}
 		if final != nil {
+			if final.Receipt.Version != 2 {
+				return nil, service.ErrChatReceiptConflict
+			}
 			if receipt != nil {
 				err = r.confirmChatReceiptEnvelope(ctx, *final)
 			} else {
@@ -53,10 +55,13 @@ func (r *usageLogRepository) GetUsageReceipt(ctx context.Context, apiKeyID int64
 			// Another authenticated reader may have committed and removed the
 			// journal after our first pending snapshot. Read once more; never
 			// recreate the claim or reuse the stale not-found observation.
-			return r.readUsageReceipt(ctx, apiKeyID, requestID)
+			receipt, readErr = r.readUsageReceipt(ctx, apiKeyID, requestID)
+			if readErr != nil && !errors.Is(readErr, service.ErrUsageLogNotFound) && !errors.Is(readErr, service.ErrUsageReceiptPending) {
+				return nil, readErr
+			}
 		}
 	}
-	return receipt, readErr
+	return r.recoverAnthropicReceipt(ctx, apiKeyID, requestID, receipt, readErr)
 }
 
 func (r *usageLogRepository) readUsageReceipt(ctx context.Context, apiKeyID int64, requestID string) (*service.UsageReceipt, error) {
@@ -79,11 +84,5 @@ func (r *usageLogRepository) readUsageReceipt(ctx context.Context, apiKeyID int6
 }
 
 func (r *usageLogRepository) SaveUsageReceipt(ctx context.Context, apiKeyID int64, receipt *service.UsageReceipt) error {
-	payload, err := json.Marshal(receipt)
-	if err != nil {
-		return err
-	}
-	_, err = r.sql.ExecContext(ctx, `INSERT INTO provider_usage_receipts (api_key_id,request_id,payload,created_at)
- VALUES ($1,$2,$3,$4) ON CONFLICT (api_key_id,request_id) DO NOTHING`, apiKeyID, receipt.RequestID, string(payload), receipt.RecordedAt)
-	return err
+	return r.persistAnthropicReceipt(ctx, apiKeyID, receipt)
 }

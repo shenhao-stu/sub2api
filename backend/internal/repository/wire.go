@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"strings"
 
 	entsql "entgo.io/ent/dialect/sql"
 	"github.com/Wei-Shaw/sub2api/ent"
@@ -77,11 +78,17 @@ func ProvideUsageLogRepository(client *ent.Client, db *sql.DB, cfg *config.Confi
 	r := newUsageLogRepositoryWithSQL(client, db)
 	if cfg == nil {
 		r.chatJournalErr = errors.New("missing receipt journal configuration")
+		r.anthropicJournalErr = r.chatJournalErr
 	} else {
 		r.chatJournal, r.chatJournalErr = newChatReceiptJournal(cfg.Gateway.ChatUsageReceiptJournalDir)
+		// A sibling namespace leaves old releases' v2 inventory and reads intact.
+		r.anthropicJournal, r.anthropicJournalErr = newChatReceiptJournal(strings.TrimRight(cfg.Gateway.ChatUsageReceiptJournalDir, "/") + ".anthropic-v1")
 	}
 	if r.chatJournalErr != nil {
 		slog.Error("provider_chat_usage_receipt_journal_unavailable")
+	}
+	if r.anthropicJournalErr != nil {
+		slog.Error("provider_anthropic_usage_receipt_journal_unavailable")
 	}
 	return r
 }
