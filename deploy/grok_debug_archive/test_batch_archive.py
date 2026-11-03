@@ -189,7 +189,7 @@ class BatchArchive(SourceBehavior):
         cfg=self.config();transport=BatchTransport(self.root,cfg,self.state_root)
         result=nas.Puller(cfg,transport,NOW).run()
         self.assertEqual(result['errors'],[]);self.assertEqual(result['source_deleted'],500)
-        self.assertEqual(result['acks_confirmed'],1000);self.assertEqual(transport.batches,4);self.assertEqual(transport.ack_batches,16)
+        self.assertEqual(result['acks_confirmed'],1000);self.assertEqual(transport.batches,4);self.assertEqual(transport.ack_batches,4)
         for i,cid in enumerate(ids):
             d=cfg.root/'captures'/cid
             self.assertEqual(gzip.decompress((d/(cid+'.request.gz')).read_bytes()),('full-body-'+str(i)).encode())
@@ -205,10 +205,67 @@ class BatchArchive(SourceBehavior):
     def test_duplicate_and_oversized_ack_batch_rejected_before_writes(self):
         cid=self.producer.add(outcome=True)
         claim={'capture_id':cid,'kind':'input','object_sha256':'0'*64,'receipt_sha256':'1'*64}
-        for claims in [[claim,claim],[claim]*65]:
+        for claims in [[claim,claim],[claim]*257]:
             with self.store()as s:
                 with self.assertRaises(source.HelperError):s.ack_batch(claims)
                 self.assertFalse(s.ack_status(cid,'input')['accepted'])
+    def test_257_unique_claims_rejected_before_lock_or_write(self):
+        claims=[{'capture_id':f'00000000-0000-4000-8000-{i:012x}','kind':'input','object_sha256':'0'*64,'receipt_sha256':'1'*64}for i in range(257)]
+        with self.store()as store,mock.patch.object(store,'locked',wraps=store.locked)as lock:
+            with self.assertRaisesRegex(source.HelperError,'invalid_ack_batch'):store.ack_batch(claims)
+        lock.assert_not_called();self.assertFalse(self.state_root.exists())
+
+    def test_256_claims_partial_failure_collects_only_dual_confirmed_captures(self):
+        ids=[self.producer.add(outcome=True,headers={})for _ in range(128)];bad=ids[0]
+        class PartialTransport(BatchTransport):
+            def ack_batch(inner,claims):
+                changed=[dict(claim)for claim in claims]
+                for claim in changed:
+                    if claim['capture_id']==bad and claim['kind']=='outcome':claim['object_sha256']='0'*64
+                return super().ack_batch(changed)
+        cfg=self.config();transport=PartialTransport(self.root,cfg,self.state_root)
+        result=nas.Puller(cfg,transport,NOW).run()
+        self.assertEqual(transport.ack_batches,1)
+        self.assertEqual(result['acks_confirmed'],255);self.assertEqual(result['acks_pending'],1)
+        self.assertEqual(result['source_deleted'],127)
+        self.assertTrue((self.root/(bad+'.input.json')).exists())
+        self.assertFalse((self.state_root/(bad+'.outcome.ack.json')).exists())
+
+    def test_256_claims_deadline_keeps_only_durable_completed_prefix(self):
+        ids=[self.producer.add(outcome=True)for _ in range(128)];claims=self.claims(ids)
+        with self.store()as store:
+            original=store.ack_locked;completed=[0]
+            def expire_after_pair(*args,**kwargs):
+                result=original(*args,**kwargs);completed[0]+=1
+                if completed[0]==2:store.deadline=0
+                return result
+            with mock.patch.object(store,'ack_locked',side_effect=expire_after_pair):result=store.ack_batch(claims)
+        self.assertEqual([x['accepted']for x in result['results']],[True,True]+[False]*254)
+        self.assertTrue(all(x['code']=='helper_time_limit'for x in result['results'][2:]))
+        self.assertEqual(self.gc(max_objects=128,capture_ids=ids)['deleted'],1)
+        self.assertTrue(all((self.root/(cid+'.input.json')).exists()for cid in ids[1:]))
+
+    def test_transport_rejects_count_and_utf8_byte_overflow_before_ssh(self):
+        t=nas.SSHTransport(replace(self.config(),root=Path('/tmp/getoken-batch-test')))
+        claim={'capture_id':'00000000-0000-4000-8000-000000000001','kind':'input','object_sha256':'0'*64,'receipt_sha256':'1'*64}
+        self.assertEqual(source.MAX_ACK_CLAIMS,nas.MAX_ACK_CLAIMS)
+        self.assertEqual(source.MAX_ACK_BATCH_BYTES,nas.MAX_ACK_BATCH_BYTES)
+        for claims,code in [([claim]*257,'invalid_ack_batch'),([dict(claim,receipt_sha256='界'*40000)],'ack_batch_size_limit')]:
+            with mock.patch.object(t,'helper')as helper:
+                with self.assertRaisesRegex(nas.ArchiveError,code):t.ack_batch(claims)
+            helper.assert_not_called()
+
+    def test_cli_claim_limit_counts_utf8_bytes_before_decode_or_mutation(self):
+        import io
+        oversized='{"claims":[],"padding":"'+'界'*40000+'"}'
+        self.assertLess(len(oversized),source.MAX_ACK_BATCH_BYTES)
+        self.assertGreater(len(oversized.encode()),source.MAX_ACK_BATCH_BYTES)
+        for raw in [oversized,' '*(source.MAX_ACK_BATCH_BYTES+1)]:
+            output=io.BytesIO();writer=io.TextIOWrapper(output)
+            with mock.patch.object(source,'SourceStore')as store,mock.patch.object(source.os,'geteuid',return_value=0),mock.patch.object(source.sys,'stdout',writer):
+                code=source.main(['ack-batch','--group-id','78','--claims',raw]);writer.flush();result=json.loads(output.getvalue())
+            self.assertEqual(code,1);self.assertEqual(result['code'],'ack_batch_size_limit')
+            store.return_value.__enter__.return_value.ack_batch.assert_not_called()
     def test_rsync_is_bounded_no_delete_or_source_removal(self):
         cid=self.producer.add();cfg=replace(self.config(),root=Path('/tmp/getoken-batch-test'));t=nas.SSHTransport(cfg);name=cid+'.request.gz';raw=(self.root/name).read_bytes();desc={'path':name,'bytes':len(raw)}
         with tempfile.TemporaryDirectory(dir=self.base)as d:
@@ -222,11 +279,14 @@ class BatchArchive(SourceBehavior):
             with mock.patch.object(t,'run',side_effect=malicious):
                 with self.assertRaises(nas.ArchiveError):t.fetch_batch([desc],Path(d),10)
     def test_real_cli_and_transport_envelope_roundtrip(self):
-        import io,contextlib
-        cid=self.producer.add(outcome=True);cfg=replace(self.config(),root=Path('/tmp/getoken-batch-test'))
+        import io,contextlib,shlex
+        ids=[self.producer.add(outcome=True,headers={})for _ in range(128)];claims=self.claims(ids)
+        cfg=replace(self.config(),root=Path('/tmp/getoken-batch-test'))
+        envelope=source.encode({'claims':claims})
+        self.assertLessEqual(len(envelope),source.MAX_ACK_BATCH_BYTES)
+        remote=shlex.join([str(source.INSTALL_PATH),'ack-batch','--group-id','78','--claims',envelope.decode()])
+        self.assertLess(len(remote.encode())+1,131072)
         with self.store()as store:
-            _,desc,_=store.input(cid)
-            claim={'capture_id':cid,'kind':'input','object_sha256':desc['sha256'],'receipt_sha256':'1'*64}
             t=nas.SSHTransport(cfg)
             def helper(action,*args):
                 output=io.BytesIO();writer=io.TextIOWrapper(output)
@@ -237,4 +297,9 @@ class BatchArchive(SourceBehavior):
                     code=source.main([action,'--group-id','78',*args]);writer.flush();result=json.loads(output.getvalue())
                 self.assertEqual(code,0);return result
             with mock.patch.object(t,'helper',side_effect=helper):
-                result=t.ack_batch([claim]);self.assertTrue(result['results'][0]['accepted'])
+                result=t.ack_batch(claims)
+                self.assertEqual(len(result['results']),256);self.assertTrue(all(x['accepted']for x in result['results']))
+            # The exact byte limit remains accepted, including JSON whitespace.
+            padded=envelope.decode()+' '*(source.MAX_ACK_BATCH_BYTES-len(envelope))
+            result=helper('ack-batch','--claims',padded)
+            self.assertTrue(all(x['accepted']for x in result['results']))

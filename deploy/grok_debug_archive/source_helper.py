@@ -35,6 +35,8 @@ CREDENTIAL_COMPONENTS = {'authorization','cookie','key','apikey','token','secret
 HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
 MAX_RESPONSE = 2 * 1024 ** 2
 MAX_SCAN = 100000
+MAX_ACK_CLAIMS = 256
+MAX_ACK_BATCH_BYTES = 98304
 UUID_RE = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z')
 SHA_RE = re.compile(r'[0-9a-f]{64}\Z')
 INPUT_FIELDS = {'schema_version','capture_id','captured_at','sealed_at','group_id','api_key_id','user_id',
@@ -470,7 +472,7 @@ class SourceStore:
         return expected
 
     def ack_batch(self, claims):
-        require(isinstance(claims,list) and 0<len(claims)<=64,'invalid_ack_batch')
+        require(isinstance(claims,list) and 0<len(claims)<=MAX_ACK_CLAIMS,'invalid_ack_batch')
         fields={'capture_id','kind','object_sha256','receipt_sha256'}
         seen=set()
         for claim in claims:
@@ -577,8 +579,9 @@ def main(argv=None):
             if args.action == 'manifest-list': result = store.list(args.max_objects,args.max_bytes,args.after)
             elif args.action == 'ack': result = store.ack(args.capture_id,args.kind,args.object_sha256,args.receipt_sha256)
             elif args.action == 'ack-batch':
-                require(len(args.claims)<=32768,'ack_batch_size_limit')
-                envelope=decode(args.claims.encode())
+                raw_claims=args.claims.encode()
+                require(len(raw_claims)<=MAX_ACK_BATCH_BYTES,'ack_batch_size_limit')
+                envelope=decode(raw_claims)
                 require(set(envelope)=={'claims'},'invalid_ack_envelope')
                 result=store.ack_batch(envelope['claims'])
             elif args.action == 'ack-status': result = store.ack_status(args.capture_id,args.kind)
