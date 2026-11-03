@@ -484,6 +484,7 @@ class SourceStore:
                     if name not in {cid + s for s in ['.input.json','.request.gz','.headers.gz','.outcome.json']}:
                         blocked.add(cid)
             for cid in (self.names() if capture_ids is None else capture_ids):
+                if self.deadline-time.monotonic() < 2: break
                 self.budget(); result['scanned'] += 1
                 try:
                     manifest, inp, ii = self.input(cid)
