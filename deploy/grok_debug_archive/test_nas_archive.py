@@ -441,12 +441,11 @@ class ArchiveBehavior(unittest.TestCase):
         self.assertEqual(self.source.status_calls,[(cid,"input")])
         self.assertTrue((self.directory(cid)/(cid+".input-ack.done.json")).exists())
 
-    def test_uncertain_ack_not_applied_is_not_retried_next_run(self):
+    def test_absent_ack_reissued_only_after_source_and_local_artifacts_reverified(self):
         cid=self.source.add(); self.source.uncertain="not_applied"; self.pull()
         self.source.uncertain=None; result=self.pull()
-        self.assertEqual(self.source.ack_calls,[(cid,"input")])
-        self.assertEqual(result["acks_pending"],1)
-        self.assertFalse((self.directory(cid)/(cid+".input-ack.done.json")).exists())
+        self.assertEqual(self.source.ack_calls,[(cid,"input"),(cid,"input")])
+        self.assertTrue((self.directory(cid)/(cid+".input-ack.done.json")).exists())
 
     def test_ack_is_reconciled_after_source_gc_hides_capture(self):
         cid=self.source.add(outcome=True); self.source.uncertain="applied"

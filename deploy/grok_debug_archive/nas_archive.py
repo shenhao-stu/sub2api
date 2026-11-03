@@ -287,7 +287,10 @@ class SSHTransport:
         return decode(self.run(["ssh", *self.options(), self.config.ssh_host, command],timeout=timeout))
 
     def manifest_list(self):
-        return self.helper("manifest-list", "--max-objects", str(self.config.max_objects), "--max-bytes", str(self.config.max_bytes))
+        path=self.config.root/".run"/"source-cursor.json"
+        cursor=decode(read_small(path,65536)).get("last_uuid","") if path.exists() else ""
+        require(cursor=="" or UUID_RE.fullmatch(cursor),"invalid_source_cursor")
+        return self.helper("manifest-list", "--max-objects", str(self.config.max_objects), "--max-bytes", str(self.config.max_bytes),"--after",cursor)
 
     def fetch(self, relative_path, destination, timeout, max_bytes):
         # These names were schema checked before this method; check again at the boundary.
@@ -307,6 +310,11 @@ class SSHTransport:
     def gc(self):
         return self.helper("gc", "--max-objects", str(self.config.max_objects), "--max-bytes", str(self.config.max_bytes))
 
+    def gc_confirmed(self, ids):
+        for cid in ids: canonical_id(cid)
+        require(0<len(ids)<=self.config.max_objects,"invalid_gc_capture_ids")
+        return self.helper("gc","--max-objects",str(self.config.max_objects),"--max-bytes",str(self.config.max_bytes),"--capture-ids",",".join(ids))
+
 
 class Puller:
     def __init__(self, config, transport=None, now=None):
@@ -314,11 +322,13 @@ class Puller:
         self.config = config
         self.now = now or utc_now()
         self.deadline = time.monotonic() + config.max_seconds
+        self.cleanup_reserve = min(45, config.max_seconds // 3)
         self.fetched_bytes = 0
         self.inflight_bytes = 0
         self.state_lock = threading.RLock()
         self.namespace_bytes = 0
         self.reconciled = set()
+        self.gc_ready = set()
         self.transport = transport
         self.result = {"status":"ok", "listed":0, "input_archived":0, "outcome_archived":0,
                        "acks_confirmed":0, "acks_pending":0, "expired":0, "errors":[], "bytes_fetched":0}
@@ -341,7 +351,7 @@ class Puller:
             self.record_error({"capture_id":item["capture_id"],"code":"capture_transfer_failed"})
 
     def time_budget(self):
-        left = self.deadline - time.monotonic()
+        left = self.deadline - self.cleanup_reserve - time.monotonic()
         if left <= 0:
             raise LimitReached("run_time_limit")
         return min(45, left)
@@ -497,7 +507,7 @@ class Puller:
         return {"schema_version":1,"group_id":self.config.group_id,"capture_id":cid,"kind":kind,
                 "object_sha256":object_sha,"receipt_sha256":receipt_sha,"accepted":True}
 
-    def acknowledge(self,directory,cid,kind,object_sha,receipt_path):
+    def acknowledge(self,directory,cid,kind,object_sha,receipt_path,allow_reissue=False):
         if (cid,kind) in self.reconciled:
             return
         receipt_sha = digest(read_small(receipt_path,65536))
@@ -513,6 +523,17 @@ class Puller:
             status = self.transport.ack_status(cid,kind)
             if status == expected:
                 atomic_json(done,expected); self.increment("acks_confirmed")
+            elif status == {"schema_version":1,"accepted":False} and allow_reissue:
+                # process() has just reverified the current source descriptors,
+                # payload and receipts. Reissue the identical conditional ACK,
+                # never a model request or an altered receipt.
+                try:
+                    status=self.transport.ack(cid,kind,object_sha,receipt_sha)
+                    require(status==expected,"uncertain_ack_response")
+                    atomic_json(done,expected); self.increment("acks_confirmed")
+                except Exception:
+                    self.increment("acks_pending")
+                    self.record_error({"capture_id":cid,"code":"ack_outcome_unknown"})
             else:
                 self.increment("acks_pending")
                 self.record_error({"capture_id":cid,"code":"ack_status_absent_or_conflicting"})
@@ -558,7 +579,7 @@ class Puller:
                     expected=self.expected_ack(cid,kind,value.get("object_sha256"),digest(read_small(receipt,65536)))
                     require(value==expected and SHA_RE.fullmatch(value["object_sha256"]),"ack_intent_conflict")
                     self.acknowledge(directory,cid,kind,value["object_sha256"],receipt)
-                    self.reconciled.add((cid,kind))
+                    if done.exists(): self.reconciled.add((cid,kind))
             except ArchiveError as exc:
                 self.result["errors"].append({"capture_id":cid,"code":str(exc)})
         replace_state(state,{"last_uuid":last})
@@ -584,7 +605,7 @@ class Puller:
         input_receipt = directory / (cid + ".input-receipt.json")
         atomic_json(input_receipt,self.input_receipt(cid,manifest,item["input"]["sha256"]))
         self.increment("input_archived")
-        self.acknowledge(directory,cid,"input",item["input"]["sha256"],input_receipt)
+        self.acknowledge(directory,cid,"input",item["input"]["sha256"],input_receipt,allow_reissue=True)
         if item.get("outcome") is not None:
             outcome_path = self.fetch(directory,item["outcome"])
             outcome = decode(read_small(outcome_path,65536))
@@ -597,7 +618,9 @@ class Puller:
             atomic_json(receipt,{"schema_version":1,"group_id":self.config.group_id,"capture_id":cid,
                                 "outcome_sha256":item["outcome"]["sha256"],"input_sha256":item["input"]["sha256"]})
             self.increment("outcome_archived")
-            self.acknowledge(directory,cid,"outcome",item["outcome"]["sha256"],receipt)
+            self.acknowledge(directory,cid,"outcome",item["outcome"]["sha256"],receipt,allow_reissue=True)
+            if all((directory/(cid+"."+kind+"-ack.done.json")).exists() for kind in ["input","outcome"]):
+                with self.state_lock: self.gc_ready.add(cid)
 
     def expire(self,captures):
         cutoff = self.now - dt.timedelta(days=30)
@@ -685,7 +708,7 @@ class Puller:
                     info=path.lstat()
                     if stat.S_ISREG(info.st_mode): self.namespace_bytes+=info.st_size
                     elif not stat.S_ISSOCK(info.st_mode): raise ArchiveError("unsafe_namespace_object")
-            self.transport=self.transport or SSHTransport(self.config,self.deadline)
+            self.transport=self.transport or SSHTransport(self.config,self.deadline-self.cleanup_reserve)
             listing=self.transport.manifest_list()
             items=self.validate_listing(listing); self.result["listed"]=len(items)
             self.source_rejections(listing,"list")
@@ -693,8 +716,14 @@ class Puller:
             with ThreadPoolExecutor(max_workers=self.config.workers) as pool:
                 list(pool.map(lambda item:self.process_bounded(item,root/"captures"),items))
             try:
+                self.cleanup_reserve = 0
+                if isinstance(self.transport,SSHTransport): self.transport.deadline=self.deadline
                 self.time_budget()
-                collection=self.transport.gc()
+                if hasattr(self.transport,"gc_confirmed"):
+                    collection=(self.transport.gc_confirmed(sorted(self.gc_ready)) if self.gc_ready else
+                                {"schema_version":1,"group_id":self.config.group_id,"deleted":0,"deleted_bytes":0})
+                else:
+                    collection=self.transport.gc()
                 require(collection.get("schema_version")==1 and collection.get("group_id")==self.config.group_id,
                         "wrong_source_gc_identity")
                 for key in ["deleted","deleted_bytes"]:
@@ -704,6 +733,10 @@ class Puller:
                 self.source_rejections(collection,"gc")
             except Exception:
                 self.result["errors"].append({"code":"source_gc_unconfirmed"})
+            cursor=listing.get("next_cursor")
+            if cursor is not None:
+                require(cursor=="" or UUID_RE.fullmatch(cursor),"invalid_source_cursor")
+                replace_state(root/".run"/"source-cursor.json",{"last_uuid":cursor})
             try:
                 self.expire(root/"captures")
             except LimitReached:
@@ -717,19 +750,29 @@ class Puller:
             os.close(fd)
 
 
+def run_once(config_path):
+    try:
+        raw=decode(read_small(config_path,65536))
+        raw["root"]=Path(raw["root"])
+        return Puller(Config(**raw)).run()
+    except Exception as exc:
+        code=str(exc) if isinstance(exc,ArchiveError) else "archive_run_failed"
+        return {"status":"failed","code":code}
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config",type=Path,required=True)
-    args=parser.parse_args()
-    try:
-        raw=decode(read_small(args.config,65536))
-        raw["root"]=Path(raw["root"])
-        result=Puller(Config(**raw)).run()
-    except Exception as exc:
-        code=str(exc) if isinstance(exc,ArchiveError) else "archive_run_failed"
-        print(json.dumps({"status":"failed","code":code})); return 1
-    print(json.dumps(result,sort_keys=True))
-    return 0 if result["status"] in ["ok","locked"] else 1
+    parser.add_argument("--continuous",action="store_true")
+    args=parser.parse_args(); failures=0
+    while True:
+        result=run_once(args.config)
+        print(json.dumps(result,sort_keys=True),flush=True)
+        if not args.continuous:
+            return 0 if result["status"] in ["ok","locked"] else 1
+        progress=result.get("acks_confirmed",0)>0 or result.get("source_deleted",0)>0
+        failures=0 if progress else min(failures+1,4)
+        time.sleep(0.2 if progress else min(60,5*2**failures))
 
 
 if __name__=="__main__":

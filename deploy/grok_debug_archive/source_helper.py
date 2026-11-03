@@ -342,16 +342,18 @@ class SourceStore:
         return fd
 
     @contextlib.contextmanager
-    def locked(self):
+    def locked(self, wait=False):
         state = self.state(create=True)
         lock = None
         try:
             lock = os.open('helper.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=state)
             self.regular(os.fstat(lock), os.geteuid())
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                raise HelperError('helper_locked') from None
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB); break
+                except BlockingIOError:
+                    if not wait: raise HelperError('helper_locked') from None
+                    self.budget(); time.sleep(0.01)
             yield state
         finally:
             if lock is not None:
@@ -387,43 +389,61 @@ class SourceStore:
         capture_id(cid); require(kind in ['input','outcome'], 'invalid_ack_kind')
         return self.ack_record(cid, kind, durable=True) or {'schema_version':1, 'accepted':False}
 
-    def list(self, max_objects, max_bytes):
+    def list(self, max_objects, max_bytes, after=''):
         bounds(max_objects, max_bytes)
-        candidates = []; rejected = {}
-        def reject(exc):
-            rejected[str(exc)] = rejected.get(str(exc), 0) + 1
-        for cid in self.names():
+        require(after == '' or UUID_RE.fullmatch(after), 'invalid_list_cursor')
+        # Filenames are scheduling hints only; selected objects still undergo all
+        # ownership, schema, hash and credential-redaction checks below.
+        names = set(self.entries())
+        ids = sorted(name[:-11] for name in names
+                     if name.endswith('.input.json') and UUID_RE.fullmatch(name[:-11]))
+        require(len(ids) <= MAX_SCAN, 'capture_scan_limit')
+        state = self.state()
+        ack_names = set()
+        if state is not None:
+            try:
+                with os.scandir(state) as entries:
+                    for n, entry in enumerate(entries, 1):
+                        self.budget(); require(n <= 4 * MAX_SCAN, 'ack_scan_limit')
+                        ack_names.add(entry.name)
+            finally:
+                os.close(state)
+        # Revisit terminal captures until source GC completes, but do not keep
+        # downloading already-ACKed inputs whose request is still in flight.
+        pending = [cid for cid in ids if cid+'.input.ack.json' not in ack_names
+                   or cid+'.outcome.json' in names]
+        candidates = [cid for cid in pending if cid > after]
+        if not candidates and after:
+            candidates = pending
+        candidates.sort(key=lambda cid:(0 if cid+'.input.ack.json' in ack_names and cid+'.outcome.ack.json' not in ack_names
+                                        else 1 if cid+'.input.ack.json' not in ack_names else 2,cid))
+        items = []; total = 0; rejected = {}; last = after; scanned = 0
+        for cid in candidates:
+            # Return durable progress before the helper's hard timeout instead
+            # of discarding an entire batch after walking a growing namespace.
+            if self.deadline-time.monotonic() < 5 or scanned >= max(16,max_objects*2):
+                break
+            last = cid; scanned += 1
             try:
                 manifest, inp, _ = self.input(cid)
                 outcome, _ = self.outcome(cid, manifest)
                 ia, oa = self.ack_record(cid,'input'), self.ack_record(cid,'outcome')
                 if ia: require(ia['object_sha256'] == inp['sha256'], 'input_ack_object_conflict')
                 if oa: require(outcome is not None and oa['object_sha256'] == outcome['sha256'], 'outcome_ack_object_conflict')
-                pending = ia is None or (outcome is not None and oa is None)
-                # Retain only small scheduling keys, never all request metadata.
-                candidates.append((0 if pending else 1, manifest['captured_at'], cid))
-            except HelperError as exc:
-                reject(exc)
-        candidates.sort(key=lambda x:x[:3])
-        items = []; total = 0
-        for _, _, cid in candidates:
-            self.budget()
-            try:
-                manifest, inp, _ = self.input(cid)
-                outcome, _ = self.outcome(cid, manifest)
                 size = inp['bytes'] + manifest['compressed_bytes'] + manifest.get('headers_compressed_bytes',0) + (outcome['bytes'] if outcome else 0)
-                if size > max_bytes - total:
+                if size > max_bytes-total:
                     continue
                 payload, _ = self.payload_descriptor(cid, manifest)
-                headers, _ = self.headers_descriptor(cid,manifest)
+                headers, _ = self.headers_descriptor(cid, manifest)
                 item = {'capture_id':cid,'input':inp,'payload':payload,'outcome':outcome}
                 if headers is not None: item['headers'] = headers
                 items.append(item); total += size
+                if len(items) >= max_objects: break
             except HelperError as exc:
-                reject(exc); continue
-            if len(items) >= max_objects:
-                break
-        result = {'schema_version':1,'group_id':GROUP_ID,'items':items,'rejected':rejected}
+                rejected[str(exc)] = rejected.get(str(exc),0)+1
+                if str(exc) == 'helper_time_limit': break
+        result = {'schema_version':1,'group_id':GROUP_ID,'items':items,'rejected':rejected,
+                  'next_cursor':last,'scanned':scanned,'more':scanned < len(candidates)}
         require(len(encode(result)) <= MAX_RESPONSE, 'response_size_limit')
         return result
 
@@ -431,7 +451,7 @@ class SourceStore:
         capture_id(cid); require(kind in ['input','outcome'], 'invalid_ack_kind'); sha(object_sha); sha(receipt_sha)
         expected = {'schema_version':1,'group_id':GROUP_ID,'capture_id':cid,'kind':kind,
                     'object_sha256':object_sha,'receipt_sha256':receipt_sha,'accepted':True}
-        with self.locked() as state:
+        with self.locked(wait=True) as state:
             old = self.ack_record(cid,kind,state,durable=True)
             if old is not None:
                 require(old == expected, 'ack_conflict')
@@ -450,8 +470,11 @@ class SourceStore:
             os.unlink(temp,dir_fd=state); os.fsync(state); os.fsync(self.state_parent())
         return expected
 
-    def gc(self, max_objects=100, max_bytes=1024 ** 3):
+    def gc(self, max_objects=100, max_bytes=1024 ** 3, capture_ids=None):
         bounds(max_objects,max_bytes)
+        if capture_ids is not None:
+            require(0 < len(capture_ids) <= max_objects and len(set(capture_ids)) == len(capture_ids), 'invalid_gc_capture_ids')
+            for cid in capture_ids: capture_id(cid)
         result = {'schema_version':1,'group_id':GROUP_ID,'scanned':0,'deleted':0,'deleted_bytes':0,'preserved':0,'rejected':{}}
         with self.locked() as state:
             blocked = set()
@@ -460,7 +483,8 @@ class SourceStore:
                 if UUID_RE.fullmatch(cid) and (name == cid or name.startswith(cid + '.')):
                     if name not in {cid + s for s in ['.input.json','.request.gz','.headers.gz','.outcome.json']}:
                         blocked.add(cid)
-            for cid in self.names():
+            for cid in (self.names() if capture_ids is None else capture_ids):
+                if self.deadline-time.monotonic() < 2: break
                 self.budget(); result['scanned'] += 1
                 try:
                     manifest, inp, ii = self.input(cid)
@@ -468,7 +492,7 @@ class SourceStore:
                         try: os.stat(cid+'.headers.gz',dir_fd=self.fd,follow_symlinks=False)
                         except FileNotFoundError: pass
                         else: raise HelperError('gc_partial_or_unknown_file')
-                    if timestamp(manifest['captured_at']) >= self.now - dt.timedelta(hours=24):
+                    if capture_ids is None and timestamp(manifest['captured_at']) >= self.now - dt.timedelta(hours=24):
                         result['preserved'] += 1; continue
                     ia, oa = self.ack_record(cid,'input',state,durable=True), self.ack_record(cid,'outcome',state,durable=True)
                     if ia is None or oa is None:
@@ -512,6 +536,8 @@ def main(argv=None):
         if action in ['manifest-list','gc']:
             p.add_argument('--max-objects',type=int,default=100,required=action=='manifest-list')
             p.add_argument('--max-bytes',type=int,default=1024**3,required=action=='manifest-list')
+            if action == 'manifest-list': p.add_argument('--after',default='')
+            if action == 'gc': p.add_argument('--capture-ids')
         else:
             p.add_argument('--capture-id',required=True); p.add_argument('--kind',choices=['input','outcome'],required=True)
             if action == 'ack':
@@ -521,10 +547,10 @@ def main(argv=None):
         require(args.group_id == GROUP_ID, 'wrong_group')
         require(os.geteuid() == 0, 'helper_requires_root')
         with SourceStore() as store:
-            if args.action == 'manifest-list': result = store.list(args.max_objects,args.max_bytes)
+            if args.action == 'manifest-list': result = store.list(args.max_objects,args.max_bytes,args.after)
             elif args.action == 'ack': result = store.ack(args.capture_id,args.kind,args.object_sha256,args.receipt_sha256)
             elif args.action == 'ack-status': result = store.ack_status(args.capture_id,args.kind)
-            else: result = store.gc(args.max_objects,args.max_bytes)
+            else: result = store.gc(args.max_objects,args.max_bytes,None if args.capture_ids is None else args.capture_ids.split(','))
         sys.stdout.buffer.write(encode(result)); return 0
     except Exception as exc:
         code = str(exc) if isinstance(exc,HelperError) else 'source_helper_failed'
