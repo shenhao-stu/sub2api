@@ -322,6 +322,7 @@ class Puller:
         self.config = config
         self.now = now or utc_now()
         self.deadline = time.monotonic() + config.max_seconds
+        self.cleanup_reserve = min(45, config.max_seconds // 3)
         self.fetched_bytes = 0
         self.inflight_bytes = 0
         self.state_lock = threading.RLock()
@@ -350,7 +351,7 @@ class Puller:
             self.record_error({"capture_id":item["capture_id"],"code":"capture_transfer_failed"})
 
     def time_budget(self):
-        left = self.deadline - time.monotonic()
+        left = self.deadline - self.cleanup_reserve - time.monotonic()
         if left <= 0:
             raise LimitReached("run_time_limit")
         return min(45, left)
@@ -707,7 +708,7 @@ class Puller:
                     info=path.lstat()
                     if stat.S_ISREG(info.st_mode): self.namespace_bytes+=info.st_size
                     elif not stat.S_ISSOCK(info.st_mode): raise ArchiveError("unsafe_namespace_object")
-            self.transport=self.transport or SSHTransport(self.config,self.deadline)
+            self.transport=self.transport or SSHTransport(self.config,self.deadline-self.cleanup_reserve)
             listing=self.transport.manifest_list()
             items=self.validate_listing(listing); self.result["listed"]=len(items)
             self.source_rejections(listing,"list")
@@ -715,6 +716,8 @@ class Puller:
             with ThreadPoolExecutor(max_workers=self.config.workers) as pool:
                 list(pool.map(lambda item:self.process_bounded(item,root/"captures"),items))
             try:
+                self.cleanup_reserve = 0
+                if isinstance(self.transport,SSHTransport): self.transport.deadline=self.deadline
                 self.time_budget()
                 if hasattr(self.transport,"gc_confirmed"):
                     collection=(self.transport.gc_confirmed(sorted(self.gc_ready)) if self.gc_ready else
