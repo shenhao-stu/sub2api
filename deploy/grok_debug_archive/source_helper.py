@@ -470,6 +470,24 @@ class SourceStore:
             os.unlink(temp,dir_fd=state); os.fsync(state); os.fsync(self.state_parent())
         return expected
 
+    def ack_batch(self, claims):
+        require(isinstance(claims,list) and 0<len(claims)<=64,'invalid_ack_batch')
+        fields={'capture_id','kind','object_sha256','receipt_sha256'}
+        seen=set()
+        for claim in claims:
+            require(isinstance(claim,dict) and set(claim)==fields,'invalid_ack_claim')
+            capture_id(claim['capture_id']); sha(claim['object_sha256']); sha(claim['receipt_sha256'])
+            key=(claim['capture_id'],claim['kind'])
+            require(claim['kind'] in ['input','outcome'] and key not in seen,'duplicate_or_invalid_ack_claim')
+            seen.add(key)
+        results=[]
+        for claim in claims:
+            try:
+                results.append(self.ack(claim['capture_id'],claim['kind'],claim['object_sha256'],claim['receipt_sha256']))
+            except HelperError as exc:
+                results.append({'capture_id':claim['capture_id'],'kind':claim['kind'],'accepted':False,'code':str(exc)})
+        return {'schema_version':1,'group_id':GROUP_ID,'results':results}
+
     def gc(self, max_objects=100, max_bytes=1024 ** 3, capture_ids=None):
         bounds(max_objects,max_bytes)
         if capture_ids is not None:
@@ -531,13 +549,15 @@ def main(argv=None):
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action',required=True)
-    for action in ['manifest-list','ack','ack-status','gc']:
+    for action in ['manifest-list','ack','ack-status','ack-batch','gc']:
         p = sub.add_parser(action); p.add_argument('--group-id',type=int,required=True)
         if action in ['manifest-list','gc']:
             p.add_argument('--max-objects',type=int,default=100,required=action=='manifest-list')
             p.add_argument('--max-bytes',type=int,default=1024**3,required=action=='manifest-list')
             if action == 'manifest-list': p.add_argument('--after',default='')
             if action == 'gc': p.add_argument('--capture-ids')
+        elif action == 'ack-batch':
+            p.add_argument('--claims',required=True)
         else:
             p.add_argument('--capture-id',required=True); p.add_argument('--kind',choices=['input','outcome'],required=True)
             if action == 'ack':
@@ -549,6 +569,9 @@ def main(argv=None):
         with SourceStore() as store:
             if args.action == 'manifest-list': result = store.list(args.max_objects,args.max_bytes,args.after)
             elif args.action == 'ack': result = store.ack(args.capture_id,args.kind,args.object_sha256,args.receipt_sha256)
+            elif args.action == 'ack-batch':
+                require(len(args.claims)<=32768,'ack_batch_size_limit')
+                result=store.ack_batch(decode(args.claims.encode()))
             elif args.action == 'ack-status': result = store.ack_status(args.capture_id,args.kind)
             else: result = store.gc(args.max_objects,args.max_bytes,None if args.capture_ids is None else args.capture_ids.split(','))
         sys.stdout.buffer.write(encode(result)); return 0
