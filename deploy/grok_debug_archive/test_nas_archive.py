@@ -111,6 +111,91 @@ class ArchiveBehavior(unittest.TestCase):
     def pull(self,now=NOW,**config): return Puller(self.config(**config),self.source,now).run()
     def directory(self,cid): return self.root/"captures"/cid
 
+    def test_parallel_500_captures_have_exact_body_headers_and_dual_acks(self):
+        import threading,time
+        active=0; peak=0; lock=threading.Lock(); fetch=self.source.fetch
+        def delayed(*args):
+            nonlocal active,peak
+            with lock:active+=1;peak=max(peak,active)
+            try:
+                time.sleep(.002)
+                return fetch(*args)
+            finally:
+                with lock:active-=1
+        self.source.fetch=delayed
+        ids=[self.source.add(raw=('synthetic-'+str(i)).encode(),outcome=True,
+                             headers={'Authorization':['[REDACTED]'],'X-Test':['one','two']}) for i in range(500)]
+        result=self.pull(workers=8,max_objects=1000)
+        self.assertEqual(result['status'],'ok')
+        self.assertEqual(result['acks_confirmed'],1000)
+        self.assertEqual(result['input_archived'],500)
+        self.assertEqual(result['outcome_archived'],500)
+        self.assertGreater(peak,1);self.assertLessEqual(peak,8)
+        self.assertEqual(len(self.source.ack_calls),len(set(self.source.ack_calls)))
+        self.assertEqual(result['bytes_fetched'],sum(len(v)for v in self.source.objects.values()))
+        for cid in ids:
+            self.assertEqual((self.directory(cid)/(cid+'.request.gz')).read_bytes(),self.source.objects[cid+'.request.gz'])
+            self.assertTrue((self.directory(cid)/(cid+'.input-ack.done.json')).is_file())
+            self.assertTrue((self.directory(cid)/(cid+'.outcome-ack.done.json')).is_file())
+
+    def test_parallel_space_reservations_include_inflight_transfers(self):
+        import threading,time
+        from unittest.mock import patch
+        self.source.add(outcome=True);self.source.add(outcome=True)
+        fetch=self.source.fetch
+        def delayed(*args):time.sleep(.02);return fetch(*args)
+        self.source.fetch=delayed
+        first=self.source.items[0]['input']['bytes']
+        with patch('nas_archive.shutil.disk_usage',return_value=type('Space',(),{'free':first+10})()):
+            result=self.pull(workers=8,min_free_bytes=0)
+        self.assertEqual(result['status'],'pending')
+        self.assertTrue(any(e['code']=='nas_free_space_limit' for e in result['errors']))
+        self.assertLess(len(self.source.fetch_calls),8)
+
+    def test_parallel_uncertain_ack_is_reconciled_without_mutation_replay(self):
+        ids=[self.source.add(outcome=True)for _ in range(24)]
+        self.source.uncertain="applied"
+        first=self.pull(workers=8)
+        calls=list(self.source.ack_calls)
+        self.assertEqual(first['status'],'pending')
+        self.assertEqual(first['acks_pending'],48)
+        self.assertEqual(len(calls),len(set(calls)))
+        self.source.uncertain=None
+        second=self.pull(workers=8)
+        self.assertEqual(second['status'],'ok')
+        self.assertEqual(calls,self.source.ack_calls)
+        for cid in ids:
+            for kind in ('input','outcome'):
+                self.assertTrue((self.directory(cid)/(cid+'.'+kind+'-ack.done.json')).is_file())
+
+    def test_parallel_corrupt_capture_never_acks_healthy_captures_continue(self):
+        ids=[self.source.add(outcome=True)for _ in range(24)]
+        cid=ids[0]; packed=self.source.objects[cid+'.request.gz']
+        self.source.objects[cid+'.request.gz']=packed[:-1]+bytes([packed[-1]^1])
+        result=self.pull(workers=8)
+        self.assertEqual(result['status'],'pending')
+        self.assertFalse(any(c==cid for c,k in self.source.ack_calls))
+        self.assertEqual(result['acks_confirmed'],46)
+
+    def test_deadline_after_transfer_persists_pending_summary_and_preserves_data(self):
+        from unittest.mock import patch
+        import time
+        cid=self.source.add(outcome=True)
+        puller=Puller(self.config(workers=8),self.source,NOW)
+        original=puller.process
+        def finish_then_expire(item,captures):
+            original(item,captures)
+            puller.deadline=time.monotonic()-1
+        with patch.object(puller,'process',side_effect=finish_then_expire):
+            result=puller.run()
+        self.assertEqual(result['status'],'pending')
+        self.assertEqual(result['acks_confirmed'],2)
+        self.assertTrue(any(e['code']=='retention_deferred_time_limit'for e in result['errors']))
+        summaries=list((self.root/'.run').glob('run-*.json'))
+        self.assertEqual(len(summaries),1)
+        self.assertEqual(json.loads(summaries[0].read_text())['acks_confirmed'],2)
+        self.assertTrue((self.directory(cid)/(cid+'.request.gz')).exists())
+
     def test_input_archives_and_acknowledges_before_model_outcome(self):
         cid=self.source.add()
         def durable_receipt(capture,kind):
