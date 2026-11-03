@@ -258,9 +258,11 @@ func (h *GatewayHandler) recordSystemOneUsage(c *gin.Context, apiKey *service.AP
 	sessionID := service.ExtractClientSessionID(c)
 	requestPayloadHash := service.HashUsageRequestPayload(body)
 
+	usageFields := clientRequestedUsageFields(c, mapping, model, result.UpstreamModel)
+	usageResult := result.ForwardResult
 	h.submitMandatoryUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 		if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
-			Result:             &result.ForwardResult,
+			Result:             &usageResult,
 			APIKey:             apiKey,
 			User:               apiKey.User,
 			Account:            account,
@@ -274,7 +276,7 @@ func (h *GatewayHandler) recordSystemOneUsage(c *gin.Context, apiKey *service.AP
 			RequestPayloadHash: requestPayloadHash,
 			APIKeyService:      h.apiKeyService,
 			QuotaPlatform:      quotaPlatform,
-			ChannelUsageFields: clientRequestedUsageFields(c, mapping, model, result.UpstreamModel),
+			ChannelUsageFields: usageFields,
 		}); err != nil {
 			logger.L().With(
 				zap.String("component", "handler.gateway.systemone"),
