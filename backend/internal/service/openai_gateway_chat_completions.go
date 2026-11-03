@@ -133,7 +133,12 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	// Cursor compatibility: some clients send a Responses-shaped body to the
 	// /v1/chat/completions URL. Detect it before protocol routing so adaptive
 	// accounts never forward the body unchanged to a Chat Completions endpoint.
-	isResponsesShape := !gjson.GetBytes(body, "messages").Exists() && gjson.GetBytes(body, "input").Exists()
+	// Serializers may retain messages:null or messages:[] beside Responses
+	// input. Treat only those empty forms as absent; meaningful or malformed
+	// messages must retain the Chat validation/conversion path.
+	messages := gjson.GetBytes(body, "messages")
+	isResponsesShape := gjson.GetBytes(body, "input").Exists() &&
+		(messages.Type == gjson.Null || (messages.IsArray() && len(messages.Array()) == 0))
 	inbound := APIProtocolChatCompletions
 	if isResponsesShape {
 		inbound = APIProtocolResponses
@@ -224,6 +229,12 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		responsesBody, err = sjson.SetBytes(body, "model", upstreamModel)
 		if err != nil {
 			return nil, fmt.Errorf("rewrite model in responses-shape body: %w", err)
+		}
+		// The empty Chat-only messages field was used only for shape detection. Responses
+		// upstreams must receive the original input without this extra field.
+		responsesBody, err = sjson.DeleteBytes(responsesBody, "messages")
+		if err != nil {
+			return nil, fmt.Errorf("remove empty messages from responses-shape body: %w", err)
 		}
 		// Strip Responses API parameters that no Codex upstream accepts.
 		// Because this branch forwards the raw body (the normal path rebuilds
