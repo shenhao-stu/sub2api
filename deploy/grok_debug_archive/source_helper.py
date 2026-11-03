@@ -8,6 +8,7 @@ import datetime as dt
 import fcntl
 import gzip
 import hashlib
+import heapq
 import json
 import os
 from pathlib import Path
@@ -278,22 +279,23 @@ class SourceStore:
         return {'path':cid + '.outcome.json','bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()}, info
 
     def entries(self):
-        # Four sealed files per schema-2 capture, plus bounded partial files.
+        # The time budget bounds directory work. A large valid backlog must not
+        # disable the only path that can archive and collect that backlog.
+        unknown = 0
+        suffixes = {'.input.json','.request.gz','.headers.gz','.outcome.json'}
         with os.scandir(self.fd) as entries:
-            for count, entry in enumerate(entries, 1):
+            for entry in entries:
                 self.budget()
-                require(count <= 8 * MAX_SCAN, 'namespace_scan_limit')
-                yield entry.name
+                name = entry.name
+                if not (UUID_RE.fullmatch(name[:36]) and name[36:] in suffixes):
+                    unknown += 1
+                    require(unknown <= 8 * MAX_SCAN, 'namespace_scan_limit')
+                yield name
 
     def names(self):
-        count = 0
         for name in self.entries():
-            if name.endswith('.input.json'):
-                cid = name[:-len('.input.json')]
-                if UUID_RE.fullmatch(cid):
-                    count += 1
-                    require(count <= MAX_SCAN, 'capture_scan_limit')
-                    yield cid
+            if name.endswith('.input.json') and UUID_RE.fullmatch(name[:-11]):
+                yield name[:-11]
 
     def state_parent(self):
         """Open the independent root control plane, never under producer data."""
@@ -392,36 +394,18 @@ class SourceStore:
     def list(self, max_objects, max_bytes, after=''):
         bounds(max_objects, max_bytes)
         require(after == '' or UUID_RE.fullmatch(after), 'invalid_list_cursor')
-        # Filenames are scheduling hints only; selected objects still undergo all
-        # ownership, schema, hash and credential-redaction checks below.
-        names = set(self.entries())
-        ids = sorted(name[:-11] for name in names
-                     if name.endswith('.input.json') and UUID_RE.fullmatch(name[:-11]))
-        require(len(ids) <= MAX_SCAN, 'capture_scan_limit')
-        state = self.state()
-        ack_names = set()
-        if state is not None:
-            try:
-                with os.scandir(state) as entries:
-                    for n, entry in enumerate(entries, 1):
-                        self.budget(); require(n <= 4 * MAX_SCAN, 'ack_scan_limit')
-                        ack_names.add(entry.name)
-            finally:
-                os.close(state)
-        # Revisit terminal captures until source GC completes, but do not keep
-        # downloading already-ACKed inputs whose request is still in flight.
-        pending = [cid for cid in ids if cid+'.input.ack.json' not in ack_names
-                   or cid+'.outcome.json' in names]
-        candidates = [cid for cid in pending if cid > after]
-        if not candidates and after:
-            candidates = pending
-        candidates.sort(key=lambda cid:(0 if cid+'.input.ack.json' in ack_names and cid+'.outcome.ack.json' not in ack_names
-                                        else 1 if cid+'.input.ack.json' not in ack_names else 2,cid))
+        # UUID order and the cursor describe the same order. Keep only a page
+        # of names; ACK tombstones and unrelated captures need no metadata read.
+        scan_limit = max(16, max_objects * 2)
+        candidates = heapq.nsmallest(scan_limit + 1, self.names(), key=lambda cid:(cid <= after,cid))
+        if candidates:
+            wrapped = candidates[0] <= after
+            candidates = [cid for cid in candidates if (cid <= after) == wrapped]
         items = []; total = 0; rejected = {}; last = after; scanned = 0
         for cid in candidates:
             # Return durable progress before the helper's hard timeout instead
             # of discarding an entire batch after walking a growing namespace.
-            if self.deadline-time.monotonic() < 5 or scanned >= max(16,max_objects*2):
+            if self.deadline-time.monotonic() < 5 or scanned >= scan_limit:
                 break
             last = cid; scanned += 1
             try:
@@ -430,6 +414,8 @@ class SourceStore:
                 ia, oa = self.ack_record(cid,'input'), self.ack_record(cid,'outcome')
                 if ia: require(ia['object_sha256'] == inp['sha256'], 'input_ack_object_conflict')
                 if oa: require(outcome is not None and oa['object_sha256'] == outcome['sha256'], 'outcome_ack_object_conflict')
+                if ia and outcome is None:
+                    continue
                 size = inp['bytes'] + manifest['compressed_bytes'] + manifest.get('headers_compressed_bytes',0) + (outcome['bytes'] if outcome else 0)
                 if size > max_bytes-total:
                     continue

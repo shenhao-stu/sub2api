@@ -112,10 +112,10 @@ class SourceBehavior(unittest.TestCase):
             with self.store() as store:result=store.gc()
             self.assertEqual(result['deleted'],2)
 
-    def test_capture_count_and_unknown_file_flood_remain_bounded(self):
+    def test_large_capture_backlog_progresses_but_unknown_file_flood_is_bounded(self):
         for _ in range(3):self.producer.add(outcome=True,headers={})
-        with mock.patch.object(source,'MAX_SCAN',2),self.assertRaises(source.HelperError):
-            self.listing()
+        with mock.patch.object(source,'MAX_SCAN',2):
+            self.assertEqual(len(self.listing()['items']),3)
         for p in self.root.iterdir():p.unlink()
         for i in range(17):self.producer.put('unknown-'+str(i),b'x')
         with mock.patch.object(source,'MAX_SCAN',2):
@@ -454,8 +454,11 @@ class SourceBehavior(unittest.TestCase):
         for cid in old: self.both(cid)
         late=self.producer.add(when=NOW-dt.timedelta(hours=2)); self.ack(late,'input'); self.producer.finish(late)
         new=self.producer.add(when=NOW-dt.timedelta(hours=1))
-        first=self.listing(n=1)['items'][0]; self.assertEqual(first['capture_id'],late); self.ack(late,'outcome')
-        self.assertEqual(self.listing(n=1)['items'][0]['capture_id'],new)
+        seen=set();cursor=''
+        for _ in range(len(old)+2):
+            with self.store()as store:page=store.list(1,1024**3,cursor)
+            cursor=page['next_cursor'];seen.update(x['capture_id']for x in page['items'])
+        self.assertTrue({late,new}.issubset(seen))
 
     def test_oversize_first_capture_does_not_block_later_fitting_capture(self):
         large=self.producer.add(raw=os.urandom(10000),when=NOW-dt.timedelta(minutes=2))
