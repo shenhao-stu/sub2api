@@ -1,5 +1,5 @@
 """Real full-header/body durability under batched transport and uncertain ACKs."""
-import gzip,json,os,shutil,tempfile
+import gzip,json,os,shutil,stat,tempfile
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
@@ -26,6 +26,106 @@ class BatchTransport(LocalTransport):
 class BatchArchive(SourceBehavior):
     def config(self):
         return nas.Config(root=self.base/'netcup-grok-test',group_id=78,source_dir=str(self.root),helper_path=str(source.INSTALL_PATH),min_free_bytes=0,max_objects=1000,workers=8,max_seconds=290)
+    def claims(self,ids):
+        claims=[]
+        with self.store()as store:
+            for cid in ids:
+                manifest,inp,_=store.input(cid);outcome,_=store.outcome(cid,manifest)
+                for kind,desc in [('input',inp),('outcome',outcome)]:
+                    claims.append({'capture_id':cid,'kind':kind,'object_sha256':desc['sha256'],'receipt_sha256':'1'*64})
+        return claims
+    def test_ack_batch_one_lock_and_three_directory_barriers(self):
+        ids=[self.producer.add(outcome=True,headers={})for _ in range(4)]
+        claims=self.claims(ids);real=os.fsync
+        for retry in [False,True]:
+            counts={'file':0,'state':0,'parent':0}
+            def sync(fd):
+                info=os.fstat(fd)
+                key=('file' if stat.S_ISREG(info.st_mode) else
+                     'parent' if info.st_ino==self.state_parent.stat().st_ino else 'state')
+                counts[key]+=1;return real(fd)
+            with self.store()as store,mock.patch.object(store,'locked',wraps=store.locked)as lock,mock.patch.object(source.os,'fsync',side_effect=sync):
+                result=store.ack_batch(claims)
+            self.assertTrue(all(x['accepted']for x in result['results']))
+            self.assertEqual(lock.call_count,1)
+            self.assertEqual(counts,{'file':0 if retry else len(claims),'state':1,'parent':2})
+
+    def test_ack_batch_file_sync_failure_aborts_reply_then_recovers(self):
+        cid=self.producer.add(outcome=True,headers={});claims=self.claims([cid]);real=os.fsync;files=[0]
+        def fail_second_file(fd):
+            if stat.S_ISREG(os.fstat(fd).st_mode):
+                files[0]+=1
+                if files[0]==2:raise OSError('synthetic ACK file fsync failure')
+            return real(fd)
+        with self.store()as store,mock.patch.object(source.os,'fsync',side_effect=fail_second_file):
+            with self.assertRaises(OSError):store.ack_batch(claims)
+        self.assertTrue((self.root/(cid+'.input.json')).exists())
+        self.assertFalse((self.state_root/(cid+'.outcome.ack.json')).exists())
+        with self.store()as store:result=store.ack_batch(claims)
+        self.assertTrue(all(x['accepted']for x in result['results']))
+        self.assertEqual(self.gc(capture_ids=[cid])['deleted'],1)
+
+    def test_ack_batch_final_directory_failure_cannot_confirm_or_collect(self):
+        real=os.fsync
+        for target in ['state','parent']:
+            with self.subTest(target=target):
+                cid=self.producer.add(outcome=True,headers={});claims=self.claims([cid])
+                def fail_final_directory(fd):
+                    info=os.fstat(fd)
+                    directory=self.state_root if target=='state' else self.state_parent
+                    if (stat.S_ISDIR(info.st_mode) and directory.exists() and info.st_ino==directory.stat().st_ino
+                            and (self.state_root/(cid+'.input.ack.json')).exists()):
+                        raise OSError('synthetic ACK directory fsync failure')
+                    return real(fd)
+                with self.store()as store,mock.patch.object(source.os,'fsync',side_effect=fail_final_directory):
+                    with self.assertRaises(OSError):store.ack_batch(claims)
+                    with self.assertRaises(OSError):store.ack_status(cid,'input')
+                    with self.assertRaises(OSError):store.gc(capture_ids=[cid])
+                self.assertTrue(all((self.root/(cid+s)).exists()for s in ['.input.json','.request.gz','.headers.gz','.outcome.json']))
+                with self.store()as store:result=store.ack_batch(claims)
+                self.assertTrue(all(x['accepted']for x in result['results']))
+                self.assertEqual(self.gc(capture_ids=[cid])['deleted'],1)
+
+    def test_ack_batch_commits_valid_claims_without_accepting_conflicts(self):
+        ids=[self.producer.add(outcome=True)for _ in range(2)];claims=self.claims(ids)
+        claims[1]['object_sha256']='0'*64
+        with self.store()as store:result=store.ack_batch(claims)
+        self.assertEqual([x['accepted']for x in result['results']],[True,False,True,True])
+        self.assertEqual(result['results'][1]['code'],'ack_object_mismatch')
+        result=self.gc(capture_ids=ids)
+        self.assertEqual(result['deleted'],1);self.assertTrue((self.root/(ids[0]+'.input.json')).exists())
+
+    def test_gc_ack_barrier_once_and_ready_marker_barrier_per_capture(self):
+        ids=[self.producer.add(outcome=True,headers={})for _ in range(3)]
+        for cid in ids:self.both(cid)
+        events=[];real_sync=os.fsync;real_unlink=os.unlink
+        source_inode=self.root.stat().st_ino
+        def sync(fd):
+            label='source' if os.fstat(fd).st_ino==source_inode else 'ack'
+            events.append(('sync',label));return real_sync(fd)
+        def unlink(name,**kwargs):
+            events.append(('unlink',name));return real_unlink(name,**kwargs)
+        with self.store()as store,mock.patch.object(source.os,'fsync',side_effect=sync),mock.patch.object(source.os,'unlink',side_effect=unlink):
+            result=store.gc(capture_ids=ids)
+        self.assertEqual(result['deleted'],3)
+        self.assertEqual(events[:3],[('sync','ack')]*3)
+        self.assertEqual(sum(event[0]=='sync' for event in events),2*len(ids)+3)
+        for cid in ids:
+            start=events.index(('unlink',cid+'.input.json'))
+            self.assertEqual(events[start+1],('sync','source'))
+            self.assertEqual(events[start+2:start+5],[('unlink',cid+s)for s in ['.request.gz','.outcome.json','.headers.gz']])
+            self.assertEqual(events[start+5],('sync','source'))
+
+    def test_gc_ready_marker_sync_failure_keeps_companion_files(self):
+        cid=self.producer.add(outcome=True,headers={});self.both(cid);real=os.fsync
+        def fail_source(fd):
+            if os.fstat(fd).st_ino==self.root.stat().st_ino:raise OSError('synthetic ready marker fsync failure')
+            return real(fd)
+        with self.store()as store,mock.patch.object(source.os,'fsync',side_effect=fail_source):
+            with self.assertRaises(OSError):store.gc(capture_ids=[cid])
+        self.assertFalse((self.root/(cid+'.input.json')).exists())
+        self.assertTrue(all((self.root/(cid+s)).exists()for s in ['.request.gz','.headers.gz','.outcome.json']))
+
     def test_500_complete_batched_archives_and_exact_gc(self):
         headers={'Authorization':['[REDACTED]'],'X-Trace':['one','two']}
         ids=[self.producer.add(raw=('full-body-'+str(i)).encode(),outcome=True,headers=headers)for i in range(500)]
