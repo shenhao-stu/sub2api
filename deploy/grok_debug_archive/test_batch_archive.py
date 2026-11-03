@@ -34,6 +34,63 @@ class BatchArchive(SourceBehavior):
                 for kind,desc in [('input',inp),('outcome',outcome)]:
                     claims.append({'capture_id':cid,'kind':kind,'object_sha256':desc['sha256'],'receipt_sha256':'1'*64})
         return claims
+    def body_raw_checks(self,spy):
+        return [call.kwargs.get('verify_raw',False)for call in spy.call_args_list if not call.kwargs.get('headers',False)]
+
+    def test_same_batch_reuses_only_raw_body_check_and_revalidates_headers(self):
+        cid=self.producer.add(raw=b'x'*(6*1024**2),outcome=True,headers={'Authorization':['[REDACTED]']})
+        claims=self.claims([cid])
+        with self.store()as store,mock.patch.object(store,'compressed_descriptor',wraps=store.compressed_descriptor)as checked,mock.patch.object(source,'validate_headers',wraps=source.validate_headers)as privacy:
+            result=store.ack_batch(claims)
+        self.assertTrue(all(x['accepted']for x in result['results']))
+        self.assertEqual(self.body_raw_checks(checked),[True,False])
+        self.assertEqual(privacy.call_count,2)
+
+    def test_raw_check_cache_does_not_cross_calls_or_use_old_ack_attestation(self):
+        cid=self.producer.add(outcome=True,headers={});claims=self.claims([cid])
+        with self.store()as store,mock.patch.object(store,'compressed_descriptor',wraps=store.compressed_descriptor)as checked:
+            store.ack_batch(claims[:1])
+            result=store.ack_batch(claims)
+        self.assertTrue(all(x['accepted']for x in result['results']))
+        self.assertEqual(self.body_raw_checks(checked),[True,True])
+
+    def test_standalone_acks_each_revalidate_raw_body(self):
+        cid=self.producer.add(outcome=True,headers={});claims=self.claims([cid])
+        with self.store()as store,mock.patch.object(store,'compressed_descriptor',wraps=store.compressed_descriptor)as checked:
+            for claim in claims:store.ack(claim['capture_id'],claim['kind'],claim['object_sha256'],claim['receipt_sha256'])
+        self.assertEqual(self.body_raw_checks(checked),[True,True])
+
+    def test_second_claim_rechecks_changed_manifest_payload_and_headers(self):
+        for changed,expected in [('manifest','payload_raw_hash_or_size_mismatch'),('payload','payload_hash_mismatch'),('headers','headers_hash_mismatch')]:
+            with self.subTest(changed=changed):
+                cid=self.producer.add(outcome=True,headers={});claims=self.claims([cid])
+                with self.store()as store:
+                    original=store.ack_locked;calls=[0]
+                    def mutate_after_first(*args,**kwargs):
+                        result=original(*args,**kwargs);calls[0]+=1
+                        if calls[0]==1:
+                            if changed=='manifest':self.producer.change(cid,lambda value:value.update(raw_sha256='0'*64))
+                            else:
+                                path=self.root/(cid+('.request.gz' if changed=='payload' else '.headers.gz'))
+                                raw=path.read_bytes();self.producer.put(path.name,raw[:-1]+bytes([raw[-1]^1]))
+                        return result
+                    with mock.patch.object(store,'ack_locked',side_effect=mutate_after_first),mock.patch.object(store,'compressed_descriptor',wraps=store.compressed_descriptor)as checked:
+                        result=store.ack_batch(claims)
+                self.assertEqual([x['accepted']for x in result['results']],[True,False])
+                self.assertEqual(result['results'][1]['code'],expected)
+                self.assertEqual(self.body_raw_checks(checked),[True,changed=='manifest'])
+                self.assertFalse((self.state_root/(cid+'.outcome.ack.json')).exists())
+                self.assertEqual(self.gc(capture_ids=[cid])['deleted'],0)
+
+    def test_first_raw_validation_failure_cannot_seed_batch_cache(self):
+        cid=self.producer.add(outcome=True,headers={})
+        self.producer.change(cid,lambda value:value.update(raw_sha256='0'*64));claims=self.claims([cid])
+        with self.store()as store,mock.patch.object(store,'compressed_descriptor',wraps=store.compressed_descriptor)as checked:
+            result=store.ack_batch(claims)
+        self.assertEqual([x['accepted']for x in result['results']],[False,False])
+        self.assertEqual(self.body_raw_checks(checked),[True,True])
+        self.assertFalse(any(self.state_root.glob('*.ack.json')))
+
     def test_ack_batch_one_lock_and_three_directory_barriers(self):
         ids=[self.producer.add(outcome=True,headers={})for _ in range(4)]
         claims=self.claims(ids);real=os.fsync

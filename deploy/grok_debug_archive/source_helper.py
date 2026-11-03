@@ -440,7 +440,7 @@ class SourceStore:
             os.fsync(state); os.fsync(self.state_parent())
         return result
 
-    def ack_locked(self, cid, kind, object_sha, receipt_sha, state):
+    def ack_locked(self, cid, kind, object_sha, receipt_sha, state, verified_inputs=None):
         """Prepare one checked claim; the lock owner must commit before replying."""
         expected = {'schema_version':1,'group_id':GROUP_ID,'capture_id':cid,'kind':kind,
                     'object_sha256':object_sha,'receipt_sha256':receipt_sha,'accepted':True}
@@ -449,11 +449,18 @@ class SourceStore:
             require(old == expected, 'ack_conflict')
             return old
         manifest, inp, _ = self.input(cid)
-        self.compressed_descriptor(cid,manifest,verify_raw=True)
+        # Only this batch can attest to a raw check. Matching input bytes bind
+        # both raw and compressed hashes; rehash the current compressed file on
+        # every claim before relying on that earlier raw check. Old ACK records
+        # never populate this cache, and headers always receive full validation.
+        raw_verified = verified_inputs is not None and verified_inputs.get(cid) == inp['sha256']
+        self.compressed_descriptor(cid,manifest,verify_raw=not raw_verified)
         self.headers_descriptor(cid,manifest)
         outcome, _ = self.outcome(cid,manifest)
         obj = inp if kind == 'input' else outcome
         require(obj is not None and obj['sha256'] == object_sha, 'ack_object_mismatch')
+        if verified_inputs is not None:
+            verified_inputs[cid] = inp['sha256']
         name = cid + '.' + kind + '.ack.json'; temp = '.' + name + '.pending-' + uuid.uuid4().hex
         fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=state)
         with os.fdopen(fd,'wb') as output:
@@ -472,11 +479,11 @@ class SourceStore:
             key=(claim['capture_id'],claim['kind'])
             require(claim['kind'] in ['input','outcome'] and key not in seen,'duplicate_or_invalid_ack_claim')
             seen.add(key)
-        results=[]
+        results=[]; verified_inputs={}
         with self.locked(wait=True) as state:
             for claim in claims:
                 try:
-                    results.append(self.ack_locked(claim['capture_id'],claim['kind'],claim['object_sha256'],claim['receipt_sha256'],state))
+                    results.append(self.ack_locked(claim['capture_id'],claim['kind'],claim['object_sha256'],claim['receipt_sha256'],state,verified_inputs))
                 except HelperError as exc:
                     results.append({'capture_id':claim['capture_id'],'kind':claim['kind'],'accepted':False,'code':str(exc)})
             # Every new ACK file was fsynced before publication. These shared
