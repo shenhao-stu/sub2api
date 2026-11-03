@@ -20,6 +20,8 @@ import stat
 import subprocess
 import sys
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import uuid
 import zlib
 from dataclasses import dataclass
@@ -205,6 +207,7 @@ class Config:
     helper_path: str
     ssh_host: str = "netcup"
     max_objects: int = 100
+    workers: int = 1
     max_bytes: int = 1024 ** 3
     max_payload_bytes: int = 256 * 1024 ** 2
     max_raw_bytes: int = 128 * 1024 ** 2
@@ -221,6 +224,7 @@ class Config:
         for remote in [self.source_dir, self.helper_path]:
             require(isinstance(remote, str) and REMOTE_PATH_RE.fullmatch(remote), "unsafe_remote_path")
             require(".." not in remote.split("/") and remote != "/", "unsafe_remote_path")
+        require(type(self.workers) is int and 1 <= self.workers <= 8, "invalid_worker_limit")
         require(1 <= self.max_objects <= 1000 and 1 <= self.max_bytes <= 10 * 1024 ** 3, "invalid_run_limit")
         require(1 <= self.max_payload_bytes <= 512 * 1024 ** 2, "invalid_payload_limit")
         require(1 <= self.max_raw_bytes <= 512 * 1024 ** 2, "invalid_raw_limit")
@@ -247,10 +251,13 @@ class SSHTransport:
     @staticmethod
     def run(args, timeout=45, output_limit=2 * 1024 ** 2, file_size_limit=None):
         """Bound stdout/stderr while the child runs, including failed SSH responses."""
-        def limit_file():
-            resource.setrlimit(resource.RLIMIT_FSIZE,(file_size_limit,file_size_limit))
-        child = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
-                                 preexec_fn=limit_file if file_size_limit is not None else None)
+        if file_size_limit is not None:
+            # preexec_fn can deadlock after fork in a threaded archiver.
+            wrapper = ("import os,resource,sys;n=int(sys.argv[1]);"
+                       "resource.setrlimit(resource.RLIMIT_FSIZE,(n,n));"
+                       "os.execvp(sys.argv[2],sys.argv[2:])")
+            args = [sys.executable, "-c", wrapper, str(file_size_limit), *args]
+        child = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
         selector = selectors.DefaultSelector()
         selector.register(child.stdout, selectors.EVENT_READ, "out")
         selector.register(child.stderr, selectors.EVENT_READ, "err")
@@ -308,11 +315,30 @@ class Puller:
         self.now = now or utc_now()
         self.deadline = time.monotonic() + config.max_seconds
         self.fetched_bytes = 0
+        self.inflight_bytes = 0
+        self.state_lock = threading.RLock()
         self.namespace_bytes = 0
         self.reconciled = set()
         self.transport = transport
         self.result = {"status":"ok", "listed":0, "input_archived":0, "outcome_archived":0,
                        "acks_confirmed":0, "acks_pending":0, "expired":0, "errors":[], "bytes_fetched":0}
+
+    def increment(self, key):
+        with self.state_lock:
+            self.result[key] += 1
+
+    def record_error(self, value):
+        with self.state_lock:
+            self.result["errors"].append(value)
+
+    def process_bounded(self, item, captures):
+        try:
+            self.time_budget()
+            self.process(item, captures)
+        except ArchiveError as exc:
+            self.record_error({"capture_id":item["capture_id"],"code":str(exc)})
+        except Exception:
+            self.record_error({"capture_id":item["capture_id"],"code":"capture_transfer_failed"})
 
     def time_budget(self):
         left = self.deadline - time.monotonic()
@@ -378,17 +404,24 @@ class Puller:
             self.verify_file(destination, desc)
             return destination
         size = desc["bytes"]
-        if self.fetched_bytes + size > self.config.max_bytes:
-            raise LimitReached("run_byte_limit")
-        require(self.namespace_bytes + size <= self.config.max_namespace_bytes, "namespace_space_limit")
-        require(shutil.disk_usage(self.config.root).free - size >= self.config.min_free_bytes, "nas_free_space_limit")
+        with self.state_lock:
+            if self.fetched_bytes + size > self.config.max_bytes:
+                raise LimitReached("run_byte_limit")
+            require(self.namespace_bytes + size <= self.config.max_namespace_bytes, "namespace_space_limit")
+            require(shutil.disk_usage(self.config.root).free - size - self.inflight_bytes >= self.config.min_free_bytes,
+                    "nas_free_space_limit")
+            # Failed attempts can leave complete copies: retain their budget.
+            self.fetched_bytes += size
+            self.namespace_bytes += size
+            self.inflight_bytes += size
         pending = directory / ("." + desc["path"] + ".pending-" + uuid.uuid4().hex)
-        fd = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        os.close(fd)
-        # Count attempted transfer bytes too; failure may leave a complete remote copy.
-        self.fetched_bytes += size
-        self.namespace_bytes += size
-        self.transport.fetch(desc["path"], pending, self.time_budget(),size)
+        try:
+            fd = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            os.close(fd)
+            self.transport.fetch(desc["path"], pending, self.time_budget(),size)
+        finally:
+            with self.state_lock:
+                self.inflight_bytes -= size
         self.verify_file(pending,desc)
         fd = os.open(pending, os.O_RDONLY | os.O_NOFOLLOW)
         try: os.fsync(fd)
@@ -479,20 +512,20 @@ class Puller:
             # Read-only observation is the only permitted recovery after intent.
             status = self.transport.ack_status(cid,kind)
             if status == expected:
-                atomic_json(done,expected); self.result["acks_confirmed"] += 1
+                atomic_json(done,expected); self.increment("acks_confirmed")
             else:
-                self.result["acks_pending"] += 1
-                self.result["errors"].append({"capture_id":cid,"code":"ack_status_absent_or_conflicting"})
+                self.increment("acks_pending")
+                self.record_error({"capture_id":cid,"code":"ack_status_absent_or_conflicting"})
             return
         atomic_json(intent,expected)
         try:
             status = self.transport.ack(cid,kind,object_sha,receipt_sha)
             require(status == expected,"uncertain_ack_response")
-            atomic_json(done,expected); self.result["acks_confirmed"] += 1
+            atomic_json(done,expected); self.increment("acks_confirmed")
         except Exception:
-            self.result["acks_pending"] += 1
+            self.increment("acks_pending")
             # Do not serialize transport stderr or remote body; report a fixed code.
-            self.result["errors"].append({"capture_id":cid,"code":"ack_outcome_unknown"})
+            self.record_error({"capture_id":cid,"code":"ack_outcome_unknown"})
 
     def reconcile(self,captures):
         """Resolve durable local intents even after source GC stops listing them."""
@@ -550,7 +583,7 @@ class Puller:
             self.verify_raw(header_path,manifest,headers=True)
         input_receipt = directory / (cid + ".input-receipt.json")
         atomic_json(input_receipt,self.input_receipt(cid,manifest,item["input"]["sha256"]))
-        self.result["input_archived"] += 1
+        self.increment("input_archived")
         self.acknowledge(directory,cid,"input",item["input"]["sha256"],input_receipt)
         if item.get("outcome") is not None:
             outcome_path = self.fetch(directory,item["outcome"])
@@ -563,7 +596,7 @@ class Puller:
             receipt = directory / (cid + ".outcome-receipt.json")
             atomic_json(receipt,{"schema_version":1,"group_id":self.config.group_id,"capture_id":cid,
                                 "outcome_sha256":item["outcome"]["sha256"],"input_sha256":item["input"]["sha256"]})
-            self.result["outcome_archived"] += 1
+            self.increment("outcome_archived")
             self.acknowledge(directory,cid,"outcome",item["outcome"]["sha256"],receipt)
 
     def expire(self,captures):
@@ -657,14 +690,8 @@ class Puller:
             items=self.validate_listing(listing); self.result["listed"]=len(items)
             self.source_rejections(listing,"list")
             self.reconcile(root/"captures")
-            for item in items:
-                try: self.process(item,root/"captures")
-                except LimitReached as exc:
-                    self.result["errors"].append({"code":str(exc)}); break
-                except ArchiveError as exc:
-                    self.result["errors"].append({"capture_id":item["capture_id"],"code":str(exc)})
-                except Exception:
-                    self.result["errors"].append({"capture_id":item["capture_id"],"code":"capture_transfer_failed"})
+            with ThreadPoolExecutor(max_workers=self.config.workers) as pool:
+                list(pool.map(lambda item:self.process_bounded(item,root/"captures"),items))
             try:
                 self.time_budget()
                 collection=self.transport.gc()
@@ -677,7 +704,10 @@ class Puller:
                 self.source_rejections(collection,"gc")
             except Exception:
                 self.result["errors"].append({"code":"source_gc_unconfirmed"})
-            self.expire(root/"captures")
+            try:
+                self.expire(root/"captures")
+            except LimitReached:
+                self.result["errors"].append({"code":"retention_deferred_time_limit"})
             self.result["bytes_fetched"]=self.fetched_bytes
             if self.result["errors"] or self.result["acks_pending"]: self.result["status"]="pending"
             state=root/".run"/("run-"+utc_now().strftime("%Y%m%dT%H%M%S")+"-"+uuid.uuid4().hex+".json")
