@@ -236,6 +236,12 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		if err != nil {
 			return nil, fmt.Errorf("remove empty messages from responses-shape body: %w", err)
 		}
+		// Both downstream modes consume Responses SSE; clientStream controls
+		// whether that stream is forwarded or buffered into one Chat JSON reply.
+		responsesBody, err = sjson.SetBytes(responsesBody, "stream", true)
+		if err != nil {
+			return nil, fmt.Errorf("enable upstream stream in responses-shape body: %w", err)
+		}
 		// Strip Responses API parameters that no Codex upstream accepts.
 		// Because this branch forwards the raw body (the normal path rebuilds
 		// it from ChatCompletionsRequest and drops unknown fields naturally),
