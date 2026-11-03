@@ -19,3 +19,5 @@ For an existing live installation, replace compatible source and NAS readers fir
 Run `python3 -m unittest -v test_nas_archive.py test_source_helper.py` in this directory. Synthetic test data contains no customer requests.
 
 ACK state is stored in the fixed root-owned helper installation directory, outside the producer data bind. Backend startup may recursively repair ownership inside `/app/data`; it cannot change the authoritative ACK receipts. Legacy in-data state is never adopted automatically. A lock-only legacy directory may be preserved during an explicitly reviewed helper migration; any real legacy ACK requires separate reconciliation before switching.
+
+Continuous mode is explicitly opt-in with `--continuous`. It replaces the old five-minute start interval for an authorized existing service, with progress-driven bounded batches and idle/error backoff. Use the updated exact-CID source cleanup after confirmed terminal archives; preserve the NAS 30-day policy. See the protocol's continuous backlog recovery section for the updated ACK and local-retention rules.
