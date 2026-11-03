@@ -1891,3 +1891,98 @@ func TestGPT61SolOnlyChatFallbackRejectsToolsAndDisabledReasoning(t *testing.T) 
 		}
 	}
 }
+
+// Responses-shaped clients may serialize an unused Chat messages field. The
+// effective input must survive the real gateway route, including tool history.
+func TestForwardAsChatCompletions_ResponsesInputWithEmptyMessages(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	inputs := map[string]string{
+		"text":         `"synthetic input"`,
+		"tool_history": `[{"role":"user","content":"synthetic input"},{"type":"function_call","call_id":"call_synthetic","name":"clock","arguments":"{}"},{"type":"function_call_output","call_id":"call_synthetic","output":"synthetic result"}]`,
+	}
+	for _, messages := range []struct{ name, field string }{
+		{"absent", ""},
+		{"null", `,"messages":null`},
+		{"empty", `,"messages":[]`},
+	} {
+		for name, input := range inputs {
+			t.Run(messages.name+"/"+name, func(t *testing.T) {
+				body := []byte(`{"model":"gemini-4-argon","stream":false,"instructions":"synthetic instructions","input":` + input + messages.field + `}`)
+				rec := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(rec)
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+				payload := "data: " + `{"type":"response.completed","response":{"id":"resp_synthetic","status":"completed","model":"ultra/gemini-4-argon-high","output":[{"type":"message","content":[{"type":"output_text","text":"synthetic answer"}]}],"usage":{"input_tokens":100,"output_tokens":13,"input_tokens_details":{"cached_tokens":90}}}}` + "\n\n"
+				upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(payload))}}
+				svc := &OpenAIGatewayService{cfg: structuredInputRetryTestConfig(), httpUpstream: upstream}
+				account := structuredInputRetryTestAccount()
+				account.Credentials["model_mapping"] = map[string]any{"gemini-4-argon": "ultra/gemini-4-argon-high"}
+				result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+				require.NoError(t, err)
+				require.Len(t, upstream.requests, 1, "one client request must produce only one upstream request")
+				require.Equal(t, "/v1/responses", upstream.requests[0].URL.Path)
+				require.JSONEq(t, input, gjson.GetBytes(upstream.bodies[0], "input").Raw)
+				require.Equal(t, "synthetic instructions", gjson.GetBytes(upstream.bodies[0], "instructions").String())
+				require.Equal(t, "ultra/gemini-4-argon-high", gjson.GetBytes(upstream.bodies[0], "model").String())
+				require.False(t, gjson.GetBytes(upstream.bodies[0], "messages").Exists())
+				require.NotNil(t, result)
+				require.Equal(t, 100, result.Usage.InputTokens)
+				require.Equal(t, 13, result.Usage.OutputTokens)
+				require.Equal(t, 90, result.Usage.CacheReadInputTokens)
+			})
+		}
+	}
+}
+
+func TestForwardAsChatCompletions_ResponsesInputDoesNotOverrideChatMessages(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name, messages string
+		invalid        bool
+	}{
+		{"chat_history", `[{"role":"user","content":"synthetic Chat input"}]`, false},
+		{"empty_string", `""`, true},
+		{"object", `{}`, true},
+		{"number", `0`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"model":"gemini-4-argon","stream":false,"input":"unused Responses input","messages":` + tc.messages + `}`)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+			payload := "data: " + `{"type":"response.completed","response":{"id":"resp_synthetic","status":"completed","model":"gemini-4-argon","output":[{"type":"message","content":[{"type":"output_text","text":"synthetic answer"}]}],"usage":{"input_tokens":100,"output_tokens":13}}}` + "\n\n"
+			upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(payload))}}
+			svc := &OpenAIGatewayService{cfg: structuredInputRetryTestConfig(), httpUpstream: upstream}
+			_, err := svc.ForwardAsChatCompletions(context.Background(), c, structuredInputRetryTestAccount(), body, "", "")
+			if tc.invalid {
+				require.Error(t, err)
+				require.Empty(t, upstream.requests, "invalid Chat messages cannot bypass validation by supplying input")
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, upstream.requests, 1)
+			require.Contains(t, string(upstream.bodies[0]), "synthetic Chat input")
+			require.NotContains(t, string(upstream.bodies[0]), "unused Responses input")
+		})
+	}
+}
+
+func TestForwardAsChatCompletions_EmptyResponsesInputPreservesValidation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, input := range []string{`null`, `[]`, `""`} {
+		t.Run(input, func(t *testing.T) {
+			body := []byte(`{"model":"gemini-4-argon","messages":[],"input":` + input + `}`)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+			upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 400, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","param":"input","message":"synthetic invalid input"}}`))}}
+			svc := &OpenAIGatewayService{cfg: structuredInputRetryTestConfig(), httpUpstream: upstream}
+			result, err := svc.ForwardAsChatCompletions(context.Background(), c, structuredInputRetryTestAccount(), body, "", "")
+			require.Error(t, err)
+			require.Nil(t, result, "a rejected request has no fabricated final usage")
+			require.Len(t, upstream.requests, 1, "validation failure must not replay a request")
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Contains(t, rec.Body.String(), "synthetic invalid input")
+			require.JSONEq(t, input, gjson.GetBytes(upstream.bodies[0], "input").Raw, "empty input must not be replaced with invented user text")
+		})
+	}
+}
