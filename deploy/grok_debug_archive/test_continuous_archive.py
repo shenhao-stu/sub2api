@@ -4,6 +4,7 @@ import datetime as dt
 import gzip
 import json
 import os
+import uuid
 from unittest import mock
 
 import source_helper as source
@@ -12,6 +13,25 @@ from test_source_helper import SourceBehavior, LocalTransport, NOW
 
 
 class ContinuousArchive(SourceBehavior):
+    def test_backlog_above_old_capture_cap_still_lists_and_exact_collects(self):
+        ids=[self.producer.add(outcome=True,headers={'X-Trace':['kept']})for _ in range(5)]
+        with mock.patch.object(source,'MAX_SCAN',2):
+            with self.store()as store:
+                listed=store.list(5,1024**3)
+            self.assertEqual({x['capture_id']for x in listed['items']},set(ids))
+            for cid in ids:self.both(cid)
+            self.producer.put(ids[-1]+'.request.partial',b'preserve')
+            self.assertEqual(self.gc(capture_ids=ids)['deleted'],4)
+            self.assertTrue((self.root/(ids[-1]+'.input.json')).exists())
+
+    def test_completed_ack_tombstones_cannot_stop_new_capture(self):
+        old=[self.producer.add(outcome=True)for _ in range(6)]
+        for cid in old:self.both(cid)
+        self.assertEqual(self.gc(capture_ids=old)['deleted'],6)
+        live=self.producer.add(outcome=True)
+        with mock.patch.object(source,'MAX_SCAN',2):
+            self.assertEqual([x['capture_id']for x in self.listing()['items']],[live])
+
     def test_large_namespace_reads_only_bounded_metadata_and_advances(self):
         for i in range(10000):
             cid=f'00000000-0000-4000-8000-{i:012x}'
@@ -25,6 +45,56 @@ class ContinuousArchive(SourceBehavior):
         with self.store() as store:
             batch=store.list(5,1024**3,'00000000-0000-4000-8000-00000000270f')
             self.assertEqual([x['capture_id']for x in batch['items']],[valid])
+
+    def test_uuid_cursor_revisits_active_late_outcome_and_new_lower_id(self):
+        low='00000000-0000-4000-8000-000000000001'
+        high='ffffffff-ffff-4fff-8fff-ffffffffffff'
+        with mock.patch.object(source.uuid,'uuid4',return_value=uuid.UUID(low)):
+            active=self.producer.add();self.ack(active,'input')
+        with mock.patch.object(source.uuid,'uuid4',return_value=uuid.UUID(high)):
+            other=self.producer.add(outcome=True)
+        with self.store()as store:page=store.list(1,1024**3)
+        self.assertEqual([x['capture_id']for x in page['items']],[other])
+        self.producer.finish(active)
+        with self.store()as store:again=store.list(1,1024**3,page['next_cursor'])
+        self.assertEqual([x['capture_id']for x in again['items']],[active])
+
+    def test_bad_high_uuid_outcomes_cannot_starve_lower_new_input(self):
+        low='00000000-0000-4000-8000-000000000001'
+        with mock.patch.object(source.uuid,'uuid4',return_value=uuid.UUID(low)):valid=self.producer.add(outcome=True)
+        for i in range(16):
+            cid=f'ffffffff-ffff-4fff-8fff-{i:012x}'
+            with mock.patch.object(source.uuid,'uuid4',return_value=uuid.UUID(cid)):self.producer.add(outcome=True)
+            self.ack(cid,'input');self.producer.put(cid+'.request.gz',b'corrupt')
+        with self.store()as store:page=store.list(1,1024**3)
+        self.assertEqual([x['capture_id']for x in page['items']],[valid])
+
+    def test_100261_names_keep_one_page_not_whole_namespace(self):
+        import tracemalloc
+        def names():
+            for i in range(100261):yield f'00000000-0000-4000-8000-{i:012x}'
+        tracemalloc.start()
+        try:
+            with self.store()as store,mock.patch.object(store,'names',side_effect=names):
+                page=store.list(1,1024**3)
+            _,peak=tracemalloc.get_traced_memory()
+        finally:tracemalloc.stop()
+        self.assertEqual(page['scanned'],16);self.assertTrue(page['more'])
+        self.assertLess(peak,2*1024**2)
+
+    def test_cursor_wrap_uses_one_complete_namespace_scan(self):
+        valid=self.producer.add(outcome=True)
+        with self.store()as store,mock.patch.object(store,'names',wraps=store.names)as scan:
+            page=store.list(1,1024**3,'ffffffff-ffff-4fff-bfff-ffffffffffff')
+        self.assertEqual(scan.call_count,1)
+        self.assertEqual([x['capture_id']for x in page['items']],[valid])
+
+    def test_unfinished_name_scan_does_not_return_partial_cursor(self):
+        def names():
+            yield '00000000-0000-4000-8000-000000000001'
+            raise source.HelperError('helper_time_limit')
+        with self.store()as store,mock.patch.object(store,'names',side_effect=names):
+            with self.assertRaisesRegex(source.HelperError,'helper_time_limit'):store.list(1,1024**3)
 
     def test_exact_cleanup_requires_terminal_two_acks_hashes_and_private_files(self):
         terminal=self.producer.add(outcome=True,headers={'Authorization':['[REDACTED]'],'X-Trace':['a','b']})
