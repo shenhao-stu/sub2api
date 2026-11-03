@@ -54,8 +54,12 @@ func TestUsageReceiptPostgresScopesRecordedUsage(t *testing.T) {
 		output int
 		model  string
 	}{{11, 64000, "model-a"}, {22, 7, "model-b"}, {11, 1, "must-not-overwrite"}} {
-		err = repo.SaveUsageReceipt(ctx, entry.key, &service.UsageReceipt{RequestID: id, Model: entry.model, OutputTokens: entry.output, RecordedAt: time.Now()})
-		if err != nil {
+		err = repo.SaveUsageReceipt(ctx, entry.key, &service.UsageReceipt{Object: "sub2api.usage_receipt", Version: 1, Source: "wire_final", RequestID: id, Model: entry.model, OutputTokens: entry.output, RecordedAt: time.Now(), BillingMode: "token", InboundEndpoint: "/v1/messages"})
+		if entry.model == "must-not-overwrite" {
+			if !errors.Is(err, service.ErrChatReceiptConflict) {
+				t.Fatalf("conflicting final must fail explicitly: %v", err)
+			}
+		} else if err != nil {
 			t.Fatal(err)
 		}
 	}
