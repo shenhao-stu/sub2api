@@ -419,6 +419,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			})
 		}
 
+		if s.isAnthropicConsumedResponse(c, account, resp) {
+			defer resp.Body.Close()
+			return s.handleErrorResponse(ctx, resp, c, account, reqModel)
+		}
 		if result, err, handled := s.handleContentRefusalResponse(c, account, resp, parsed.Model, reqModel, reqStream, startTime); handled {
 			return result, err
 		}
@@ -480,6 +484,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 							return s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, tlsProfile)
 						})
 						if retryErr == nil {
+							if s.isAnthropicConsumedResponse(c, account, retryResp) {
+								defer retryResp.Body.Close()
+								return s.handleErrorResponse(ctx, retryResp, c, account, reqModel)
+							}
 							if retryResp.StatusCode < 400 {
 								// 重试请求被上游接受后同步 ParsedRequest，保证 usage/日志看到真实请求体。
 								lastWireBody = retryWireBody
@@ -525,6 +533,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 											return s.httpUpstream.DoWithTLS(retryReq2, proxyURL, account.ID, account.Concurrency, tlsProfile)
 										})
 										if retryErr2 == nil {
+											if s.isAnthropicConsumedResponse(c, account, retryResp2) {
+												defer retryResp2.Body.Close()
+												return s.handleErrorResponse(ctx, retryResp2, c, account, reqModel)
+											}
 											if retryResp2.StatusCode < 400 {
 												// 二阶段工具块降级成功时也必须更新当前 body。
 												lastWireBody = retryWireBody2

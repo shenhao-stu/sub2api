@@ -137,6 +137,10 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			})
 		}
 
+		if s.isAnthropicConsumedResponse(c, account, resp) {
+			defer resp.Body.Close()
+			return s.handleErrorResponse(ctx, resp, c, account, input.RequestModel)
+		}
 		if result, err, handled := s.handleContentRefusalResponse(c, account, resp, input.OriginalModel, input.RequestModel, input.RequestStream, input.StartTime); handled {
 			return result, err
 		}
