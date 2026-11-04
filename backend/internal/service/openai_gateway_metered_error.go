@@ -131,7 +131,11 @@ func (s *OpenAIGatewayService) handleMeteredOpenAIHTTPError(ctx context.Context,
 	clientBody = openAIMeteredErrorMetadata(c, clientBody)
 	if compactCommitted || (c.Writer.Written() && strings.HasPrefix(c.Writer.Header().Get("Content-Type"), "text/event-stream")) {
 		errorBody["status_code"] = resp.StatusCode
-		MarkOpsStreamError(c, errorType, message, resp.StatusCode)
+		if strings.HasSuffix(path, "/chat/completions") {
+			MarkOpsStreamFailure(c, errorType, extractUpstreamErrorCode(responseBody), message, resp.StatusCode)
+		} else {
+			MarkOpsStreamError(c, errorType, message, resp.StatusCode)
+		}
 		// A queue or compact heartbeat has already committed HTTP 200. Finish
 		// its existing SSE protocol, retaining the real upstream error and usage.
 		event := ""

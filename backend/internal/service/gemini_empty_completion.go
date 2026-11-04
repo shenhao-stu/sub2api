@@ -99,7 +99,7 @@ func (d geminiChatDelivery) reject(c *gin.Context, account *Account, requestID s
 	StopOpenAICompactSSEKeepaliveCommitted(c)
 	MarkResponseCommitted(c)
 	if c.Writer.Written() && strings.HasPrefix(c.Writer.Header().Get("Content-Type"), "text/event-stream") {
-		MarkOpsStreamError(c, "upstream_error", message, http.StatusBadGateway)
+		MarkOpsStreamFailure(c, "upstream_error", "upstream_empty_completion", message, http.StatusBadGateway)
 		data, _ := json.Marshal(body)
 		_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", data)
 		c.Writer.Flush()

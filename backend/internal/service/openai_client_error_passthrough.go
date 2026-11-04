@@ -124,7 +124,7 @@ func writeOpenAIErrorFields(c *gin.Context, fields openAIClientErrorFields, stre
 	if streamStarted || c.Writer.Written() {
 		MarkOpsStreamErrorValue(c, OpsStreamError{
 			ErrType: fields.Type, Code: fields.Code, Message: fields.Message, IntendedStatus: status,
-			NonStream: !streamStarted,
+			NonStream: !streamStarted, CountTowardsSLA: strings.HasSuffix(path, "/chat/completions"),
 		})
 	}
 	if streamStarted {
