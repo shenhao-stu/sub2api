@@ -415,7 +415,8 @@ class Puller:
         self.prefetched = {}
         self.transport = transport
         self.result = {"status":"ok", "listed":0, "input_archived":0, "outcome_archived":0,
-                       "acks_confirmed":0, "acks_pending":0, "expired":0, "errors":[], "bytes_fetched":0}
+                       "acks_confirmed":0, "acks_pending":0, "expired":0, "errors":[], "bytes_fetched":0,
+                       "retention_pending_inputs":0}
 
     def increment(self, key):
         with self.state_lock:
@@ -770,6 +771,20 @@ class Puller:
             if all((directory/(cid+"."+kind+"-ack.done.json")).exists() for kind in ["input","outcome"]):
                 with self.state_lock: self.gc_ready.add(cid)
 
+    def pending_input_only(self, directory, cid):
+        """Recognize uncommitted downloads, without trusting or adopting bytes."""
+        found = False
+        pattern = re.compile(r'\.' + re.escape(cid) + r'\.input\.json\.pending-[a-f0-9]{32}\Z')
+        for path in directory.iterdir():
+            self.time_budget()
+            # A canonical artifact, receipt/ACK or unknown file must retain the
+            # existing missing-manifest alarm; it is not a fresh partial input.
+            if not pattern.fullmatch(path.name):
+                return False
+            require(regular(path).st_size <= 65536, "metadata_too_large")
+            found = True
+        return found
+
     def expire(self,captures):
         cutoff = self.now - dt.timedelta(days=30)
         allowed_suffixes = {".input.json",".request.gz",".outcome.json",".input-receipt.json",".outcome-receipt.json",
@@ -795,7 +810,11 @@ class Puller:
             cid = canonical_id(directory.name)
             try:
                 private_dir(directory)
-                manifest = self.input_manifest(directory / (cid+".input.json"),cid)
+                input_path = directory / (cid+".input.json")
+                if not input_path.exists() and not input_path.is_symlink() and self.pending_input_only(directory,cid):
+                    self.result["retention_pending_inputs"] += 1
+                    continue
+                manifest = self.input_manifest(input_path,cid)
                 if parse_time(manifest["captured_at"]) >= cutoff: continue
                 capture_suffixes = allowed_suffixes | ({".headers.gz"} if manifest["schema_version"] == 2 else set())
                 children=list(directory.iterdir())
@@ -886,7 +905,8 @@ class Puller:
             except LimitReached:
                 self.result["errors"].append({"code":"retention_deferred_time_limit"})
             self.result["bytes_fetched"]=self.fetched_bytes
-            if self.result["errors"] or self.result["acks_pending"]: self.result["status"]="pending"
+            if self.result["errors"] or self.result["acks_pending"] or self.result["retention_pending_inputs"]:
+                self.result["status"]="pending"
             state=root/".run"/("run-"+utc_now().strftime("%Y%m%dT%H%M%S")+"-"+uuid.uuid4().hex+".json")
             atomic_json(state,self.result)
             return self.result
