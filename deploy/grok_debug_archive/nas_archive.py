@@ -105,6 +105,50 @@ def regular(path):
     return info
 
 
+def namespace_size(root, time_budget):
+    total = 0
+    # Keep only the current directory depth; fd-relative opens cannot follow a swapped link.
+    stack = []
+
+    def descend(name, parent_fd=None):
+        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        try:
+            entries = os.scandir(fd)
+        except BaseException:
+            os.close(fd)
+            raise
+        stack.append((fd, entries))
+
+    try:
+        time_budget()
+        descend(root)
+        while stack:
+            time_budget()
+            fd, entries = stack[-1]
+            entry = next(entries, None)
+            if entry is None:
+                entries.close()
+                os.close(fd)
+                stack.pop()
+                continue
+            if entry.is_symlink():
+                code = "symlink_in_namespace" if entry.is_dir() else "unsafe_namespace_object"
+                raise ArchiveError(code)
+            if entry.is_dir(follow_symlinks=False):
+                descend(entry.name, fd)
+                continue
+            info = entry.stat(follow_symlinks=False)
+            if stat.S_ISREG(info.st_mode):
+                total += info.st_size
+            elif not stat.S_ISSOCK(info.st_mode):
+                raise ArchiveError("unsafe_namespace_object")
+    finally:
+        for fd, entries in reversed(stack):
+            entries.close()
+            os.close(fd)
+    return total
+
+
 def private_dir(path, create=False):
     require(path.is_absolute(), "relative_local_root")
     # Check the configured path, including its parents, before following anything.
@@ -803,15 +847,7 @@ class Puller:
                         "helper_path":self.config.helper_path})
             # Count existing files, including failed pending transfers, before admitting
             # more data. Never follow symlinks while computing the namespace budget.
-            for base,dirs,files in os.walk(root,followlinks=False):
-                self.time_budget()
-                for name in dirs:
-                    require(not (Path(base)/name).is_symlink(),"symlink_in_namespace")
-                for name in files:
-                    path=Path(base)/name
-                    info=path.lstat()
-                    if stat.S_ISREG(info.st_mode): self.namespace_bytes+=info.st_size
-                    elif not stat.S_ISSOCK(info.st_mode): raise ArchiveError("unsafe_namespace_object")
+            self.namespace_bytes = namespace_size(root, self.time_budget)
             self.transport=self.transport or SSHTransport(self.config,self.deadline-self.cleanup_reserve)
             listing=self.transport.manifest_list()
             items=self.validate_listing(listing); self.result["listed"]=len(items)
