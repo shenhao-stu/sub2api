@@ -96,8 +96,10 @@ func (d geminiChatDelivery) reject(c *gin.Context, account *Account, requestID s
 	setOpsUpstreamError(c, http.StatusOK, message, "")
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{Platform: account.Platform, AccountID: account.ID, AccountName: account.Name, UpstreamStatusCode: http.StatusOK, UpstreamRequestID: requestID, Kind: "http_error", Message: message})
 	body := openAIMeteredErrorMetadata(c, openAIErrorBodyWithUsage(gin.H{"error": gin.H{"type": "upstream_error", "code": "upstream_empty_completion", "status_code": http.StatusBadGateway, "message": message, "finish_reason": d.finish, "native_finish_reason": d.native}}, usage))
+	StopOpenAICompactSSEKeepaliveCommitted(c)
 	MarkResponseCommitted(c)
 	if c.Writer.Written() && strings.HasPrefix(c.Writer.Header().Get("Content-Type"), "text/event-stream") {
+		MarkOpsStreamError(c, "upstream_error", message, http.StatusBadGateway)
 		data, _ := json.Marshal(body)
 		_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", data)
 		c.Writer.Flush()

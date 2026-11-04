@@ -56,6 +56,22 @@ func StartOpenAICompactSSEKeepalive(c *gin.Context, interval time.Duration) func
 // 心跳字节由 OpenAICompactKeepaliveAdjustedWrittenSize 统一排除，因此不会污染
 // "是否已向客户端写出语义响应"的 failover 判定（见 #3887）。
 func startOpenAISSEKeepalive(c *gin.Context, interval time.Duration) func() {
+	return startOpenAISSEKeepaliveFrom(c, interval, nil)
+}
+
+// Raw Chat may fail over before any semantic output. Retain the committed
+// transport state and all prior heartbeat bytes across those attempts.
+func resumeOpenAIRawChatSSEKeepalive(c *gin.Context, interval time.Duration) func() {
+	var previous *openAICompactSSEKeepalive
+	if c != nil {
+		if value, ok := c.Get(openAICompactSSEKeepaliveKey); ok {
+			previous, _ = value.(*openAICompactSSEKeepalive)
+		}
+	}
+	return startOpenAISSEKeepaliveFrom(c, interval, previous)
+}
+
+func startOpenAISSEKeepaliveFrom(c *gin.Context, interval time.Duration, previous *openAICompactSSEKeepalive) func() {
 	if c == nil || c.Writer == nil || interval <= 0 {
 		return func() {}
 	}
@@ -63,6 +79,12 @@ func startOpenAISSEKeepalive(c *gin.Context, interval time.Duration) func() {
 	k := &openAICompactSSEKeepalive{
 		writer: originalWriter,
 		stop:   make(chan struct{}),
+	}
+	if previous != nil {
+		previous.mu.Lock()
+		previous.markStoppedLocked()
+		k.started, k.bytes = previous.started, previous.bytes
+		previous.mu.Unlock()
 	}
 	c.Set(openAICompactSSEKeepaliveKey, k)
 	wrappedWriter := &openAICompactKeepaliveWriter{ResponseWriter: originalWriter, k: k}
