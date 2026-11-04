@@ -42,3 +42,23 @@ separately reviewed installation at the job's lock boundary; this source change
 does not change a running job, launchd timer, or production configuration. Validate
 at least one completed new round with scan/elapsed timings, confirmed ACKs and
 verified source-GC counters after installation.
+
+`max_pages_per_run` defaults to 1 and may explicitly be set to 2. Both pages share
+one complete namespace scan, the same lock and hard deadline, and one total byte
+budget. Each source page and exact-ID GC call still has at most `max_objects`
+captures (up to 1000); ACK batches, transfer batches and workers are unchanged.
+The two-page mode also reserves 512 KiB per admitted capture for receipt/ACK
+metadata, in addition to payload admission, against namespace and free-space
+limits. This reservation is conservative and never credited back within the run.
+
+Page two is admitted only after page one completes without errors, pending ACKs
+or incomplete GC, and the remaining work window is at least the larger of 90
+seconds and the first page's measured duration plus 45 seconds. Already admitted
+UUIDs are excluded, and both pages' descriptor bytes must fit the one run limit.
+An unfinished page does not advance its cursor in this mode. No namespace count
+is reused across runs, no ACK or uncertain GC is retried within a run, and terminal
+dual-ACK/hash checks and 30-day retention remain unchanged. `pages_completed`,
+`page_duplicates_skipped` and `next_page_deferred` explain page progress; an
+unconfirmed second-page operation preserves the first page's confirmed counters.
+Install compatible code before adding the new config field, at the existing lock
+boundary, and retain the exact previous code/config for rollback.
