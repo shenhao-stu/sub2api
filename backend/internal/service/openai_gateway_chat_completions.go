@@ -1520,13 +1520,9 @@ func writeChatCompletionsError(c *gin.Context, statusCode int, errType, message 
 }
 
 func writeChatCompletionsErrorWithUsage(c *gin.Context, statusCode int, errType, message string, usage ...*OpenAIUsage) {
-	MarkResponseCommitted(c)
-	c.JSON(statusCode, openAIMeteredErrorMetadata(c, openAIErrorBodyWithUsage(gin.H{
-		"error": gin.H{
-			"type":    errType,
-			"message": message,
-		},
-	}, usage...)))
+	writeOpenAIErrorFields(c, openAIClientErrorFields{
+		Type: errType, Message: message, StatusCode: statusCode,
+	}, false, usage...)
 }
 
 // buildChatStreamErrorSSE builds one SSE data frame carrying an OpenAI chat

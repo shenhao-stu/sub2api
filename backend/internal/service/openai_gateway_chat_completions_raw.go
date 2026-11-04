@@ -216,6 +216,13 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletionsWithStartTime(
 	// the outbound request (for example GLM xhigh is forwarded as max).
 	reasoningEffort := extractOpenAIReasoningEffortFromBody(upstreamBody, upstreamModel, billingModel, originalModel)
 	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, upstreamBody, upstreamModel)
+	if clientStream && s.cfg != nil {
+		// Receipt negotiation is known before dispatch and must precede any
+		// heartbeat that can commit the downstream response headers.
+		writeChatReceiptAck(c)
+		stopKeepalive := resumeOpenAIRawChatSSEKeepalive(c, time.Duration(s.cfg.Gateway.StreamKeepaliveInterval)*time.Second)
+		defer stopKeepalive()
+	}
 	resp, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, upstreamBody, clientStream, token, customUA, grokCacheIdentity)
 	if err != nil {
 		return nil, err
@@ -322,8 +329,19 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		observer = beginUpstreamResponseModelObservation(c)
 	}
 	requestID := resp.Header.Get("x-request-id")
+	finishDrain := boundDisconnectedResponseDrain(c.Request.Context(), resp.Body)
+	defer finishDrain()
 	writeStreamHeaders := s.newStreamHeaderWriter(c, resp.Header)
 	scanner := s.newUpstreamSSEScanner(resp.Body)
+	// Transfer sole writer ownership from the header-wait heartbeat to this
+	// stream loop. Heartbeat bytes stay excluded from semantic-output checks.
+	StopOpenAICompactSSEKeepaliveCommitted(c)
+	keepaliveInterval := time.Duration(0)
+	if s.cfg != nil {
+		keepaliveInterval = time.Duration(s.cfg.Gateway.StreamKeepaliveInterval) * time.Second
+	}
+	lastWriteAt := time.Now()
+	downstreamFrameOpen := false
 
 	var usage OpenAIUsage
 	var firstTokenMs *int
@@ -384,8 +402,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	scanErr := scanOpenAIChatLines(scanner, keepaliveInterval, func(line string) {
 		refusalDetector.ObserveSSELine(line)
 		if payload, ok := extractOpenAISSEDataLine(line); ok {
 			gemini.observe([]byte(payload))
@@ -414,16 +431,32 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			observeRawChatReceipt(c, []byte(payload), true)
 		}
 		writeLine(line)
-		if line == "" {
-			if !clientDisconnected && clientOutputStarted {
-				c.Writer.Flush()
-			}
-			continue
-		}
 		if !clientDisconnected && clientOutputStarted {
 			c.Writer.Flush()
+			lastWriteAt = time.Now()
+			downstreamFrameOpen = line != ""
 		}
-	}
+	}, func() {
+		if c.Request.Context().Err() != nil {
+			clientDisconnected = true
+		}
+		if clientDisconnected || terminal.sawDone || time.Since(lastWriteAt) < keepaliveInterval {
+			return
+		}
+		writeStreamHeaders()
+		comment := ": keepalive\n\n"
+		if downstreamFrameOpen {
+			comment = ": keepalive\n"
+		}
+		n, err := c.Writer.WriteString(comment)
+		recordOpenAIStreamKeepaliveBytes(c, n)
+		if err != nil {
+			clientDisconnected = true
+			return
+		}
+		c.Writer.Flush()
+		lastWriteAt = time.Now()
+	})
 
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
@@ -444,7 +477,6 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 	}
 
-	scanErr := scanner.Err()
 	if handleGrokFirstSemanticTimeout(c, account, scanErr, &usage) {
 		return resultWithUsage(), scanErr
 	}
