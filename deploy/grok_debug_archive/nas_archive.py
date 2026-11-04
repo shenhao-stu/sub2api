@@ -263,6 +263,7 @@ class Config:
     max_retention_deletes: int = 100
     max_namespace_bytes: int = 32 * 1024 ** 3
     max_retention_scan: int = 1000
+    max_pages_per_run: int = 1
 
     def validate(self):
         require(self.root.is_absolute() and self.root.name == "netcup-grok-test", "wrong_namespace")
@@ -279,6 +280,7 @@ class Config:
         require(0 <= self.max_retention_deletes <= 1000, "invalid_retention_limit")
         require(self.max_payload_bytes <= self.max_namespace_bytes <= 1024 ** 4, "invalid_namespace_limit")
         require(1 <= self.max_retention_scan <= 10000,"invalid_retention_scan_limit")
+        require(type(self.max_pages_per_run) is int and 1 <= self.max_pages_per_run <= 2,"invalid_page_limit")
 
 
 class SSHTransport:
@@ -877,38 +879,79 @@ class Puller:
             self.namespace_bytes = namespace_size(root, self.time_budget)
             self.result['namespace_scan_seconds'] = round(time.monotonic()-scan_started, 3)
             self.transport=self.transport or SSHTransport(self.config,self.deadline-self.cleanup_reserve)
-            listing=self.transport.manifest_list()
-            items=self.validate_listing(listing); self.result["listed"]=len(items)
-            self.source_rejections(listing,"list")
+            if self.config.max_pages_per_run>1:
+                require(all(hasattr(self.transport,name) for name in ['fetch_batch','ack_batch','gc_confirmed']),'two_page_transport_unsupported')
             # Reprocess listed intents after verifying their files. Scanning all
             # historic intents first can consume the whole transfer window.
             if not hasattr(self.transport,'ack_batch'):self.reconcile(root/"captures")
-            for offset in range(0,len(items),128):
-                try:self.process_batch(items[offset:offset+128],root/'captures')
-                except ArchiveError as exc:
-                    self.record_error({'code':str(exc)});break
-            try:
-                self.cleanup_reserve = 0
-                if isinstance(self.transport,SSHTransport): self.transport.deadline=self.deadline
-                self.time_budget()
-                if hasattr(self.transport,"gc_confirmed"):
-                    collection=(self.transport.gc_confirmed(sorted(self.gc_ready)) if self.gc_ready else
-                                {"schema_version":1,"group_id":self.config.group_id,"deleted":0,"deleted_bytes":0})
-                else:
-                    collection=self.transport.gc()
-                require(collection.get("schema_version")==1 and collection.get("group_id")==self.config.group_id,
-                        "wrong_source_gc_identity")
-                for key in ["deleted","deleted_bytes"]:
-                    require(type(collection.get(key)) is int and collection[key]>=0,"invalid_source_gc_result")
-                self.result["source_deleted"]=collection["deleted"]
-                self.result["source_deleted_bytes"]=collection["deleted_bytes"]
-                self.source_rejections(collection,"gc")
-            except Exception:
-                self.result["errors"].append({"code":"source_gc_unconfirmed"})
-            cursor=listing.get("next_cursor")
-            if cursor is not None:
-                require(cursor=="" or UUID_RE.fullmatch(cursor),"invalid_source_cursor")
-                replace_state(root/".run"/"source-cursor.json",{"last_uuid":cursor})
+            seen=set();admitted_bytes=0;page_seconds=0
+            reserve=self.cleanup_reserve
+            self.result.update(pages_completed=0,source_deleted=0,source_deleted_bytes=0)
+            for page in range(self.config.max_pages_per_run):
+                self.cleanup_reserve=reserve
+                if isinstance(self.transport,SSHTransport):self.transport.deadline=self.deadline-reserve
+                if page and self.deadline-reserve-time.monotonic()<max(90,page_seconds+45):
+                    self.result['next_page_deferred']='time_limit';break
+                page_started=time.monotonic()
+                try:
+                    listing=self.transport.manifest_list()
+                    listed=self.validate_listing(listing)
+                    cursor=listing.get('next_cursor')
+                    require(cursor is None or isinstance(cursor,str) and (cursor=='' or UUID_RE.fullmatch(cursor)),'invalid_source_cursor')
+                    self.source_rejections(listing,'list')
+                except Exception:
+                    if not page:raise
+                    self.record_error({'code':'next_page_list_failed'});break
+                items=[item for item in listed if item['capture_id'] not in seen]
+                self.result['page_duplicates_skipped']=self.result.get('page_duplicates_skipped',0)+len(listed)-len(items)
+                page_bytes=sum(item[key]['bytes'] for item in items for key in ['input','payload','headers','outcome'] if item.get(key))
+                if page_bytes>self.config.max_bytes-admitted_bytes:
+                    self.result['next_page_deferred']='byte_limit';break
+                if self.config.max_pages_per_run>1:
+                    # Six receipt/ACK files plus margin per capture; never credit
+                    # deletion or reuse against this conservative in-run budget.
+                    metadata_reserve=len(items)*8*65536
+                    try:
+                        require(self.namespace_bytes+metadata_reserve+page_bytes<=self.config.max_namespace_bytes,'namespace_space_limit')
+                        require(shutil.disk_usage(root).free-metadata_reserve-page_bytes>=self.config.min_free_bytes,'nas_free_space_limit')
+                    except ArchiveError as exc:
+                        self.record_error({'code':str(exc)});break
+                    self.namespace_bytes+=metadata_reserve
+                admitted_bytes+=page_bytes;seen.update(item['capture_id'] for item in items)
+                self.result['listed']+=len(items)
+                for offset in range(0,len(items),128):
+                    try:self.process_batch(items[offset:offset+128],root/'captures')
+                    except ArchiveError as exc:
+                        self.record_error({'code':str(exc)});break
+                gc_complete=False
+                try:
+                    self.cleanup_reserve=0
+                    if isinstance(self.transport,SSHTransport):self.transport.deadline=self.deadline
+                    self.time_budget()
+                    if hasattr(self.transport,'gc_confirmed'):
+                        collection=(self.transport.gc_confirmed(sorted(self.gc_ready)) if self.gc_ready else
+                                    {'schema_version':1,'group_id':self.config.group_id,'deleted':0,'deleted_bytes':0})
+                    else:collection=self.transport.gc()
+                    require(collection.get('schema_version')==1 and collection.get('group_id')==self.config.group_id,'wrong_source_gc_identity')
+                    for key in ['deleted','deleted_bytes']:
+                        require(type(collection.get(key)) is int and collection[key]>=0,'invalid_source_gc_result')
+                    self.result['source_deleted']+=collection['deleted']
+                    self.result['source_deleted_bytes']+=collection['deleted_bytes']
+                    self.source_rejections(collection,'gc')
+                    gc_complete=not hasattr(self.transport,'gc_confirmed') or collection['deleted']==len(self.gc_ready)
+                    if not gc_complete and self.config.max_pages_per_run>1:
+                        self.record_error({'code':'source_gc_incomplete'})
+                    self.gc_ready.clear()
+                except Exception:self.record_error({'code':'source_gc_unconfirmed'})
+                complete=gc_complete and not self.result['errors'] and not self.result['acks_pending']
+                if complete:self.result['pages_completed']+=1
+                # Preserve the old one-page cursor contract; a new second page
+                # never advances past an unfinished page.
+                if cursor is not None and (complete or self.config.max_pages_per_run==1):
+                    replace_state(root/'.run'/'source-cursor.json',{'last_uuid':cursor})
+                page_seconds=time.monotonic()-page_started
+                if not complete or not items:break
+            self.cleanup_reserve=0
             try:
                 self.expire(root/"captures")
             except LimitReached:
