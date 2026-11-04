@@ -21,3 +21,24 @@ Run `python3 -m unittest -v test_nas_archive.py test_source_helper.py` in this d
 ACK state is stored in the fixed root-owned helper installation directory, outside the producer data bind. Backend startup may recursively repair ownership inside `/app/data`; it cannot change the authoritative ACK receipts. Legacy in-data state is never adopted automatically. A lock-only legacy directory may be preserved during an explicitly reviewed helper migration; any real legacy ACK requires separate reconciliation before switching.
 
 Continuous mode is explicitly opt-in with `--continuous`. It replaces the old five-minute start interval for an authorized existing service, with progress-driven bounded batches and idle/error backoff. Use the updated exact-CID source cleanup after confirmed terminal archives; preserve the NAS 30-day policy. See the protocol's continuous backlog recovery section for the updated ACK and local-retention rules.
+
+For an existing continuous job whose complete namespace scan consumes most of its
+work window, `max_seconds` may be explicitly configured up to 600 (the default
+remains 240). A 600-second round retains the 45-second cleanup reserve and each SSH
+call still has a 45-second maximum; object, byte, worker, free-space and namespace
+limits do not change. Every round still scans the whole namespace before admission.
+`namespace_scan_seconds` and `elapsed_seconds` report the completed scan and the
+round duration before publishing its final record. This amortizes a slow scan over
+more of the existing bounded batch; it does not guarantee capacity for an unlimited
+arrival rate or a scan that exceeds the new window.
+
+`ack_batch_deferred_time_limit` means fewer than 45 work seconds remain before
+invoking the ACK transport. The complete 45-second ACK window must fit without
+using the cleanup reserve or extending the deadline. Durable intents and source
+files remain pending. An exception
+after transport invocation remains `ack_batch_outcome_unknown` and cannot authorize
+source cleanup without confirmed ACKs. Apply configuration changes only through a
+separately reviewed installation at the job's lock boundary; this source change
+does not change a running job, launchd timer, or production configuration. Validate
+at least one completed new round with scan/elapsed timings, confirmed ACKs and
+verified source-GC counters after installation.

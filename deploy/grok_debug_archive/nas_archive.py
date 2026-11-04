@@ -275,7 +275,7 @@ class Config:
         require(1 <= self.max_objects <= 1000 and 1 <= self.max_bytes <= 10 * 1024 ** 3, "invalid_run_limit")
         require(1 <= self.max_payload_bytes <= 512 * 1024 ** 2, "invalid_payload_limit")
         require(1 <= self.max_raw_bytes <= 512 * 1024 ** 2, "invalid_raw_limit")
-        require(30 <= self.max_seconds <= 290 and self.min_free_bytes >= 0, "invalid_resource_limit")
+        require(30 <= self.max_seconds <= 600 and self.min_free_bytes >= 0, "invalid_resource_limit")
         require(0 <= self.max_retention_deletes <= 1000, "invalid_retention_limit")
         require(self.max_payload_bytes <= self.max_namespace_bytes <= 1024 ** 4, "invalid_namespace_limit")
         require(1 <= self.max_retention_scan <= 10000,"invalid_retention_scan_limit")
@@ -403,7 +403,8 @@ class Puller:
         config.validate()
         self.config = config
         self.now = now or utc_now()
-        self.deadline = time.monotonic() + config.max_seconds
+        self.started = time.monotonic()
+        self.deadline = self.started + config.max_seconds
         self.cleanup_reserve = min(45, config.max_seconds // 3)
         self.fetched_bytes = 0
         self.inflight_bytes = 0
@@ -695,7 +696,13 @@ class Puller:
             batch=queued[offset:offset+MAX_ACK_CLAIMS]
             claims=[{k:value[k]for k in ['capture_id','kind','object_sha256','receipt_sha256']}for _,value in batch]
             try:
-                self.time_budget()
+                if self.time_budget() < 45:
+                    raise LimitReached('run_time_limit')
+            except LimitReached:
+                self.result['acks_pending']+=len(batch)
+                self.record_error({'code':'ack_batch_deferred_time_limit'})
+                continue
+            try:
                 result=self.transport.ack_batch(claims)
                 require(result.get('schema_version')==1 and result.get('group_id')==self.config.group_id
                         and isinstance(result.get('results'),list) and len(result['results'])==len(batch),'invalid_ack_batch_response')
@@ -866,7 +873,9 @@ class Puller:
                         "helper_path":self.config.helper_path})
             # Count existing files, including failed pending transfers, before admitting
             # more data. Never follow symlinks while computing the namespace budget.
+            scan_started = time.monotonic()
             self.namespace_bytes = namespace_size(root, self.time_budget)
+            self.result['namespace_scan_seconds'] = round(time.monotonic()-scan_started, 3)
             self.transport=self.transport or SSHTransport(self.config,self.deadline-self.cleanup_reserve)
             listing=self.transport.manifest_list()
             items=self.validate_listing(listing); self.result["listed"]=len(items)
@@ -908,6 +917,7 @@ class Puller:
             if self.result["errors"] or self.result["acks_pending"] or self.result["retention_pending_inputs"]:
                 self.result["status"]="pending"
             state=root/".run"/("run-"+utc_now().strftime("%Y%m%dT%H%M%S")+"-"+uuid.uuid4().hex+".json")
+            self.result['elapsed_seconds'] = round(time.monotonic()-self.started, 3)
             atomic_json(state,self.result)
             return self.result
         finally:
