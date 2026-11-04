@@ -420,6 +420,14 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 		Detail:             upstreamDetail,
 	})
 
+	// A consumed attempt cannot become a failover or a rewritten retryable error.
+	if readErr == nil && isAnthropicConsumedError(account, resp.StatusCode, body) {
+		s.rateLimitService.persistAnthropicConsumedModelCooldown(ctx, account, body, firstRequestedModel(requestedModel))
+		MarkResponseCommitted(c)
+		writeAnthropicErrorBody(c, http.StatusBadRequest, body)
+		return nil, fmt.Errorf("upstream error: 400 native_request_consumed_no_replay")
+	}
+
 	// 处理上游错误，标记账号状态
 	shouldDisable := false
 	if s.rateLimitService != nil {
