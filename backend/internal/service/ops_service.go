@@ -1126,7 +1126,10 @@ func sanitizeErrorBodyForStorage(raw string, maxBytes int) (sanitized string, tr
 
 	// Non-JSON: best-effort truncate.
 	if maxBytes > 0 && len(raw) > maxBytes {
-		return truncateString(raw, maxBytes), true
+		// A substring would keep the entire upstream allocation alive while
+		// queued, bypassing the queue's byte budget despite its short length.
+		return strings.Clone(truncateString(raw, maxBytes)), true
 	}
-	return raw, false
+	// TrimSpace can also return a tiny view into a much larger input.
+	return strings.Clone(raw), false
 }
