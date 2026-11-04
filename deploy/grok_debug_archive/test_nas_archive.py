@@ -111,6 +111,82 @@ class ArchiveBehavior(unittest.TestCase):
     def pull(self,now=NOW,**config): return Puller(self.config(**config),self.source,now).run()
     def directory(self,cid): return self.root/"captures"/cid
 
+    def test_namespace_inventory_is_bounded_parallel_and_counts_every_file(self):
+        import threading, time
+        from unittest.mock import patch
+        from nas_archive import namespace_size
+        root = self.base / 'inventory'
+        captures = root / 'captures'
+        captures.mkdir(parents=True)
+        expected = 0
+        for i in range(24):
+            directory = captures / str(i)
+            directory.mkdir()
+            raw = b'x' * (i + 1)
+            (directory / 'payload').write_bytes(raw)
+            expected += len(raw)
+        active = peak = 0
+        lock = threading.Lock()
+        scandir = os.scandir
+        def slow_scan(fd):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            try:
+                time.sleep(.005)
+                return scandir(fd)
+            finally:
+                with lock:
+                    active -= 1
+        with patch('nas_archive.os.scandir', side_effect=slow_scan):
+            self.assertEqual(namespace_size(root, lambda: None), expected)
+        self.assertGreater(peak, 1)
+        self.assertLessEqual(peak, 5)
+        (captures / '23' / 'outside').symlink_to(self.base)
+        with self.assertRaises(ArchiveError):
+            namespace_size(root, lambda: None)
+
+    def test_captures_sealed_during_long_scan_use_current_wall_clock(self):
+        from unittest.mock import patch
+        current = NOW
+        cid = self.source.add(captured=NOW + dt.timedelta(minutes=7), outcome=True)
+        with patch('nas_archive.utc_now', side_effect=lambda: current):
+            puller = Puller(self.config(), self.source)
+            current = NOW + dt.timedelta(minutes=8)
+            result = puller.run()
+        self.assertEqual(result['status'], 'ok', result['errors'])
+        self.assertEqual(result['acks_confirmed'], 2)
+        self.assertTrue((self.directory(cid)/(cid+'.outcome-ack.done.json')).is_file())
+
+    def test_late_outcome_uses_current_wall_clock(self):
+        from unittest.mock import patch
+        current = NOW
+        cid = self.source.add(outcome=False)
+        self.source.finish(cid, NOW + dt.timedelta(minutes=7))
+        with patch('nas_archive.utc_now', side_effect=lambda: current):
+            puller = Puller(self.config(), self.source)
+            current = NOW + dt.timedelta(minutes=8)
+            result = puller.run()
+        self.assertEqual(result['status'], 'ok', result['errors'])
+        self.assertEqual(result['acks_confirmed'], 2)
+
+    def test_current_clock_still_rejects_future_capture_and_outcome(self):
+        from unittest.mock import patch
+        for kind in ('input', 'outcome'):
+            with self.subTest(kind=kind):
+                self.source = SourceFixture()
+                cid = self.source.add(captured=NOW + dt.timedelta(minutes=14) if kind=='input' else NOW)
+                self.source.finish(cid, NOW + dt.timedelta(minutes=14))
+                current = NOW
+                with patch('nas_archive.utc_now', side_effect=lambda: current):
+                    puller = Puller(self.config(), self.source)
+                    current = NOW + dt.timedelta(minutes=8)
+                    result = puller.run()
+                expected = 'invalid_capture_time' if kind=='input' else 'invalid_outcome_time'
+                self.assertTrue(any(e['code']==expected for e in result['errors']))
+                self.assertNotIn((cid, 'outcome'), self.source.acks)
+
     def test_parallel_500_captures_have_exact_body_headers_and_dual_acks(self):
         import threading,time
         active=0; peak=0; lock=threading.Lock(); fetch=self.source.fetch
