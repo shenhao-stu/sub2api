@@ -204,7 +204,7 @@ func writeAnthropicErrorBody(c *gin.Context, status int, body []byte) {
 	if message == "" {
 		message = "Upstream request failed"
 	}
-	MarkOpsStreamError(c, "upstream_error", message, status)
+	MarkOpsStreamFailure(c, "upstream_error", "", message, status)
 	var payload map[string]any
 	if json.Unmarshal(body, &payload) != nil || payload == nil {
 		payload = make(map[string]any)
@@ -219,6 +219,8 @@ func writeAnthropicErrorBody(c *gin.Context, status int, body []byte) {
 	if text, _ := errBody["message"].(string); text == "" {
 		errBody["message"] = message
 	}
+	// The HTTP response is already committed; preserve its actual failure status in-band.
+	errBody["status_code"] = status
 	payload["type"], payload["error"] = "error", errBody
 	encoded, _ := json.Marshal(payload)
 	if strings.HasPrefix(c.Writer.Header().Get("Content-Type"), "text/event-stream") {
