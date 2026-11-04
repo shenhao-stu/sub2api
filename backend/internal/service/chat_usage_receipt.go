@@ -50,6 +50,7 @@ type chatReceiptCapture struct {
 	meter          *UsageReceipt
 	terminal       string
 	status         int
+	grok           bool
 	rawMeter       *UsageReceipt
 	rawTerminal    string
 	rawReady       bool
@@ -520,6 +521,9 @@ func observeRawChatReceipt(c *gin.Context, payload []byte, streaming bool) {
 		return
 	}
 	meter := parseChatReceiptMeter(raw)
+	if meter == nil && capture.grok {
+		meter = parseGrokExclusiveChatReceiptMeter(raw)
+	}
 	if meter == nil {
 		// A partial or contradictory meter cannot later be erased by a complete
 		// zero. Preserve uncertainty; permissive live billing remains unchanged.

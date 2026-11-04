@@ -70,7 +70,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		return nil, err
 	}
 	if capture := chatReceiptFromContext(ctx); capture != nil {
-		*capture = chatReceiptCapture{claim: capture.claim}
+		*capture = chatReceiptCapture{claim: capture.claim, grok: account != nil && account.IsGrok()}
 	}
 	result, err := s.forwardAsChatCompletions(ctx, c, account, body, promptCacheKey, defaultMappedModel, false)
 	s.completeChatUsageReceipt(ctx, c, account, result, err)
