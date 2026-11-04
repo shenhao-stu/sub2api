@@ -59,9 +59,9 @@ func startOpenAISSEKeepalive(c *gin.Context, interval time.Duration) func() {
 	return startOpenAISSEKeepaliveFrom(c, interval, nil)
 }
 
-// Raw Chat may fail over before any semantic output. Retain the committed
+// Chat may fail over before any semantic output. Retain the committed
 // transport state and all prior heartbeat bytes across those attempts.
-func resumeOpenAIRawChatSSEKeepalive(c *gin.Context, interval time.Duration) func() {
+func resumeOpenAIChatSSEKeepalive(c *gin.Context, interval time.Duration) func() {
 	var previous *openAICompactSSEKeepalive
 	if c != nil {
 		if value, ok := c.Get(openAICompactSSEKeepaliveKey); ok {

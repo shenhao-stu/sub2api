@@ -395,6 +395,13 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
+	if clientStream && s.cfg != nil {
+		// Negotiate receipts before a heartbeat can commit the HTTP headers.
+		// Chat-to-Responses does not enter raw Chat's pre-header keeper.
+		writeChatReceiptAck(c)
+		stopKeepalive := resumeOpenAIChatSSEKeepalive(c, time.Duration(s.cfg.Gateway.StreamKeepaliveInterval)*time.Second)
+		defer stopKeepalive()
+	}
 	resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account)
 	if err != nil {
 		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
@@ -910,6 +917,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	startTime time.Time,
 	requestBodyLen int,
 ) (_ *OpenAIForwardResult, forwardErr error) {
+	// The scanner loop is the only writer after headers arrive. Stop the
+	// header-wait timer before inspecting or mutating response state.
+	transportKeepaliveCommitted := StopOpenAICompactSSEKeepaliveCommitted(c)
 	requestID := resp.Header.Get("x-request-id")
 	finishDrain := boundDisconnectedResponseDrain(c.Request.Context(), resp.Body)
 	defer finishDrain()
@@ -955,7 +965,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	var streamFailoverErr *UpstreamFailoverError
 	var streamNonFailoverErr error
 	terminalEventType := ""
-	geminiActivityStarted, geminiActivityCommitted := false, false
+	geminiActivityStarted := false
 	var lastGeminiActivity time.Time
 	writeGeminiActivity := func() {
 		if !gemini.enabled || !geminiActivityStarted || terminalEventType != "" || clientDisconnected ||
@@ -973,7 +983,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		}
 		c.Writer.Flush()
 		lastGeminiActivity = time.Now()
-		geminiActivityCommitted = true
+		transportKeepaliveCommitted = true
 	}
 	// Grok chat bridge reuses Responses SSE; count native search tools for surcharge.
 	searchCount := 0
@@ -1142,14 +1152,14 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				}
 				defaultStatus, defaultErrType, defaultMsg = status, errType, errMsg
 				MarkResponseCommitted(c)
-			} else if geminiActivityCommitted {
+			} else if transportKeepaliveCommitted {
 				defaultStatus = geminiActivityFailureStatus(payloadBytes, message)
 			}
 			if capture := chatReceiptFromContext(c.Request.Context()); capture != nil {
 				capture.status = defaultStatus
 			}
 			errorFields := gin.H{"type": defaultErrType, "message": defaultMsg}
-			if geminiActivityCommitted {
+			if transportKeepaliveCommitted {
 				errorFields["code"] = openAIStreamFailedEventErrorCode(payloadBytes)
 				normalized, _ := json.Marshal(gin.H{"error": errorFields})
 				fields := boundedOpenAIClientError(normalized, defaultStatus)
@@ -1157,7 +1167,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				if fields.Code != "" {
 					errorFields["code"] = fields.Code
 				}
-				MarkOpsStreamErrorValue(c, OpsStreamError{ErrType: fields.Type, Code: fields.Code, Message: fields.Message, IntendedStatus: fields.StatusCode})
+				MarkOpsStreamFailure(c, fields.Type, fields.Code, fields.Message, fields.StatusCode)
 			}
 			errorPayload, _ := json.Marshal(openAIMeteredErrorMetadata(c, openAIErrorBodyWithUsage(gin.H{"error": errorFields}, &usage)))
 			if c != nil && c.Writer != nil && !c.Writer.Written() {
@@ -1435,7 +1445,6 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	if keepaliveTicker != nil {
 		keepaliveCh = keepaliveTicker.C
 	}
-	lastDataAt := time.Now()
 	var parser openAICompatSSEFrameParser
 
 	for {
@@ -1459,7 +1468,6 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				}
 				return resultWithUsage(), newOpenAIUpstreamStreamReadError(ev.err)
 			}
-			lastDataAt = time.Now()
 			line := ev.line
 			if strings.HasPrefix(line, ":") && parser.eventType == "" && len(parser.dataLines) == 0 {
 				writeGeminiActivity()
@@ -1494,15 +1502,13 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			if clientDisconnected {
 				continue
 			}
-			if refusalDetector.Enabled() && !clientOutputStarted {
-				continue
-			}
-			if time.Since(lastDataAt) < keepaliveInterval {
-				continue
-			}
-			// Send SSE comment as keepalive
+			// Transport comments are safe while refusal detection buffers output.
+			// Do not let upstream comments or partial frames suppress downstream
+			// keepalives: those bytes may never be forwarded to the client.
 			writeStreamHeaders()
-			if _, err := fmt.Fprint(c.Writer, ":\n\n"); err != nil {
+			n, err := fmt.Fprint(c.Writer, ": keepalive\n\n")
+			recordOpenAIStreamKeepaliveBytes(c, n)
+			if err != nil {
 				logger.L().Info("openai chat_completions stream: client disconnected during keepalive",
 					zap.String("request_id", requestID),
 				)
@@ -1510,6 +1516,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				continue
 			}
 			c.Writer.Flush()
+			transportKeepaliveCommitted = true
 		}
 	}
 }

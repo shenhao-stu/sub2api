@@ -220,7 +220,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletionsWithStartTime(
 		// Receipt negotiation is known before dispatch and must precede any
 		// heartbeat that can commit the downstream response headers.
 		writeChatReceiptAck(c)
-		stopKeepalive := resumeOpenAIRawChatSSEKeepalive(c, time.Duration(s.cfg.Gateway.StreamKeepaliveInterval)*time.Second)
+		stopKeepalive := resumeOpenAIChatSSEKeepalive(c, time.Duration(s.cfg.Gateway.StreamKeepaliveInterval)*time.Second)
 		defer stopKeepalive()
 	}
 	resp, err := s.sendCCUpstreamRequest(ctx, c, account, targetURL, upstreamBody, clientStream, token, customUA, grokCacheIdentity)
