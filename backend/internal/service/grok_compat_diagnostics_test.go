@@ -235,3 +235,49 @@ func TestGrokChatResponsesBridgeRetainsConfiguredDiagnostic(t *testing.T) {
 		}
 	}
 }
+
+// The production rule must be Grok-scoped: Responses uses its native 400 path,
+// while Chat/Messages use Grok's sanitized diagnostic extractor.
+func TestGrokScopedDiagnosticRulePreservesReal400AcrossProtocols(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, protocol := range []string{"responses", "chat", "messages"} {
+		for _, msg := range []string{
+			"Image dimensions 1x1 are too small. Both width and height must be at least 8 pixels.",
+			"This model does not support reasoning_effort value none.",
+			"The model grok-4.6 is a language model and is not available on this endpoint.",
+		} {
+			t.Run(protocol+"/"+msg, func(t *testing.T) {
+				rule := newNonFailoverPassthroughRule(400, "invalid-argument", 400, "obsolete generic advice")
+				rule.Platforms = []string{PlatformGrok}
+				rule.PassthroughBody = true
+				rules := &ErrorPassthroughService{}
+				rules.setLocalCache([]*model.ErrorPassthroughRule{rule})
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
+				c.Request = httptest.NewRequest("POST", "/v1/"+protocol, nil)
+				BindErrorPassthroughService(c, rules)
+				body := []byte(fmt.Sprintf(`{"code":"invalid-argument","error":%q}`, msg))
+				resp := &http.Response{StatusCode: 400, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body))}
+				repo := &grokQuotaAccountRepo{}
+				svc := &OpenAIGatewayService{accountRepo: repo}
+				account := &Account{ID: 227, Platform: PlatformGrok, Type: AccountTypeOAuth}
+				var err error
+				if protocol == "responses" {
+					_, err = svc.handleErrorResponse(context.Background(), resp, c, account, nil, "grok-4.6")
+				} else {
+					writer := writeChatCompletionsError
+					if protocol == "messages" {
+						writer = writeAnthropicError
+					}
+					_, err = svc.handleCompatErrorResponse(resp, c, account, writer, "grok-4.6")
+				}
+				require.Error(t, err)
+				require.Equal(t, 400, recorder.Code)
+				require.Equal(t, msg, gjson.GetBytes(recorder.Body.Bytes(), "error.message").String())
+				require.Zero(t, repo.tempUnschedCalls)
+				require.Zero(t, repo.rateLimitedCalls)
+				require.Zero(t, repo.updateCalls)
+			})
+		}
+	}
+}

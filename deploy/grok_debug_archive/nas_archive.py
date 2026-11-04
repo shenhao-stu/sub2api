@@ -106,47 +106,63 @@ def regular(path):
 
 
 def namespace_size(root, time_budget):
-    total = 0
-    # Keep only the current directory depth; fd-relative opens cannot follow a swapped link.
-    stack = []
+    pending = []
 
-    def descend(name, parent_fd=None):
-        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    def scan(root_fd, split=False):
+        total = 0
+        stack = []
+
+        def descend(fd):
+            try:
+                entries = os.scandir(fd)
+            except BaseException:
+                os.close(fd)
+                raise
+            stack.append((fd, entries))
+
         try:
-            entries = os.scandir(fd)
-        except BaseException:
-            os.close(fd)
-            raise
-        stack.append((fd, entries))
-
-    try:
-        time_budget()
-        descend(root)
-        while stack:
-            time_budget()
-            fd, entries = stack[-1]
-            entry = next(entries, None)
-            if entry is None:
+            descend(root_fd)
+            while stack:
+                time_budget()
+                fd, entries = stack[-1]
+                entry = next(entries, None)
+                if entry is None:
+                    entries.close()
+                    os.close(fd)
+                    stack.pop()
+                    continue
+                if entry.is_symlink():
+                    code = "symlink_in_namespace" if entry.is_dir() else "unsafe_namespace_object"
+                    raise ArchiveError(code)
+                if entry.is_dir(follow_symlinks=False):
+                    child = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                    # Split capture directories, retaining fd-relative traversal and bounded descriptors.
+                    if split and len(stack) == 2:
+                        try:
+                            pending.append(pool.submit(scan, child))
+                        except BaseException:
+                            os.close(child)
+                            raise
+                        if len(pending) >= 8:
+                            total += pending.pop(0).result()
+                    else:
+                        descend(child)
+                    continue
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISREG(info.st_mode):
+                    total += info.st_size
+                elif not stat.S_ISSOCK(info.st_mode):
+                    raise ArchiveError("unsafe_namespace_object")
+        finally:
+            for fd, entries in reversed(stack):
                 entries.close()
                 os.close(fd)
-                stack.pop()
-                continue
-            if entry.is_symlink():
-                code = "symlink_in_namespace" if entry.is_dir() else "unsafe_namespace_object"
-                raise ArchiveError(code)
-            if entry.is_dir(follow_symlinks=False):
-                descend(entry.name, fd)
-                continue
-            info = entry.stat(follow_symlinks=False)
-            if stat.S_ISREG(info.st_mode):
-                total += info.st_size
-            elif not stat.S_ISSOCK(info.st_mode):
-                raise ArchiveError("unsafe_namespace_object")
-    finally:
-        for fd, entries in reversed(stack):
-            entries.close()
-            os.close(fd)
-    return total
+        return total
+
+    time_budget()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        total = scan(os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW), split=True)
+        return total + sum(future.result() for future in pending)
 
 
 def private_dir(path, create=False):
@@ -404,7 +420,8 @@ class Puller:
     def __init__(self, config, transport=None, now=None):
         config.validate()
         self.config = config
-        self.now = now or utc_now()
+        self.clock = utc_now if now is None else lambda: now
+        self.now = self.clock()
         self.started = time.monotonic()
         self.deadline = self.started + config.max_seconds
         self.cleanup_reserve = min(45, config.max_seconds // 3)
@@ -544,7 +561,7 @@ class Puller:
         require((set(value) == INPUT_FIELDS | HEADER_FIELDS if version == 2 else not HEADER_FIELDS.intersection(value)), "invalid_input_header_fields")
         require(type(value.get("group_id")) is int and value["group_id"] == self.config.group_id, "wrong_input_group")
         captured = parse_time(value.get("captured_at")); sealed = parse_time(value.get("sealed_at"))
-        require(captured <= sealed <= self.now + dt.timedelta(minutes=5), "invalid_capture_time")
+        require(captured <= sealed <= self.clock() + dt.timedelta(minutes=5), "invalid_capture_time")
         require(value.get("payload_file") == cid + ".request.gz", "unsafe_payload_file")
         for key in ["raw_bytes","compressed_bytes"]:
             require(type(value.get(key)) is int and value[key] >= 0, "invalid_body_size")
@@ -769,7 +786,7 @@ class Puller:
             outcome = decode(read_small(outcome_path,65536))
             require(outcome.get("schema_version") == 1 and outcome.get("capture_id") == cid, "invalid_outcome_identity")
             finished = parse_time(outcome.get("finished_at"))
-            require(parse_time(manifest["captured_at"]) <= finished <= self.now + dt.timedelta(minutes=5), "invalid_outcome_time")
+            require(parse_time(manifest["captured_at"]) <= finished <= self.clock() + dt.timedelta(minutes=5), "invalid_outcome_time")
             require(type(outcome.get("http_status")) is int and 0 <= outcome["http_status"] <= 599
                     and type(outcome.get("request_released")) is bool and type(outcome.get("context_canceled")) is bool, "invalid_outcome_flags")
             receipt = directory / (cid + ".outcome-receipt.json")
