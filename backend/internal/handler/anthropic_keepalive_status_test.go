@@ -16,7 +16,7 @@ import (
 // Synthetic terminal payload only: this invokes the real error writer and Ops
 // middleware, never a provider or a recorded customer request.
 func TestAnthropicLateHTTPErrorPreservesOpsStatus(t *testing.T) {
-	for _, status := range []int{400, 503, 502} {
+	for _, status := range []int{400, 413, 503, 502} {
 		for _, conflictingStatus := range []bool{false, true} {
 			for _, mode := range []string{"uncommitted", "sse_ping_committed", "json_space_committed"} {
 				t.Run(fmt.Sprintf("status=%d/conflict=%t/%s", status, conflictingStatus, mode), func(t *testing.T) {
