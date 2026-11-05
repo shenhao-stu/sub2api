@@ -768,6 +768,15 @@ func normalizeGrokResponsesReasoningEffort(body []byte, upstreamModel string) ([
 	return out, nil
 }
 
+func normalizeGrokChatStop(body []byte) ([]byte, error) {
+	stop := gjson.GetBytes(body, "stop")
+	if stop.Type != gjson.String {
+		return body, nil
+	}
+	// OpenAI permits a string; the Grok Chat endpoint requires an array.
+	return sjson.SetRawBytes(body, "stop", []byte("["+stop.Raw+"]"))
+}
+
 func normalizeGrokChatReasoningEffort(body []byte, upstreamModel string) ([]byte, error) {
 	raw := strings.TrimSpace(gjson.GetBytes(body, "reasoning_effort").String())
 	if raw == "" {
