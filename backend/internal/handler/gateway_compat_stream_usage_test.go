@@ -68,8 +68,9 @@ type compatStreamUsageRun struct {
 }
 
 type compatStreamUsageOptions struct {
-	accountCount int
-	workerPool   *service.UsageRecordWorkerPool
+	upstreamStatus int
+	accountCount   int
+	workerPool     *service.UsageRecordWorkerPool
 }
 
 // runCompatStreamUsageHandler 经 GatewayHandler 转发一次流式请求；上游写完 upstreamStream 后，
@@ -113,6 +114,9 @@ func runCompatStreamUsageHandler(t *testing.T, endpoint, upstreamStream string, 
 		StatusCode: http.StatusOK, Body: pr,
 		Header: http.Header{"X-Request-Id": []string{"compat-stream-usage"}},
 	}}
+	if len(options) > 0 && options[0].upstreamStatus != 0 {
+		run.upstream.response.StatusCode = options[0].upstreamStatus
+	}
 	gw := service.NewGatewayService(
 		nil, &fakeGroupRepo{group: group}, run.usageRepo, run.billingRepo, nil, nil, nil, nil, cfg,
 		snapshot, nil, service.NewBillingService(cfg, nil), nil, nil, nil, run.upstream,

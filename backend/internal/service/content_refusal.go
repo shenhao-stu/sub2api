@@ -42,9 +42,12 @@ func (s *GatewayService) handleContentRefusalResponse(c *gin.Context, account *A
 }
 
 func (s *GatewayService) handleContentRefusalBody(c *gin.Context, account *Account, resp *http.Response, body []byte, usage *ClaudeUsage, model, upstreamModel string, stream bool, start time.Time) (*ForwardResult, error) {
+	return s.handleRequestRejectionBody(c, account, resp, body, usage, model, upstreamModel, stream, start, boundedOpenAIClientError(body, http.StatusForbidden))
+}
+
+func (s *GatewayService) handleRequestRejectionBody(c *gin.Context, account *Account, resp *http.Response, body []byte, usage *ClaudeUsage, model, upstreamModel string, stream bool, start time.Time, fields openAIClientErrorFields) (*ForwardResult, error) {
 	restorePolicyCacheCreation(usage)
-	const status = http.StatusForbidden
-	fields := boundedOpenAIClientError(body, status)
+	status := fields.StatusCode
 	// Preserve restricted diagnostics under the existing administrator setting.
 	// Client redaction must not erase the evidence used to correlate incidents.
 	detail := ""
@@ -100,5 +103,5 @@ func (s *GatewayService) handleContentRefusalBody(c *gin.Context, account *Accou
 	} else {
 		WriteAnthropicErrorResponse(c, status, payload)
 	}
-	return result, fmt.Errorf("upstream content refusal: %s", fields.Message)
+	return result, fmt.Errorf("upstream request rejection: %s", fields.Message)
 }
