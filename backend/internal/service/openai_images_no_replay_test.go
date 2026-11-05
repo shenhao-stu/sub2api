@@ -196,6 +196,7 @@ func TestImagesNativeStreamRequiresTerminalMeter(t *testing.T) {
 			wantImages   int
 		}{
 			{"partial_eof", "data: {\"type\":\"image_generation.partial_image\",\"usage\":" + imageTerminalMeter + "}\n\n", false, 0, 0},
+			{"partial_with_error", "data: {\"type\":\"image_generation.partial_image\",\"error\":{\"message\":\"failed\"},\"usage\":" + imageTerminalMeter + "}\n\n", false, 0, 0},
 			{"partial_then_final", "data: {\"type\":\"image_generation.partial_image\",\"usage\":{\"input_tokens\":99999,\"output_tokens\":99999}}\n\ndata: {\"type\":\"image_generation.completed\",\"usage\":" + imageTerminalMeter + "}\n\n", true, 196, 0},
 			{"conflicting_terminal", "data: {\"type\":\"image_generation.completed\",\"usage\":" + imageTerminalMeter + "}\n\ndata: {\"type\":\"image_generation.completed\",\"usage\":" + imageTerminalMeter + "}\n\n", false, 0, 0},
 			{"duplicate_with_image", "data: {\"type\":\"image_generation.completed\",\"b64_json\":\"aW1hZ2U=\",\"usage\":" + imageTerminalMeter + "}\n\ndata: {\"type\":\"image_generation.completed\",\"b64_json\":\"aW1hZ2U=\",\"usage\":" + imageTerminalMeter + "}\n\n", true, 0, 1},

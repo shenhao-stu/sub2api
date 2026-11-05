@@ -1100,6 +1100,9 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 		if direct == nil {
 			if upErr := openAIImagesUpstreamErrorFromSSEPayload(dataBytes); upErr != nil {
 				terminalUsage, raw, known := strictImageTerminalUsage(dataBytes)
+				if !imageSSEErrorIsTerminal(dataBytes) {
+					known, raw = false, nil
+				}
 				upErr.Usage = raw
 				if imageCounter.Count() == 0 {
 					usage = OpenAIUsage{}

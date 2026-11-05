@@ -137,3 +137,17 @@ func imageErrorHasFinalUsage(err error) bool {
 	var terminal *OpenAIImagesUpstreamError
 	return errors.As(err, &terminal) && len(terminal.Usage) > 0
 }
+
+// Progress events carrying an error are failures, but not final meter evidence.
+func imageSSEErrorIsTerminal(body []byte) bool {
+	envelope, ok := receiptObject(body)
+	if !ok {
+		return false
+	}
+	var kind string
+	if json.Unmarshal(envelope["type"], &kind) != nil || kind != "error" {
+		return false
+	}
+	detail, ok := receiptObject(envelope["error"])
+	return ok && len(detail) > 0
+}
