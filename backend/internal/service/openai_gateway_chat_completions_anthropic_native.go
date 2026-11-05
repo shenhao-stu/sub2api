@@ -266,6 +266,7 @@ func (s *OpenAIGatewayService) handleCCBufferedFromNativeAnthropic(
 
 	if usage.hasObservedTokens() {
 		finalResp.Usage = apicompat.AnthropicUsage{
+			CacheCreation:            actualCacheCreationJSON(&usage),
 			InputTokens:              usage.InputTokens,
 			OutputTokens:             usage.OutputTokens,
 			CacheCreationInputTokens: usage.CacheCreationInputTokens,

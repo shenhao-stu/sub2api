@@ -9,7 +9,7 @@ import (
 )
 
 // Only a complete, consistent upstream observation can establish a cache TTL.
-// This evidence is private until a policy failure needs a converted wire meter.
+// Evidence is used by both successful and rejected protocol conversions.
 type policyCacheCreationSplit struct {
 	total int
 	Five  int `json:"ephemeral_5m_input_tokens"`
@@ -96,8 +96,7 @@ func knownPolicyCacheCreation(usage *ClaudeUsage) *policyCacheCreationSplit {
 	return split
 }
 
-// Normal successful adapters retain their existing behavior. Only a rejected
-// request restores the original observed split into the partial accounting result.
+// Restore only complete and consistent provider evidence, never request TTL.
 func restorePolicyCacheCreation(usage *ClaudeUsage) {
 	if split := knownPolicyCacheCreation(usage); split != nil {
 		usage.CacheCreation5mTokens, usage.CacheCreation1hTokens = split.Five, split.Hour
@@ -128,4 +127,12 @@ func policyOpenAIWireUsage(usage *OpenAIUsage) any {
 		*OpenAIUsage
 		CacheCreation *policyCacheCreationSplit `json:"cache_creation"`
 	}{usage, usage.policyCacheCreation}
+}
+
+func actualCacheCreationJSON(usage *ClaudeUsage) json.RawMessage {
+	if split := knownPolicyCacheCreation(usage); split != nil {
+		raw, _ := json.Marshal(split)
+		return raw
+	}
+	return nil
 }

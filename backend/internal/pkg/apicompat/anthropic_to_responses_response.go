@@ -152,6 +152,7 @@ func anthropicStopReasonToResponsesStatus(stopReason string, blocks []AnthropicC
 // AnthropicEventToResponsesState tracks state for converting a sequence of
 // Anthropic SSE events into Responses SSE events.
 type AnthropicEventToResponsesState struct {
+	CacheCreation  json.RawMessage
 	ResponseID     string
 	Model          string
 	Created        int64
@@ -285,6 +286,7 @@ func anthToResHandleMessageStart(evt *AnthropicStreamEvent, state *AnthropicEven
 		if evt.Message.Usage.CacheReadInputTokens > 0 {
 			state.CacheReadInputTokens = evt.Message.Usage.CacheReadInputTokens
 		}
+		state.CacheCreation = evt.Message.Usage.CacheCreation
 		if evt.Message.Usage.CacheCreationInputTokens > 0 {
 			state.CacheCreationInputTokens = evt.Message.Usage.CacheCreationInputTokens
 		}
@@ -550,6 +552,9 @@ func anthToResHandleMessageDelta(evt *AnthropicStreamEvent, state *AnthropicEven
 		if evt.Usage.CacheReadInputTokens > 0 {
 			state.CacheReadInputTokens = evt.Usage.CacheReadInputTokens
 		}
+		if len(evt.Usage.CacheCreation) > 0 {
+			state.CacheCreation = evt.Usage.CacheCreation
+		}
 		if evt.Usage.CacheCreationInputTokens > 0 {
 			state.CacheCreationInputTokens = evt.Usage.CacheCreationInputTokens
 		}
@@ -679,7 +684,8 @@ func makeResponsesCompletedEvent(
 	state.SequenceNumber++
 
 	usage := state.UsageEvidence.ResponsesUsage(AnthropicUsage{
-		InputTokens: state.InputTokens, OutputTokens: state.OutputTokens,
+		CacheCreation: state.CacheCreation,
+		InputTokens:   state.InputTokens, OutputTokens: state.OutputTokens,
 		CacheReadInputTokens:     state.CacheReadInputTokens,
 		CacheCreationInputTokens: state.CacheCreationInputTokens,
 	})

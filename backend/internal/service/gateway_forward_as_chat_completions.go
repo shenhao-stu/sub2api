@@ -356,6 +356,7 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 	// Update usage from accumulated delta
 	if usage.hasObservedTokens() {
 		finalResp.Usage = apicompat.AnthropicUsage{
+			CacheCreation:            actualCacheCreationJSON(&usage),
 			InputTokens:              usage.InputTokens,
 			OutputTokens:             usage.OutputTokens,
 			CacheCreationInputTokens: usage.CacheCreationInputTokens,

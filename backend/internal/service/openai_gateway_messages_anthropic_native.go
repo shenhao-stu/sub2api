@@ -164,6 +164,12 @@ func (s *OpenAIGatewayService) buildNativeAnthropicUpstreamRequest(
 	targetURL string,
 	sessionBodies ...[]byte,
 ) (*http.Request, []byte, error) {
+	var cacheErr error
+	body, cacheErr = prepareClaudeCacheTTL(c, body, gjson.GetBytes(body, "model").String())
+	if cacheErr != nil {
+		return nil, nil, cacheErr
+	}
+
 	// 能力维度 body sanitize：与 Anthropic 平台 passthrough 相同，按 beta
 	// header 决定是否保留 body 中的 beta 能力字段，避免客户端"body 带字段但
 	// header 忘带 token"的 bug 让第三方上游 400。
@@ -579,10 +585,15 @@ func claudeUsageToOpenAIUsage(u *ClaudeUsage) OpenAIUsage {
 	if u == nil {
 		return OpenAIUsage{}
 	}
-	return OpenAIUsage{
+	converted := OpenAIUsage{
 		InputTokens:              u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens,
 		OutputTokens:             u.OutputTokens,
 		CacheCreationInputTokens: u.CacheCreationInputTokens,
 		CacheReadInputTokens:     u.CacheReadInputTokens,
 	}
+	if split := knownPolicyCacheCreation(u); split != nil {
+		converted.CacheCreation5mTokens, converted.CacheCreation1hTokens = split.Five, split.Hour
+		converted.CacheCreationTTLKnown = true
+	}
+	return converted
 }

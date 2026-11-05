@@ -57,7 +57,7 @@ func stripMessageCacheControl(body []byte) []byte {
 //   - 若目标 block 已有 cache_control.ttl → 不覆盖
 //   - 否则写入 {"type":"ephemeral","ttl": claude.DefaultCacheControlTTL}
 //
-// 调用前应先 stripMessageCacheControl 以保证幂等和稳定。
+// Existing client breakpoints are preserved; this opt-in only serves requests without them.
 func addMessageCacheBreakpoints(body []byte) []byte {
 	messages := gjson.GetBytes(body, "messages")
 	if !messages.IsArray() {
@@ -92,7 +92,10 @@ func (s *GatewayService) rewriteMessageCacheControlIfEnabled(ctx context.Context
 	if s == nil || !s.isRewriteMessageCacheControlEnabled(ctx) {
 		return body
 	}
-	body = stripMessageCacheControl(body)
+	_, messages, tools, system := collectCacheControlPaths(body)
+	if len(messages)+len(tools)+len(system) > 0 || gjson.GetBytes(body, "cache_control").Exists() {
+		return body
+	}
 	return addMessageCacheBreakpoints(body)
 }
 
@@ -136,7 +139,7 @@ func injectCacheControlOnLastContentBlock(body []byte, idx int, msg *gjson.Resul
 	lastBlockIdx := len(contentArr) - 1
 	lastBlock := contentArr[lastBlockIdx]
 
-	if cc := lastBlock.Get("cache_control"); cc.Exists() && cc.Get("ttl").String() != "" {
+	if cc := lastBlock.Get("cache_control"); cc.Exists() && (cc.Get("ttl").Exists() || cc.Get("type").String() != "ephemeral") {
 		return body
 	}
 

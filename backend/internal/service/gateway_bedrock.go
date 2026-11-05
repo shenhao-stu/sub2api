@@ -81,6 +81,11 @@ func (s *GatewayService) forwardBedrock(
 		betaHeader = c.GetHeader("anthropic-beta")
 	}
 
+	var cacheErr error
+	body, cacheErr = prepareClaudeCacheTTL(c, body, mappedModel)
+	if cacheErr != nil {
+		return nil, cacheErr
+	}
 	// 准备请求体（注入 anthropic_version/anthropic_beta，移除 Bedrock 不支持的字段，清理 cache_control）
 	betaTokens, err := s.resolveBedrockBetaTokensForRequest(ctx, account, betaHeader, body, mappedModel)
 	if err != nil {

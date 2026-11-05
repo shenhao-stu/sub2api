@@ -400,6 +400,12 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	body []byte,
 	token string,
 ) (*http.Request, error) {
+	var cacheErr error
+	body, cacheErr = prepareClaudeCacheTTL(c, body, gjson.GetBytes(body, "model").String())
+	if cacheErr != nil {
+		return nil, cacheErr
+	}
+
 	body = stripDeferredToolCacheControl(body)
 	targetURL := claudeAPICountTokensURL
 	baseURL := getAnthropicGatewayBaseURL(account)
@@ -467,6 +473,12 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 
 // buildCountTokensRequest 构建 count_tokens 上游请求
 func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token, tokenType, modelID string, mimicClaudeCode bool) (*http.Request, []byte, error) {
+	var cacheErr error
+	body, cacheErr = prepareClaudeCacheTTL(c, body, modelID)
+	if cacheErr != nil {
+		return nil, nil, cacheErr
+	}
+
 	body = stripDeferredToolCacheControl(body)
 	// 确定目标 URL
 	targetURL := claudeAPICountTokensURL

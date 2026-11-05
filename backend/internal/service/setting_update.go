@@ -103,6 +103,10 @@ func (s *SettingService) refreshCachedSettingsAfterWrite(ctx context.Context, se
 }
 
 func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, settings *SystemSettings) (map[string]string, error) {
+	if settings.EnableAnthropicCacheTTL1hInjection {
+		return nil, infraerrors.BadRequest("CACHE_TTL_OVERRIDE_RETIRED", "The legacy OAuth TTL override is retired. Existing Claude cache controls default to 1h; explicit TTLs and actual upstream usage are preserved.")
+	}
+
 	if err := s.validateDefaultSubscriptionGroups(ctx, settings.DefaultSubscriptions); err != nil {
 		return nil, err
 	}

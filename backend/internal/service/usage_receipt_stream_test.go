@@ -43,13 +43,10 @@ func TestReceiptActualStreamingPathsKeepFinalWireMeterAfterDisconnect(t *testing
 				t.Fatalf("actual streaming path lost final meter: %+v", receipt)
 			}
 			want1h := 100
-			if override && !passthrough {
-				want1h = 0
-			}
 			if receipt.CacheCreation1hTokens != want1h {
 				t.Fatalf("receipt differs from wire cache policy: %d want %d", receipt.CacheCreation1hTokens, want1h)
 			}
-			applyCacheTTLOverride(result.usage, "5m")
+			result.usage.CacheCreation1hTokens = 0 // Mutating the billing copy cannot mutate frozen wire evidence.
 			if receipt.CacheCreation1hTokens != want1h {
 				t.Fatal("later billing policy changed frozen evidence")
 			}

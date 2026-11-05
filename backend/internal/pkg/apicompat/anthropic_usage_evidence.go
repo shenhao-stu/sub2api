@@ -113,6 +113,7 @@ func (e AnthropicUsageEvidence) ResponsesUsage(u AnthropicUsage) *ResponsesUsage
 		return nil
 	}
 	result := &ResponsesUsage{
+		CacheCreation:       u.CacheCreation,
 		explicitTokenTotals: complete, receiptCountersValid: complete,
 		zeroTokenCountersValid: complete && !e.nonzeroSeen,
 		InputTokens:            input, OutputTokens: u.OutputTokens, TotalTokens: total,

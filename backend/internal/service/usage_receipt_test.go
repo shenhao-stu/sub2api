@@ -92,7 +92,7 @@ func TestReceiptCapturesProviderBucketsBeforeBillingPolicies(t *testing.T) {
 	s.recordProviderUsageReceipt(ctx, &recordUsageCoreInput{Result: r, APIKey: &APIKey{ID: 11}, ChannelUsageFields: ChannelUsageFields{OriginalModel: "requested"}, InboundEndpoint: "/v1/messages"})
 	r.Usage.CacheReadInputTokens += r.Usage.InputTokens
 	r.Usage.InputTokens = 0
-	applyCacheTTLOverride(&r.Usage, "5m")
+	r.Usage.CacheCreation1hTokens = 0 // Billing copy cannot mutate frozen wire evidence.
 	if repo.receipt == nil || repo.key != 11 || repo.receipt.InputTokens != 1000 || repo.receipt.CacheCreation1hTokens != 100 || repo.receipt.Model != "requested" {
 		t.Fatalf("provider evidence changed: %+v", repo.receipt)
 	}

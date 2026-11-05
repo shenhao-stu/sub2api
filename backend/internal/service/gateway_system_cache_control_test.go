@@ -83,7 +83,7 @@ func TestForwardCountTokens_EnforcesCacheControlLimitOnMimicPath(t *testing.T) {
 	// 客户端自己打满 4 个断点：system 一个、messages 三个。
 	// 加上 mimic 注入的 tools[-1] 与 system blocks 自带的锚点，必然超过 4。
 	body := []byte(`{"model":"claude-sonnet-4-6",` +
-		`"system":[{"type":"text","text":"stable client prefix","cache_control":{"type":"ephemeral","ttl":"5m"}}],` +
+		`"system":[{"type":"text","text":"stable client prefix","cache_control":{"type":"ephemeral","ttl":"1h"}}],` +
 		`"tools":[{"name":"probe","description":"d","input_schema":{"type":"object"}}],` +
 		`"messages":[` +
 		`{"role":"user","content":[{"type":"text","text":"one","cache_control":{"type":"ephemeral"}}]},` +

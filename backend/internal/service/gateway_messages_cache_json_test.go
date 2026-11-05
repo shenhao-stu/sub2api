@@ -51,7 +51,7 @@ func TestAddMessageCacheBreakpoints_JSONStringEscaping(t *testing.T) {
 				require.Equal(t, "text", block.Get("type").String())
 				require.Equal(t, tt.text, block.Get("text").String())
 				require.Equal(t, "ephemeral", block.Get("cache_control.type").String())
-				require.Equal(t, "5m", block.Get("cache_control.ttl").String())
+				require.Equal(t, "1h", block.Get("cache_control.ttl").String())
 			}
 			require.JSONEq(t, string(out), string(addMessageCacheBreakpoints(out)))
 		})

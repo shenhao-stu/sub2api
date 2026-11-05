@@ -167,14 +167,16 @@ func TestProtocolPolicyCacheEvidenceKeepsInputVector(t *testing.T) {
 	require.NotNil(t, knownPolicyCacheCreation(u))
 }
 
-func TestProtocolPolicyCacheDoesNotChangeSuccessfulConverter(t *testing.T) {
+func TestProtocolPolicyCacheAndSuccessfulConverterKeepActualBuckets(t *testing.T) {
 	u := parseClaudeUsageFromResponseBody([]byte(`{"usage":{"input_tokens":12,"cache_creation_input_tokens":6,"cache_creation":{"ephemeral_5m_input_tokens":2,"ephemeral_1h_input_tokens":4}}}`))
 	known := policyClaudeUsageToOpenAIUsage(u)
 	require.NotNil(t, known.policyCacheCreation)
 	require.True(t, known.CacheCreationTTLKnown)
 	ordinary := claudeUsageToOpenAIUsage(u)
 	require.Nil(t, ordinary.policyCacheCreation)
-	require.False(t, ordinary.CacheCreationTTLKnown)
+	require.True(t, ordinary.CacheCreationTTLKnown)
+	require.Equal(t, 2, ordinary.CacheCreation5mTokens)
+	require.Equal(t, 4, ordinary.CacheCreation1hTokens)
 	raw, err := json.Marshal(ordinary)
 	require.NoError(t, err)
 	require.NotContains(t, string(raw), `"cache_creation":`)

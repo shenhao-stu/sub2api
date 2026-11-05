@@ -336,6 +336,12 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	body []byte,
 	token string,
 ) (*http.Request, []byte, error) {
+	var cacheErr error
+	body, cacheErr = prepareClaudeCacheTTL(c, body, gjson.GetBytes(body, "model").String())
+	if cacheErr != nil {
+		return nil, nil, cacheErr
+	}
+
 	body = stripDeferredToolCacheControl(body)
 	targetURL := claudeAPIURL
 	baseURL := getAnthropicGatewayBaseURL(account)
