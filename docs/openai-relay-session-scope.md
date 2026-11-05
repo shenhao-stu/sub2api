@@ -13,7 +13,7 @@ are never trusted. For GeToken transit, its exact internal Sub2API key must be i
 `account_affinity_settings.trusted_api_key_ids`, and GeToken must stamp the user
 header from its authenticated user. Do not trust customer-distributed keys.
 
-Both Responses request builders project session headers and the explicit
+Both Responses request builders and the native Images builder project session headers and the explicit
 session/thread/cache fields into this namespace. Prompt/history/tool data and
 numeric precision are preserved. Requests without a session hint get a unique
 request-local ID, stable across attempts; they do not silently share a session
@@ -33,3 +33,21 @@ SSE terminal usage, foreign continuation rejection before dispatch, persisted
 ownership after restart, cancellation, default-off and OAuth behavior. Test
 upstreams are local fixtures; production rollout still requires a canary with
 the actual authenticated ingress and unique new requests.
+
+Turn metadata in the header and JSON-encoded client_metadata is parsed as an
+object and only correlation fields are namespaced. Non-session fields, including
+client signals and exact integer values, are preserved. Malformed metadata is a
+terminal 400 before dispatch. Top-level thread/parent identifiers are scoped too.
+
+Opaque x-codex-turn-state is never rewritten. On actual response-header commit,
+the native TTL-backed owner store binds its digest to the authenticated principal
+and selected Sub account. Only that owner/account may echo the exact value.
+Unknown, expired, or foreign state is rejected before dispatch; there is no
+silent strip or unscoped fallback. Abandoned staged responses do not establish
+ownership. Redis failures do not open this boundary.
+
+Images also scope x-codex-image-turn-id, preserving edit-turn affinity without
+sharing a caller's ID with another tenant. Multipart image bytes remain opaque
+and unchanged; vm2api's Images route selects affinity from the scoped header,
+not arbitrary multipart fields. No idempotency/replay header or replayable request
+body is introduced. Default-off accounts keep their existing headers and body.

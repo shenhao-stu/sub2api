@@ -2058,6 +2058,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	}
 	defer flushPendingOutput()
 	writePendingLines := func() bool {
+		if !c.Writer.Written() {
+			s.bindOpenAIRelayTurnState(c, account, extractOpenAICodexTurnState(c.Writer.Header()))
+		}
 		for _, pending := range pendingLines {
 			if _, err := fmt.Fprintln(w, pending); err != nil {
 				clientDisconnected = true
@@ -2489,6 +2492,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	if err != nil {
 		return nil, fmt.Errorf("restore OpenAI Responses client tools: %w", err)
 	}
+	if !c.Writer.Written() {
+		s.bindOpenAIRelayTurnState(c, account, extractOpenAICodexTurnState(c.Writer.Header()))
+	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
 	}
@@ -2586,6 +2592,9 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 		if contentType == "" {
 			contentType = "text/event-stream"
 		}
+	}
+	if !c.Writer.Written() {
+		s.bindOpenAIRelayTurnState(c, account, extractOpenAICodexTurnState(c.Writer.Header()))
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)

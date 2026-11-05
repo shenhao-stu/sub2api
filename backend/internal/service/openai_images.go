@@ -834,6 +834,19 @@ func (s *OpenAIGatewayService) buildOpenAIImagesRequest(
 	token string,
 	endpoint string,
 ) (*http.Request, error) {
+	// Multipart image bytes are opaque; only JSON carries session metadata.
+	scopeBody := body
+	multipartBody := strings.HasPrefix(strings.ToLower(contentType), "multipart/")
+	if multipartBody {
+		scopeBody = []byte(`{}`)
+	}
+	projected, relayHeaders, scopeErr := s.prepareOpenAIRelaySession(ctx, c, account, scopeBody)
+	if scopeErr != nil {
+		return nil, scopeErr
+	}
+	if !multipartBody {
+		body = projected
+	}
 	targetURL := openAIImagesGenerationsURL
 	if endpoint == openAIImagesEditsEndpoint {
 		targetURL = openAIImagesEditsURL
@@ -883,6 +896,7 @@ func (s *OpenAIGatewayService) buildOpenAIImagesRequest(
 	req.Header.Del("Idempotency-Key")
 	req.Header.Del("X-Idempotency-Key")
 	req.GetBody = nil
+	applyOpenAIRelaySessionHeaders(req.Header, relayHeaders)
 	return req, nil
 }
 
