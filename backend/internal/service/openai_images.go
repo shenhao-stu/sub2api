@@ -1060,6 +1060,20 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 	var streamErr error
 	var nativeFinalCount int
 	var nativeFinalUsage json.RawMessage
+	// A transport failure after the unique final meter does not erase it.
+	// Keep the request failed without emitting another financial terminal event.
+	readFailure := func(err error) error {
+		if direct != nil {
+			return err
+		}
+		code, message := classifyOpenAIUpstreamStreamReadError(err)
+		upErr := &OpenAIImagesUpstreamError{StatusCode: http.StatusBadGateway, ErrorType: "upstream_error", Code: code, Message: message, UpstreamRequestID: resp.Header.Get("x-request-id")}
+		if nativeFinalCount == 1 && len(nativeFinalUsage) > 0 {
+			upErr.Usage = nativeFinalUsage
+		}
+		setOpsUpstreamError(c, upErr.StatusCode, upErr.Message, "")
+		return upErr
+	}
 	finish := func() error {
 		if streamErr != nil {
 			return streamErr
@@ -1278,12 +1292,13 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 				if direct == nil && streamErr != nil {
 					return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, streamErr
 				}
-				return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, err
+				return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, readFailure(err)
 			}
 		}
 		flushSSEEvent()
 		finalizeFallbackBody()
-		return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, finish()
+		finalErr := finish()
+		return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, finalErr
 	}
 
 	type readEvent struct {
@@ -1350,14 +1365,15 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 			if !ok {
 				flushSSEEvent()
 				finalizeFallbackBody()
-				return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, finish()
+				finalErr := finish()
+				return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, finalErr
 			}
 			if ev.err != nil {
 				flushSSEEvent()
 				if direct == nil && streamErr != nil {
 					return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, streamErr
 				}
-				return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, ev.err
+				return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, readFailure(ev.err)
 			}
 			processLine(ev.line)
 			if direct == nil && streamErr != nil {
@@ -1369,11 +1385,13 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 				continue
 			}
 			if clientDisconnected {
-				return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, fmt.Errorf("image stream incomplete after timeout")
+				return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, readFailure(fmt.Errorf("image stream incomplete after timeout"))
 			}
 			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Images stream data interval timeout: interval=%s", streamInterval)
-			_ = s.writeOpenAIImagesStreamEvent(c, flusher, "error", buildOpenAIImagesStreamErrorBody(fmt.Sprintf("upstream image stream idle for %s", streamInterval)))
-			return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, fmt.Errorf("image stream data interval timeout")
+			if direct != nil || nativeFinalCount != 1 || len(nativeFinalUsage) == 0 {
+				_ = s.writeOpenAIImagesStreamEvent(c, flusher, "error", buildOpenAIImagesStreamErrorBody(fmt.Sprintf("upstream image stream idle for %s", streamInterval)))
+			}
+			return usage, imageCounter.Count(), imageCounter.Sizes(), firstTokenMs, readFailure(fmt.Errorf("image stream data interval timeout"))
 		case <-keepaliveCh:
 			if clientDisconnected || time.Since(lastDownstreamWriteAt) < keepaliveInterval {
 				continue

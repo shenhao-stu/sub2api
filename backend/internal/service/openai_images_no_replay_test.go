@@ -227,3 +227,80 @@ func TestImagesNativeStreamRequiresTerminalMeter(t *testing.T) {
 		}
 	}
 }
+
+type imageCompletedMeterReadFailure struct{ source io.Reader }
+
+func (r imageCompletedMeterReadFailure) Read(p []byte) (int, error) {
+	n, err := r.source.Read(p)
+	if err == io.EOF {
+		return n, io.ErrUnexpectedEOF
+	}
+	return n, err
+}
+func (imageCompletedMeterReadFailure) Close() error { return nil }
+
+func TestImagesCompletedMeterSurvivesReadFailure(t *testing.T) {
+	for _, timer := range []bool{false, true} {
+		t.Run(fmt.Sprint(timer), func(t *testing.T) {
+			body := []byte(`{"model":"gpt-image-2.6-flare","prompt":"synthetic","stream":true}`)
+			c, _ := newOpenAIImagesTestContext(t, body)
+			frames := "data: {\"type\":\"image_generation.completed\",\"usage\":" + imageTerminalMeter + "}\n\n"
+			upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: imageCompletedMeterReadFailure{source: strings.NewReader(frames)}}}
+			svc := newOpenAIImagesTestService(upstream)
+			if timer {
+				svc.cfg.Gateway.ImageStreamDataIntervalTimeout = 1
+			}
+			parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+			require.NoError(t, err)
+			result, err := svc.ForwardImages(context.Background(), c, newOpenAIImagesAPIKeyAccount(), body, parsed, "")
+			require.Error(t, err)
+			require.NotNil(t, result, "a unique completed final meter must survive a later read failure")
+			require.Zero(t, result.ImageCount)
+			require.Equal(t, 196, result.Usage.OutputTokens)
+			require.Len(t, upstream.requests, 1)
+		})
+	}
+}
+
+func TestImagesNativeFinalityAcrossReadFailureAndIdle(t *testing.T) {
+	completed := "data: {\"type\":\"image_generation.completed\",\"usage\":" + imageTerminalMeter + "}\n\n"
+	partial := strings.Replace(completed, "image_generation.completed", "image_generation.partial_image", 1)
+	for _, end := range []string{"read_error", "idle"} {
+		for _, tc := range []struct {
+			name, frames string
+			known        bool
+		}{
+			{"none", "", false}, {"partial", partial, false}, {"final", completed, true}, {"conflict", completed + completed, false},
+		} {
+			t.Run(end+"/"+tc.name, func(t *testing.T) {
+				body := []byte(`{"model":"gpt-image-2.6-flare","prompt":"synthetic","stream":true}`)
+				c, rec := newOpenAIImagesTestContext(t, body)
+				var reader io.ReadCloser = imageCompletedMeterReadFailure{source: strings.NewReader(tc.frames)}
+				if end == "idle" {
+					r, w := io.Pipe()
+					done := make(chan struct{})
+					t.Cleanup(func() { close(done); _ = r.Close() })
+					go func() { defer w.Close(); _, _ = io.WriteString(w, tc.frames); <-done }()
+					reader = r
+				}
+				upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: reader}}
+				svc := newOpenAIImagesTestService(upstream)
+				svc.cfg.Gateway.ImageStreamDataIntervalTimeout = 1
+				parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+				require.NoError(t, err)
+				result, err := svc.ForwardImages(context.Background(), c, newOpenAIImagesAPIKeyAccount(), body, parsed, "")
+				require.Error(t, err)
+				require.Equal(t, http.StatusBadGateway, c.GetInt(OpsUpstreamStatusCodeKey))
+				require.Len(t, upstream.requests, 1)
+				if tc.known {
+					require.NotNil(t, result)
+					require.Equal(t, 196, result.Usage.OutputTokens)
+					require.Zero(t, result.ImageCount)
+					require.NotContains(t, rec.Body.String(), `"type":"error"`, "never fabricate a second financial terminal")
+				} else {
+					require.Nil(t, result, "partial/conflicting meters cannot be settled")
+				}
+			})
+		}
+	}
+}
