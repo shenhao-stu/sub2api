@@ -481,6 +481,11 @@ func omittedSettingKeys(sentFields map[string]json.RawMessage) service.OmittedSe
 			omitted[settingKey] = struct{}{}
 		}
 	}
+	// Unlike active pointer settings, this retired toggle is inert. Preserving
+	// its old value must not be mistaken for an explicit attempt to re-enable it.
+	if _, sent := sentFields["enable_anthropic_cache_ttl_1h_injection"]; !sent {
+		omitted[service.SettingKeyEnableAnthropicCacheTTL1hInjection] = struct{}{}
+	}
 	return omitted
 }
 

@@ -5568,6 +5568,14 @@ const persistGrokMediaEligibility = async (accountID: number, updatedAccount: Ac
 const submitUpdateAccount = async (accountID: number, updatePayload: Record<string, unknown>) => {
   submitting.value = true
   try {
+    const extra = updatePayload.extra as Record<string, unknown> | undefined
+    if (extra && ('cache_ttl_override_enabled' in extra || 'cache_ttl_override_target' in extra)) {
+      // Clear the retired usage-rewriting switch in old editor snapshots. Its
+      // control no longer exists; unrelated account fields must remain editable.
+      const nextExtra = { ...extra, cache_ttl_override_enabled: false }
+      delete (nextExtra as Record<string, unknown>).cache_ttl_override_target
+      updatePayload = { ...updatePayload, extra: nextExtra }
+    }
     let updatedAccount = await adminAPI.accounts.update(accountID, withAntigravityConfirmFlag(updatePayload))
     updatedAccount = await persistGrokMediaEligibility(accountID, updatedAccount)
     appStore.showSuccess(t('admin.accounts.accountUpdated'))
