@@ -1405,6 +1405,10 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	if err := rejectDisabledWireModels(c, s.cfg, body); err != nil {
 		return nil, err
 	}
+	body, relayHeaders, err := s.prepareOpenAIRelaySession(ctx, c, account, body)
+	if err != nil {
+		return nil, err
+	}
 	// Determine target URL based on account type
 	var targetURL string
 	switch account.Type {
@@ -1567,6 +1571,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	if err := applyCommandCodeClientPolicy(req, c, account); err != nil {
 		return nil, err
 	}
+	applyOpenAIRelaySessionHeaders(req.Header, relayHeaders)
 	return req, nil
 }
 

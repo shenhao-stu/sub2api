@@ -2218,7 +2218,7 @@ func (a *Account) IsOpenAIPassthroughEnabled() bool {
 // 1. 按账号类型读取分类型字段
 // 2. 分类型字段缺失时，回退兼容字段
 func (a *Account) IsOpenAIResponsesWebSocketV2Enabled() bool {
-	if a.IsCommandCode() {
+	if a.IsCommandCode() || openAIRelaySessionScopeEnabled(a) {
 		return false
 	}
 	if a == nil || !a.IsOpenAI() || a.Extra == nil {
@@ -2289,7 +2289,7 @@ func normalizeOpenAIWSIngressDefaultMode(mode string) string {
 // 3. 兼容 enabled 旧字段（bool）
 // 4. defaultMode（非法时回退 ctx_pool）
 func (a *Account) ResolveOpenAIResponsesWebSocketV2Mode(defaultMode string) string {
-	if a.IsCommandCode() {
+	if a.IsCommandCode() || openAIRelaySessionScopeEnabled(a) {
 		return OpenAIWSIngressModeOff
 	}
 	resolvedDefault := normalizeOpenAIWSIngressDefaultMode(defaultMode)

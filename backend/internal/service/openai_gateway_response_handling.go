@@ -1519,10 +1519,18 @@ func (s *OpenAIGatewayService) ValidateOpenAIHTTPResponseOwner(
 		return false, nil
 	}
 	ownerUserID, ownerAPIKeyID, found, err := s.getOpenAIWSStateStore().GetHTTPResponseOwner(ctx, groupID, responseID)
-	if err != nil || !found {
+	if err != nil && !errors.Is(err, ErrStickySessionNotFound) {
 		return false, err
 	}
-	return ownerUserID == userID || (ownerUserID <= 0 && ownerAPIKeyID == apiKeyID), nil
+	if found {
+		return ownerUserID == userID || (ownerUserID <= 0 && ownerAPIKeyID == apiKeyID), nil
+	}
+	principal := openAIRelayPrincipal(ctx, userID, apiKeyID)
+	ownerUserID, ownerAPIKeyID, found, err = s.getOpenAIWSStateStore().GetHTTPResponseOwner(ctx, groupID, openAIRelayOwnerKey(responseID, principal))
+	if errors.Is(err, ErrStickySessionNotFound) {
+		err = nil
+	}
+	return found && ownerUserID == userID && ownerAPIKeyID == apiKeyID, err
 }
 
 // BindOpenAIHTTPResponseOwner records an HTTP continuation owner independently
@@ -1569,7 +1577,11 @@ func (s *OpenAIGatewayService) bindHTTPResponseAccount(ctx context.Context, c *g
 	logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, store.BindResponseAccount(bindCtx, groupID, responseID, account.ID, ttl))
 	if rawOwner, ok := c.Get(openAIHTTPResponseOwnerContextKey); ok {
 		if owner, ok := rawOwner.(openAIHTTPResponseOwner); ok && owner.userID > 0 && owner.apiKeyID > 0 {
-			if err := s.BindOpenAIHTTPResponseOwner(bindCtx, groupID, responseID, owner.userID, owner.apiKeyID); err != nil {
+			ownerKey := responseID
+			if openAIRelaySessionScopeEnabled(account) {
+				ownerKey = openAIRelayOwnerKey(responseID, openAIRelayPrincipal(bindCtx, owner.userID, owner.apiKeyID))
+			}
+			if err := s.BindOpenAIHTTPResponseOwner(bindCtx, groupID, ownerKey, owner.userID, owner.apiKeyID); err != nil {
 				logger.L().Warn(
 					"openai.http_bind_response_owner_failed",
 					zap.Int64("group_id", groupID),

@@ -606,6 +606,10 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	if err := rejectDisabledWireModels(c, s.cfg, body); err != nil {
 		return nil, err
 	}
+	body, relayHeaders, err := s.prepareOpenAIRelaySession(ctx, c, account, body)
+	if err != nil {
+		return nil, err
+	}
 	targetURL := openaiPlatformAPIURL
 	switch account.Type {
 	case AccountTypeOAuth:
@@ -759,6 +763,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	if err := applyMappedGPT55LiteCompatibility(req, account, body); err != nil {
 		return nil, err
 	}
+	applyOpenAIRelaySessionHeaders(req.Header, relayHeaders)
 	return req, nil
 }
 
