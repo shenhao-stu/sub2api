@@ -700,53 +700,42 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		})
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 	}
-	if resp.StatusCode >= 400 {
-		respBody := s.readUpstreamErrorBody(resp)
-		_ = resp.Body.Close()
-		respBody = s.redactAgentIdentitySensitiveBody(upstreamCtx, account, respBody)
-		resp.Body = io.NopCloser(bytes.NewReader(respBody))
-		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
-		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-		if isOpenAIImagesInsufficientBalance(respBody) {
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-				ProxyID:            opsUpstreamProxyID(account),
-				ProxyName:          opsUpstreamProxyName(account),
-				Platform:           account.Platform,
-				AccountID:          account.ID,
-				AccountName:        account.Name,
-				UpstreamStatusCode: resp.StatusCode,
-				UpstreamRequestID:  resp.Header.Get("x-request-id"),
-				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
-				Kind:               "failover",
-				Message:            OpenAIImagesInsufficientBalanceMessage,
-			})
+	if resp.StatusCode >= 300 {
+		defer func() { _ = resp.Body.Close() }()
+		respBody := s.redactAgentIdentitySensitiveBody(upstreamCtx, account, s.readUpstreamErrorBody(resp))
+		// A status alone cannot prove that a paid generation never ran. Only an
+		// explicit pre-generation balance rejection without output/usage evidence
+		// may select another account. Never replay an ambiguous dispatched 5xx.
+		if isOpenAIImagesInsufficientBalance(respBody) && imageRejectionHasNoGenerationEvidence(respBody) {
 			s.coolOpenAIImagesInsufficientBalance(upstreamCtx, account)
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,
+				ProxyID: opsUpstreamProxyID(account), ProxyName: opsUpstreamProxyName(account),
+				UpstreamStatusCode: resp.StatusCode, UpstreamRequestID: resp.Header.Get("x-request-id"),
+				Kind: "failover", Message: OpenAIImagesInsufficientBalanceMessage,
+			})
 			return nil, newOpenAIImagesInsufficientBalanceFailoverError(resp.StatusCode, resp.Header, respBody)
 		}
-		if s.shouldFailoverOpenAIUpstreamResponse(account, resp.StatusCode, upstreamMsg, respBody) {
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-				ProxyID:            opsUpstreamProxyID(account),
-				ProxyName:          opsUpstreamProxyName(account),
-				Platform:           account.Platform,
-				AccountID:          account.ID,
-				AccountName:        account.Name,
-				UpstreamStatusCode: resp.StatusCode,
-				UpstreamRequestID:  resp.Header.Get("x-request-id"),
-				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
-				Kind:               "failover",
-				Message:            upstreamMsg,
-			})
-			shouldDisable := s.handleFailoverSideEffects(upstreamCtx, resp, account, respBody, upstreamModel)
-			retryableOnSameAccount := !shouldDisable && account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode)
-			if account.IsOpenAIOAuthLike() && resp.StatusCode == http.StatusTooManyRequests {
-				return nil, s.newOpenAIAccountFailoverError(account, resp.StatusCode, resp.Header, respBody, upstreamMsg, shouldDisable, retryableOnSameAccount)
-			}
-			if isOpenAIHTTPUpstreamAccessStateError(resp.StatusCode, upstreamMsg, respBody) {
-				return nil, newOpenAIUpstreamFailoverError(resp.StatusCode, resp.Header, respBody, upstreamMsg, retryableOnSameAccount)
-			}
-			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody, RetryableOnSameAccount: retryableOnSameAccount}
+		upErr := openAIImagesUpstreamErrorFromHTTP(resp.StatusCode, resp.Header, respBody)
+		if resp.StatusCode < 400 {
+			upErr.StatusCode, upErr.Code, upErr.Message = http.StatusBadGateway, "image_redirect_not_followed", "Upstream image redirect was not followed; automatic replay is disabled"
 		}
-		return s.handleOpenAIImagesErrorResponse(upstreamCtx, resp, c, account, upstreamModel)
+		usage, raw, known := strictImageTerminalUsage(respBody)
+		upErr.Usage = raw
+		setOpsUpstreamError(c, resp.StatusCode, upErr.Message, "")
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,
+			ProxyID: opsUpstreamProxyID(account), ProxyName: opsUpstreamProxyName(account),
+			UpstreamStatusCode: resp.StatusCode, UpstreamRequestID: resp.Header.Get("x-request-id"),
+			Kind: "http_error", Message: upErr.Message,
+		})
+		// Preserve account cooldown/disable policy without reissuing this request.
+		s.handleOpenAIAccountUpstreamError(upstreamCtx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
+		writeOpenAIImagesUpstreamErrorResponse(c, upErr)
+		if known && openAIUsageHasTokens(&usage) {
+			return imageTerminalUsageResult(resp, parsed, requestModel, upstreamModel, usage, startTime), upErr
+		}
+		return nil, upErr
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -756,7 +745,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if parsed.Stream && isEventStreamResponse(resp.Header) {
 		streamUsage, streamCount, streamSizes, ttft, err := s.handleOpenAIImagesStreamingResponse(resp, c, startTime, nil)
 		if err != nil {
-			if streamCount > 0 {
+			if streamCount > 0 || imageErrorHasFinalUsage(err) && openAIUsageHasTokens(&streamUsage) {
 				return &OpenAIForwardResult{
 					RequestID:        resp.Header.Get("x-request-id"),
 					UpstreamHeaders:  resp.Header,
@@ -799,6 +788,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	} else {
 		nonStreamUsage, nonStreamCount, nonStreamSizes, err := s.handleOpenAIImagesNonStreamingResponse(upstreamCtx, resp, c, account, parsed)
 		if err != nil {
+			if openAIUsageHasTokens(&nonStreamUsage) {
+				return imageTerminalUsageResult(resp, parsed, requestModel, upstreamModel, nonStreamUsage, startTime), err
+			}
 			return nil, err
 		}
 		usage = nonStreamUsage
@@ -848,7 +840,7 @@ func (s *OpenAIGatewayService) buildOpenAIImagesRequest(
 	if err != nil {
 		return nil, err
 	}
-	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+	req = req.WithContext(WithHTTPUpstreamRedirectsDisabled(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI)))
 	authHeaders, err := s.buildOpenAIAuthenticationHeaders(ctx, account, token)
 	if err != nil {
 		return nil, fmt.Errorf("build openai authentication headers: %w", err)
@@ -875,6 +867,11 @@ func (s *OpenAIGatewayService) buildOpenAIImagesRequest(
 	}
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
 	account.ApplyHeaderOverrides(req.Header)
+	// Even an administrator header override must not make a paid POST replayable
+	// inside net/http on a reused connection or through a redirect.
+	req.Header.Del("Idempotency-Key")
+	req.Header.Del("X-Idempotency-Key")
+	req.GetBody = nil
 	return req, nil
 }
 
@@ -984,8 +981,10 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(
 	if upErr := openAIImagesUpstreamErrorFromSSEPayload(body); upErr != nil {
 		upErr.UpstreamRequestID = resp.Header.Get("x-request-id")
 		setOpsUpstreamError(c, upErr.StatusCode, upErr.Message, "")
+		usage, raw, _ := strictImageTerminalUsage(body)
+		upErr.Usage = raw
 		writeOpenAIImagesUpstreamErrorResponse(c, upErr)
-		return OpenAIUsage{}, 0, nil, upErr
+		return usage, 0, nil, upErr
 	}
 	body = s.backfillOpenAIImagesB64JSON(ctx, account, parsed, body)
 	imageCount := extractOpenAIImageCountFromJSONBytes(body)
@@ -996,8 +995,10 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(
 			UpstreamRequestID: resp.Header.Get("x-request-id"),
 		}
 		setOpsUpstreamError(c, upErr.StatusCode, upErr.Message, "")
+		usage, raw, _ := strictImageTerminalUsage(body)
+		upErr.Usage = raw
 		writeOpenAIImagesUpstreamErrorResponse(c, upErr)
-		return OpenAIUsage{}, 0, nil, upErr
+		return usage, 0, nil, upErr
 	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	contentType := "application/json"
@@ -1008,7 +1009,10 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(
 	}
 	c.Data(resp.StatusCode, contentType, body)
 
-	usage, _ := extractOpenAIUsageFromJSONBytes(body)
+	usage, _, known := strictImageTerminalUsage(body)
+	if !known {
+		usage, _ = extractOpenAIUsageFromJSONBytes(body)
+	}
 	return usage, imageCount, collectOpenAIResponseImageOutputSizesFromJSONBytes(body), nil
 }
 
@@ -1068,19 +1072,32 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 				dataBytes, _ = sjson.SetBytes(dataBytes, "size", size)
 			}
 		}
-		mergeOpenAIUsage(&usage, dataBytes)
 		// API-key streams are forwarded as received, but their terminal error
 		// must also reach Ops and settlement. Delivered images remain billable.
 		if direct == nil {
 			if upErr := openAIImagesUpstreamErrorFromSSEPayload(dataBytes); upErr != nil {
+				terminalUsage, raw, known := strictImageTerminalUsage(dataBytes)
+				upErr.Usage = raw
+				if imageCounter.Count() == 0 {
+					usage = OpenAIUsage{}
+				}
+				if known {
+					usage = terminalUsage
+				}
 				upErr.UpstreamRequestID = resp.Header.Get("x-request-id")
 				streamErr = upErr
 				setOpsUpstreamError(c, upErr.StatusCode, upErr.Message, "")
 				return
 			}
+			if terminal, _, known := strictImageTerminalUsage(dataBytes); known {
+				usage = terminal
+			} else {
+				mergeOpenAIUsage(&usage, dataBytes)
+			}
 			imageCounter.AddSSEData(dataBytes)
 			return
 		}
+		mergeOpenAIUsage(&usage, dataBytes)
 		imageCounter.AddSSEData(dataBytes)
 		if string(dataBytes) == "[DONE]" {
 			return

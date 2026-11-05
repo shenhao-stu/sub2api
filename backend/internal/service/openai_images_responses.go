@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -38,6 +39,7 @@ type OpenAIImagesUpstreamError struct {
 	Message           string
 	Param             string
 	UpstreamRequestID string
+	Usage             json.RawMessage // Strict terminal counters only; no arbitrary upstream fields.
 
 	// SynthesizedFromModelText marks an error the gateway inferred from the
 	// model's plain-text output instead of reading it off a structured upstream
@@ -1136,10 +1138,11 @@ func writeOpenAIImagesUpstreamErrorResponse(c *gin.Context, err *OpenAIImagesUps
 	if param := strings.TrimSpace(err.Param); param != "" {
 		errorObj["param"] = param
 	}
-	c.JSON(err.clientStatusCode(), gin.H{
-		"error":       errorObj,
-		"status_code": err.clientStatusCode(),
-	})
+	payload := gin.H{"error": errorObj, "status_code": err.clientStatusCode()}
+	if len(err.Usage) > 0 {
+		payload["usage"] = err.Usage
+	}
+	c.JSON(err.clientStatusCode(), payload)
 	return true
 }
 

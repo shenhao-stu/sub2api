@@ -1039,3 +1039,55 @@ func TestHTTPUpstreamPublicHostsOnlyValidatesEveryRedirectHop(t *testing.T) {
 	require.NoError(t, client.CheckRedirect(publicHop, via))
 	require.Error(t, client.CheckRedirect(publicHop, make([]*http.Request, 10)), "redirect chain stays capped")
 }
+
+func TestImagePostRedirectMarkerPrevents307And308Dispatch(t *testing.T) {
+	for _, status := range []int{307, 308} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			var attempts atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts.Add(1)
+				http.Redirect(w, r, "/paid-again", status)
+			}))
+			t.Cleanup(server.Close)
+			req, err := http.NewRequestWithContext(service.WithHTTPUpstreamRedirectsDisabled(t.Context()), http.MethodPost, server.URL, strings.NewReader(`{"model":"gpt-image-2.6-flare"}`))
+			require.NoError(t, err)
+			req.GetBody = nil
+			upstream := NewHTTPUpstream(nil)
+			resp, err := upstream.Do(req, "", 341, 1)
+			require.NoError(t, err)
+			require.Equal(t, status, resp.StatusCode)
+			require.NoError(t, resp.Body.Close())
+			require.EqualValues(t, 1, attempts.Load())
+		})
+	}
+}
+
+func TestImagePostReusedConnectionEOFDoesNotReplay(t *testing.T) {
+	var attempts atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte("warm"))
+			return
+		}
+		attempts.Add(1)
+		_, _ = io.Copy(io.Discard, r.Body)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}))
+	t.Cleanup(server.Close)
+	upstream := NewHTTPUpstream(nil)
+	warm, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+	require.NoError(t, err)
+	resp, err := upstream.Do(warm, "", 342, 1)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, resp.Body.Close())
+	req, err := http.NewRequestWithContext(service.WithHTTPUpstreamRedirectsDisabled(t.Context()), http.MethodPost, server.URL, strings.NewReader(`{"model":"gpt-image-2.6-flare"}`))
+	require.NoError(t, err)
+	req.GetBody = nil
+	_, err = upstream.Do(req, "", 342, 1)
+	require.Error(t, err)
+	require.EqualValues(t, 1, attempts.Load())
+}

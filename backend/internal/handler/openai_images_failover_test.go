@@ -201,3 +201,50 @@ func TestOpenAIGatewayHandlerImages_ServerErrorFailsOverAndReturnsClearErrorWhen
 	require.Equal(t, "failover", events[0].Kind)
 	require.Equal(t, "failover", events[1].Kind)
 }
+
+type nativeImageFailureUpstream struct {
+	service.HTTPUpstream
+	calls   int
+	status  int
+	payload string
+}
+
+func (u *nativeImageFailureUpstream) Do(*http.Request, string, int64, int) (*http.Response, error) {
+	u.calls++
+	return &http.Response{StatusCode: u.status, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(bytes.NewBufferString(u.payload))}, nil
+}
+
+func TestImagesAPIKeyHandlerDispatchedFailureDoesNotSelectAnotherAccount(t *testing.T) {
+	for _, status := range []int{307, 308, 401, 403, 429, 500, 502, 503, 504} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			groupID := int64(3130)
+			accounts := []service.Account{
+				{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Priority: 0, Credentials: map[string]any{"api_key": "synthetic-1", "pool_mode": true}},
+				{ID: 2, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Priority: 1, Credentials: map[string]any{"api_key": "synthetic-2"}},
+			}
+			upstream := &nativeImageFailureUpstream{status: status, payload: `{"error":{"code":"upstream_failed","message":"synthetic failure"}}`}
+			cfg := &config.Config{RunMode: config.RunModeSimple}
+			gateway := service.NewOpenAIGatewayService(openAIImagesFailoverAccountRepo{accounts: accounts}, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
+			billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+			t.Cleanup(billing.Stop)
+			handler := NewOpenAIGatewayHandler(gateway, service.NewConcurrencyService(nil), billing, service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
+			handler.maxAccountSwitches = 10
+			body := []byte(`{"model":"gpt-image-2.6-flare","prompt":"synthetic"}`)
+			request := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = request
+			c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{ID: 99, GroupID: &groupID, Group: &service.Group{ID: groupID, AllowImageGeneration: true}, User: &service.User{ID: 100}})
+			c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 100})
+			handler.Images(c)
+			require.Equal(t, 1, upstream.calls, "pool mode and a second account must not replay a paid attempt")
+			want := status
+			if status < 400 {
+				want = 502
+			}
+			require.Equal(t, want, rec.Code)
+		})
+	}
+}
