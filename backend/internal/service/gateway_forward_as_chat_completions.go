@@ -155,6 +155,9 @@ func (s *GatewayService) ForwardAsChatCompletions(
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
+		if isModelNotAllowedError(resp.StatusCode, respBody) {
+			return s.handleRequestRejectionBody(c, account, resp, respBody, parseClaudeUsageFromResponseBody(respBody), originalModel, mappedModel, clientStream, startTime, modelNotAllowedFields())
+		}
 		if isContentRefusal(resp.StatusCode, respBody) {
 			return s.handleContentRefusalBody(c, account, resp, respBody, parseClaudeUsageFromResponseBody(respBody), originalModel, mappedModel, clientStream, startTime)
 		}
