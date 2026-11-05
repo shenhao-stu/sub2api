@@ -1058,12 +1058,24 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 	fallbackTooLarge := false
 	var sseData openAISSEDataAccumulator
 	var streamErr error
+	var nativeFinalCount int
+	var nativeFinalUsage json.RawMessage
 	finish := func() error {
 		if streamErr != nil {
 			return streamErr
 		}
 		if direct == nil {
-			return nil
+			if imageCounter.Count() > 0 {
+				return nil // Delivered images retain their independent per-image evidence.
+			}
+			upErr := &OpenAIImagesUpstreamError{StatusCode: http.StatusBadGateway, ErrorType: "upstream_error", Code: "image_output_missing", Message: "Upstream returned no final image output", UpstreamRequestID: resp.Header.Get("x-request-id")}
+			if nativeFinalCount == 1 && len(nativeFinalUsage) > 0 {
+				upErr.Usage = nativeFinalUsage
+			} else {
+				usage = OpenAIUsage{}
+			}
+			setOpsUpstreamError(c, upErr.StatusCode, upErr.Message, "")
+			return upErr
 		}
 		if !seenSSEData || imageCounter.Count() == 0 {
 			return newOpenAIUpstreamStreamReadError(ErrOpenAIUpstreamStreamTruncated)
@@ -1092,20 +1104,35 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 				if imageCounter.Count() == 0 {
 					usage = OpenAIUsage{}
 				}
-				if known {
+				if known && nativeFinalCount == 0 {
 					usage = terminalUsage
+				} else if known {
+					// Two metered terminal events are ambiguous, not additive.
+					usage = OpenAIUsage{}
+					upErr.Usage = nil
 				}
 				upErr.UpstreamRequestID = resp.Header.Get("x-request-id")
 				streamErr = upErr
 				setOpsUpstreamError(c, upErr.StatusCode, upErr.Message, "")
 				return
 			}
-			if terminal, _, known := strictImageTerminalUsage(dataBytes); known {
-				usage = terminal
-			} else {
-				mergeOpenAIUsage(&usage, dataBytes)
-			}
 			imageCounter.AddSSEData(dataBytes)
+			eventType := gjson.GetBytes(dataBytes, "type").String()
+			if eventType == "image_generation.completed" || eventType == "image_edit.completed" {
+				nativeFinalCount++
+				if nativeFinalCount == 1 {
+					terminal, raw, known := strictImageTerminalUsage(dataBytes)
+					if known {
+						usage, nativeFinalUsage = terminal, raw
+					} else if imageCounter.Count() > 0 {
+						// Older image APIs have fewer counter fields; their actual
+						// delivered image remains eligible for existing per-image billing.
+						mergeOpenAIUsage(&usage, dataBytes)
+					}
+				} else {
+					usage, nativeFinalUsage = OpenAIUsage{}, nil
+				}
+			}
 			return
 		}
 		mergeOpenAIUsage(&usage, dataBytes)
@@ -1212,13 +1239,22 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 		if len(body) == 0 {
 			return
 		}
-		mergeOpenAIUsage(&usage, body)
+		terminal, raw, known := strictImageTerminalUsage(body)
 		if upErr := openAIImagesUpstreamErrorFromSSEPayload(body); upErr != nil {
+			if known {
+				usage, upErr.Usage = terminal, raw
+			}
 			streamErr = upErr
 			setOpsUpstreamError(c, upErr.StatusCode, upErr.Message, "")
 			return
 		}
 		imageCounter.AddJSONResponse(body)
+		nativeFinalCount = 1
+		if known {
+			usage, nativeFinalUsage = terminal, raw
+		} else if imageCounter.Count() > 0 {
+			mergeOpenAIUsage(&usage, body)
+		}
 	}
 
 	streamInterval := s.openAIImageStreamDataInterval()

@@ -186,3 +186,43 @@ func TestImageFailureTerminalTokensUseLedgerWithoutInventedImage(t *testing.T) {
 	require.Equal(t, firstFingerprint, ledger.lastCmd.RequestFingerprint)
 	require.Zero(t, users.deductCalls, "all wallet writes stay behind the existing idempotent ledger")
 }
+
+func TestImagesNativeStreamRequiresTerminalMeter(t *testing.T) {
+	for _, timer := range []bool{false, true} {
+		for _, tc := range []struct {
+			name, frames string
+			wantResult   bool
+			wantTokens   int
+			wantImages   int
+		}{
+			{"partial_eof", "data: {\"type\":\"image_generation.partial_image\",\"usage\":" + imageTerminalMeter + "}\n\n", false, 0, 0},
+			{"partial_then_final", "data: {\"type\":\"image_generation.partial_image\",\"usage\":{\"input_tokens\":99999,\"output_tokens\":99999}}\n\ndata: {\"type\":\"image_generation.completed\",\"usage\":" + imageTerminalMeter + "}\n\n", true, 196, 0},
+			{"conflicting_terminal", "data: {\"type\":\"image_generation.completed\",\"usage\":" + imageTerminalMeter + "}\n\ndata: {\"type\":\"image_generation.completed\",\"usage\":" + imageTerminalMeter + "}\n\n", false, 0, 0},
+			{"duplicate_with_image", "data: {\"type\":\"image_generation.completed\",\"b64_json\":\"aW1hZ2U=\",\"usage\":" + imageTerminalMeter + "}\n\ndata: {\"type\":\"image_generation.completed\",\"b64_json\":\"aW1hZ2U=\",\"usage\":" + imageTerminalMeter + "}\n\n", true, 0, 1},
+		} {
+			t.Run(fmt.Sprintf("%s/timer=%t", tc.name, timer), func(t *testing.T) {
+				body := []byte(`{"model":"gpt-image-2.6-flare","prompt":"synthetic","stream":true}`)
+				c, _ := newOpenAIImagesTestContext(t, body)
+				upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(tc.frames))}}
+				svc := newOpenAIImagesTestService(upstream)
+				if timer {
+					svc.cfg.Gateway.ImageStreamDataIntervalTimeout = 1
+				}
+				parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+				require.NoError(t, err)
+				result, err := svc.ForwardImages(context.Background(), c, newOpenAIImagesAPIKeyAccount(), body, parsed, "")
+				if tc.wantImages == 0 {
+					require.Error(t, err, "no final image must never be recorded as success")
+				}
+				if tc.wantResult {
+					require.NotNil(t, result)
+					require.Equal(t, tc.wantTokens, result.Usage.OutputTokens)
+					require.Equal(t, tc.wantImages, result.ImageCount)
+				} else {
+					require.Nil(t, result, "partial/conflicting usage must not enter the ledger")
+				}
+				require.Len(t, upstream.requests, 1)
+			})
+		}
+	}
+}
