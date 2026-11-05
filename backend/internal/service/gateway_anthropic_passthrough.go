@@ -141,6 +141,9 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			defer resp.Body.Close()
 			return s.handleErrorResponse(ctx, resp, c, account, input.RequestModel)
 		}
+		if result, err, handled := s.handleSessionAdmissionResponse(c, account, resp, input.OriginalModel, input.RequestModel, input.RequestStream, input.StartTime); handled {
+			return result, err
+		}
 		if result, err, handled := s.handleModelBudgetResponse(c, account, resp, input.OriginalModel, input.RequestModel, input.RequestStream, input.StartTime); handled {
 			return result, err
 		}

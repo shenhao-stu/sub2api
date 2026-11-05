@@ -417,6 +417,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			defer resp.Body.Close()
 			return s.handleErrorResponse(ctx, resp, c, account, reqModel)
 		}
+		if result, err, handled := s.handleSessionAdmissionResponse(c, account, resp, parsed.Model, reqModel, reqStream, startTime); handled {
+			return result, err
+		}
 		if result, err, handled := s.handleModelBudgetResponse(c, account, resp, parsed.Model, reqModel, reqStream, startTime); handled {
 			return result, err
 		}
@@ -709,6 +712,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		return nil, errors.New("upstream request failed: empty response")
 	}
 	// A one-shot parameter rectification can also return a terminal model denial.
+	if result, err, handled := s.handleSessionAdmissionResponse(c, account, resp, parsed.Model, reqModel, reqStream, startTime); handled {
+		return result, err
+	}
 	if result, err, handled := s.handleModelBudgetResponse(c, account, resp, parsed.Model, reqModel, reqStream, startTime); handled {
 		return result, err
 	}
