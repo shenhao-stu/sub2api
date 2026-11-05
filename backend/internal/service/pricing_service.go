@@ -1688,6 +1688,11 @@ func (s *PricingService) matchOpenAIModel(model string) *LiteLLMModelPricing {
 		return openAIGPT54FallbackPricing
 	}
 
+	// Both Image 2.6 raster variants have the same five official token prices
+	// as 2.5; explicit provider/channel prices above still take precedence.
+	if model == "gpt-image-2.6-flare" || model == "gpt-image-2.6-sunburst" {
+		return openAIGPTImage25FallbackPricing
+	}
 	// Remote price mirrors can lag new releases. Never bill GPT Image 2.5
 	// using the older image model's rates when its entry is absent.
 	for _, imageModel := range []string{"gpt-image-2.5-flare", "gpt-image-2.5-sunburst"} {
