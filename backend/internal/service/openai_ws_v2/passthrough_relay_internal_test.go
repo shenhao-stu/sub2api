@@ -795,3 +795,28 @@ func TestObserveUpstreamMessage_ResponseServiceTierOnlyFromTerminalEvents(t *tes
 	)
 	require.Equal(t, "", second.responseServiceTier)
 }
+
+func TestParseUsageReasoningRequiresCompleteEvidence(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, usage, event string
+		output             int
+	}{
+		{"inclusive", `{"input_tokens":100,"output_tokens":8,"total_tokens":108,"output_tokens_details":{"reasoning_tokens":3}}`, "response.completed", 8},
+		{"exclusive", `{"input_tokens":100,"output_tokens":5,"total_tokens":108,"output_tokens_details":{"reasoning_tokens":3}}`, "response.completed", 8},
+		{"missing_input_partial_frame", `{"output_tokens":8,"total_tokens":11,"output_tokens_details":{"reasoning_tokens":3}}`, "response.in_progress", 8},
+		{"missing_output_partial_frame", `{"input_tokens":100,"total_tokens":103,"output_tokens_details":{"reasoning_tokens":3}}`, "response.in_progress", 0},
+		{"larger_gap", `{"input_tokens":100,"output_tokens":8,"total_tokens":112,"output_tokens_details":{"reasoning_tokens":3}}`, "response.completed", 8},
+		{"smaller_gap", `{"input_tokens":100,"output_tokens":8,"total_tokens":110,"output_tokens_details":{"reasoning_tokens":3}}`, "response.completed", 8},
+		{"duplicate_total", `{"input_tokens":100,"output_tokens":5,"total_tokens":108,"total_tokens":109,"output_tokens_details":{"reasoning_tokens":3}}`, "response.completed", 5},
+		{"duplicate_reasoning", `{"input_tokens":100,"output_tokens":5,"total_tokens":108,"output_tokens_details":{"reasoning_tokens":3,"reasoning_tokens":4}}`, "response.completed", 5},
+		{"conflicting_alias", `{"input_tokens":100,"prompt_tokens":101,"output_tokens":5,"total_tokens":108,"output_tokens_details":{"reasoning_tokens":3}}`, "response.completed", 5},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			state := &relayState{}
+			parseUsageAndAccumulate(state, []byte(`{"response":{"usage":`+tt.usage+`}}`), tt.event, nil)
+			require.Equal(t, tt.output, state.turnUsage.OutputTokens)
+		})
+	}
+}
