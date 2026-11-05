@@ -244,6 +244,7 @@ func TestOpenAIImagesJSONKeepalive_HeartbeatBeforeForwardStillFailsOver(t *testi
 	}
 
 	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
+	stop() // Stop the writer before inspecting the non-thread-safe recorder.
 
 	require.Nil(t, result)
 	var failoverErr *UpstreamFailoverError
