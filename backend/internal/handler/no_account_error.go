@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -32,6 +33,15 @@ type noAccountErrorClassification struct {
 	ErrType       string
 	Message       string
 	ModelNotFound bool // true when this is a 404 model_not_found classification
+}
+
+// Only a scheduler sentinel before any failed account was dispatched certifies
+// pool exhaustion. Similar text, lookup failures and generic 503s do not.
+func noAccountSelectionErrorCode(err error, cls noAccountErrorClassification) string {
+	if errors.Is(err, service.ErrNoAvailableAccounts) && cls.Status == http.StatusServiceUnavailable && cls.ErrType == "api_error" && !cls.ModelNotFound {
+		return "no_available_accounts"
+	}
+	return ""
 }
 
 var selectionModelRateLimitedPattern = regexp.MustCompile(`(?:model_rate_limited|rate_limited)=(\d+)`)
