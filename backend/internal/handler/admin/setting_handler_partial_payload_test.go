@@ -39,6 +39,32 @@ func TestUpdateSettingsPartialPayloadKeepsUnsentKeys(t *testing.T) {
 	require.Equal(t, "true", repo.values[service.SettingKeyTurnstileEnabled])
 }
 
+func TestUpdateSettingsRetiredCacheTTLCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload map[string]any
+		status  int
+		stored  string
+	}{
+		{"omitted", map[string]any{"site_name": "Renamed"}, http.StatusOK, "true"},
+		{"explicit_false", map[string]any{"enable_anthropic_cache_ttl_1h_injection": false}, http.StatusOK, "false"},
+		{"explicit_true", map[string]any{"enable_anthropic_cache_ttl_1h_injection": true}, http.StatusBadRequest, "true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, repo := newStepUpSwitchTestHandler(t, map[string]string{
+				service.SettingKeyEnableAnthropicCacheTTL1hInjection: "true",
+				service.SettingKeySiteName:                           "Original",
+			})
+			rec := doUpdateSettings(t, h, tc.payload, nil)
+			require.Equal(t, tc.status, rec.Code, rec.Body.String())
+			require.Equal(t, tc.stored, repo.values[service.SettingKeyEnableAnthropicCacheTTL1hInjection])
+			if tc.name == "omitted" {
+				require.Equal(t, "Renamed", repo.values[service.SettingKeySiteName])
+			}
+		})
+	}
+}
+
 // A full payload keeps whole-document semantics: fields explicitly set to their
 // zero value are still cleared.
 func TestUpdateSettingsFullPayloadStillClearsSentEmptyFields(t *testing.T) {

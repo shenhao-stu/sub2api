@@ -225,6 +225,7 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 		}
 
 		usageEvidence = usageEvidence.ObserveEventJSON([]byte(payload))
+		observePolicyCacheEvent(&usage, []byte(payload))
 		var event apicompat.AnthropicStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			continue
@@ -269,6 +270,7 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 
 	if usage.hasObservedTokens() {
 		finalResp.Usage = apicompat.AnthropicUsage{
+			CacheCreation:            actualCacheCreationJSON(&usage),
 			InputTokens:              usage.InputTokens,
 			OutputTokens:             usage.OutputTokens,
 			CacheCreationInputTokens: usage.CacheCreationInputTokens,
@@ -472,6 +474,7 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 		}
 
 		state.UsageEvidence = state.UsageEvidence.ObserveEventJSON([]byte(payload))
+		observePolicyCacheEvent(&usage, []byte(payload))
 		var event apicompat.AnthropicStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			continue
@@ -483,6 +486,7 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 	// Finalize state machine（客户端已断开时仍推进，保证 usage 汇总完整；仅在
 	// 客户端仍连接时写出）。终态帧与逐事件路径一致过工具名反转与客户端工具还原，
 	// 避免流截断时终态帧携带改写后的工具名。
+	syncAnthropicResponsesUsage(state, usage)
 	if finalEvents := apicompat.FinalizeAnthropicResponsesStream(state); len(finalEvents) > 0 && !clientDisconnected {
 		wrote := false
 		for _, evt := range finalEvents {

@@ -39,7 +39,7 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 // UpdateSettingsOmitting persists system settings, leaving the keys in omitted
 // at their stored value.
 func (s *SettingService) UpdateSettingsOmitting(ctx context.Context, settings *SystemSettings, omitted OmittedSettingKeys) error {
-	updates, err := s.buildSystemSettingsUpdates(ctx, settings)
+	updates, err := s.buildSystemSettingsUpdatesOmitting(ctx, settings, omitted)
 	if err != nil {
 		return err
 	}
@@ -61,7 +61,7 @@ func (s *SettingService) UpdateSettingsWithAuthSourceDefaults(ctx context.Contex
 // auth-source defaults in a single write, leaving the keys in omitted at their
 // stored value.
 func (s *SettingService) UpdateSettingsWithAuthSourceDefaultsOmitting(ctx context.Context, settings *SystemSettings, authDefaults *AuthSourceDefaultSettings, omitted OmittedSettingKeys) error {
-	updates, err := s.buildSystemSettingsUpdates(ctx, settings)
+	updates, err := s.buildSystemSettingsUpdatesOmitting(ctx, settings, omitted)
 	if err != nil {
 		return err
 	}
@@ -102,7 +102,23 @@ func (s *SettingService) refreshCachedSettingsAfterWrite(ctx context.Context, se
 	s.refreshCachedSettings(stored)
 }
 
+func (s *SettingService) buildSystemSettingsUpdatesOmitting(ctx context.Context, settings *SystemSettings, omitted OmittedSettingKeys) (map[string]string, error) {
+	if _, absent := omitted[SettingKeyEnableAnthropicCacheTTL1hInjection]; absent {
+		// The handler merges stored values into partial updates. An old, now
+		// inert toggle is not a request to enable it; leave its stored value
+		// untouched without blocking unrelated settings or mutating the input.
+		copy := *settings
+		copy.EnableAnthropicCacheTTL1hInjection = false
+		return s.buildSystemSettingsUpdates(ctx, &copy)
+	}
+	return s.buildSystemSettingsUpdates(ctx, settings)
+}
+
 func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, settings *SystemSettings) (map[string]string, error) {
+	if settings.EnableAnthropicCacheTTL1hInjection {
+		return nil, infraerrors.BadRequest("CACHE_TTL_OVERRIDE_RETIRED", "The legacy OAuth TTL override is retired. Existing Claude cache controls default to 1h; explicit TTLs and actual upstream usage are preserved.")
+	}
+
 	if err := s.validateDefaultSubscriptionGroups(ctx, settings.DefaultSubscriptions); err != nil {
 		return nil, err
 	}

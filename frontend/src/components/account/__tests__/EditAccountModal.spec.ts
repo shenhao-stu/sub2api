@@ -332,6 +332,20 @@ function mountModal(account = buildAccount(), renderGroupSelector = false) {
 }
 
 describe('EditAccountModal', () => {
+  it('clears retired cache overrides when editing an old account without changing unrelated extra', async () => {
+    const account = buildAccount()
+    account.extra = { cache_ttl_override_enabled: true, cache_ttl_override_target: '5m', unrelated: 'keep' }
+    updateAccountMock.mockResolvedValue(account)
+    const wrapper = mountModal(account)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toMatchObject({ cache_ttl_override_enabled: false, unrelated: 'keep' })
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('cache_ttl_override_target')
+    expect(account.extra.cache_ttl_override_enabled).toBe(true)
+    wrapper.unmount()
+  })
+
   beforeEach(() => {
     authIsSimpleMode.value = true
   })

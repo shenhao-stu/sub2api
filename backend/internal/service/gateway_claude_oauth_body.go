@@ -1021,6 +1021,9 @@ func collectCacheControlPaths(body []byte) (invalidThinking []cacheControlPath, 
 			if content.IsArray() {
 				contentIndex := 0
 				content.ForEach(func(_, item gjson.Result) bool {
+					if msg.Get("role").String() == "system" && item.Get("type").String() == "tool_addition" && item.Get("tool.type").String() == "tool_definition" && item.Get("tool.definition.cache_control").Exists() {
+						messagePaths = append(messagePaths, fmt.Sprintf("messages.%d.content.%d.tool.definition.cache_control", msgIndex, contentIndex))
+					}
 					if item.Get("cache_control").Exists() {
 						path := fmt.Sprintf("messages.%d.content.%d.cache_control", msgIndex, contentIndex)
 						if item.Get("type").String() == "thinking" {
@@ -1057,9 +1060,9 @@ func collectCacheControlPaths(body []byte) (invalidThinking []cacheControlPath, 
 }
 
 // enforceCacheControlLimit 让出站 cache_control 满足上游约束：
-// 先执行块数量限制，再修正 TTL 顺序。
+// 仅执行块数量限制。TTL 默认与顺序在最终出站构建时校验，不修改显式 TTL。
 func enforceCacheControlLimit(body []byte) []byte {
-	return normalizeCacheControlTTLOrder(enforceCacheControlBlockLimit(body))
+	return enforceCacheControlBlockLimit(body)
 }
 
 // enforceCacheControlBlockLimit 强制执行 cache_control 块数量限制（最多 4 个）
@@ -1145,127 +1148,6 @@ func enforceCacheControlBlockLimit(body []byte) []byte {
 		return out
 	}
 	return body
-}
-
-// normalizeCacheControlTTLOrder raises earlier ephemeral breakpoints to 1h when
-// a later breakpoint uses 1h. Anthropic processes tools, system, then messages,
-// and rejects a ttl=1h breakpoint that follows a 5m one; an omitted ttl means 5m.
-// The mimic path adds its own 5m breakpoints to tools and system, so a client
-// 1h breakpoint in messages would otherwise turn a valid request into a 400.
-//
-// Raising keeps the client's choice. Tokens before a 1h breakpoint are already
-// written at the 1h rate, so the earlier breakpoints add no cache write cost.
-// Requests with a valid order are returned unchanged.
-func normalizeCacheControlTTLOrder(body []byte) []byte {
-	_, messagePaths, toolPaths, systemPaths := collectCacheControlPaths(body)
-	paths := make([]string, 0, len(toolPaths)+len(systemPaths)+len(messagePaths)+1)
-	paths = append(paths, toolPaths...)
-	paths = append(paths, systemPaths...)
-	paths = append(paths, messagePaths...)
-	// A top-level cache_control applies to the last cacheable block.
-	if gjson.GetBytes(body, "cache_control").Exists() {
-		paths = append(paths, "cache_control")
-	}
-
-	last1h := -1
-	for i, path := range paths {
-		if gjson.GetBytes(body, path+".ttl").String() == cacheTTLTarget1h {
-			last1h = i
-		}
-	}
-
-	out := body
-	for _, path := range paths[:last1h+1] {
-		cc := gjson.GetBytes(out, path)
-		if cc.Get("type").String() != "ephemeral" || cc.Get("ttl").String() == cacheTTLTarget1h {
-			continue
-		}
-		if next, err := sjson.SetBytes(out, path+".ttl", cacheTTLTarget1h); err == nil {
-			out = next
-		}
-	}
-	return out
-}
-
-// injectAnthropicCacheControlTTL1h 将已有 ephemeral cache_control 块的 ttl 强制写为 1h。
-// 仅修改已经存在的 cache_control，不新增缓存断点。
-func injectAnthropicCacheControlTTL1h(body []byte) []byte {
-	return forceEphemeralCacheControlTTL(body, cacheTTLTarget1h)
-}
-
-func forceEphemeralCacheControlTTL(body []byte, ttl string) []byte {
-	if len(body) == 0 || ttl == "" {
-		return body
-	}
-	out := body
-	var paths []string
-	addPath := func(path string, value gjson.Result) {
-		cc := value.Get("cache_control")
-		if !cc.Exists() || cc.Get("type").String() != "ephemeral" {
-			return
-		}
-		if cc.Get("ttl").String() == ttl {
-			return
-		}
-		paths = append(paths, path+".cache_control.ttl")
-	}
-
-	if topCC := gjson.GetBytes(body, "cache_control"); topCC.Exists() && topCC.Get("type").String() == "ephemeral" && topCC.Get("ttl").String() != ttl {
-		paths = append(paths, "cache_control.ttl")
-	}
-
-	system := gjson.GetBytes(body, "system")
-	if system.IsArray() {
-		idx := -1
-		system.ForEach(func(_, block gjson.Result) bool {
-			idx++
-			addPath(fmt.Sprintf("system.%d", idx), block)
-			return true
-		})
-	}
-
-	messages := gjson.GetBytes(body, "messages")
-	if messages.IsArray() {
-		msgIdx := -1
-		messages.ForEach(func(_, msg gjson.Result) bool {
-			msgIdx++
-			content := msg.Get("content")
-			if !content.IsArray() {
-				return true
-			}
-			contentIdx := -1
-			content.ForEach(func(_, block gjson.Result) bool {
-				contentIdx++
-				addPath(fmt.Sprintf("messages.%d.content.%d", msgIdx, contentIdx), block)
-				return true
-			})
-			return true
-		})
-	}
-
-	tools := gjson.GetBytes(body, "tools")
-	if tools.IsArray() {
-		idx := -1
-		tools.ForEach(func(_, tool gjson.Result) bool {
-			idx++
-			addPath(fmt.Sprintf("tools.%d", idx), tool)
-			return true
-		})
-	}
-
-	for _, path := range paths {
-		if next, err := sjson.SetBytes(out, path, ttl); err == nil {
-			out = next
-		}
-	}
-	return out
-}
-
-func (s *GatewayService) shouldInjectAnthropicCacheTTL1h(ctx context.Context, account *Account) bool {
-	if account == nil || !account.IsAnthropicOAuthOrSetupToken() || s == nil || s.settingService == nil {
-		return false
-	}
-	return s.settingService.IsAnthropicCacheTTL1hInjectionEnabled(ctx)
 }
 
 // shouldNormalizeClientDateline reports whether the request body's client

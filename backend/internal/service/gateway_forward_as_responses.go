@@ -364,6 +364,14 @@ func mergeAnthropicUsage(dst *ClaudeUsage, src apicompat.AnthropicUsage) {
 	if src.OutputTokens > 0 {
 		dst.OutputTokens = src.OutputTokens
 	}
+	// The typed counters cannot distinguish omitted cache fields from zero.
+	// Complete original-wire evidence can, including an authoritative all-zero
+	// update. Missing/contradictory details never inherit an old TTL split.
+	dst.CacheCreation5mTokens, dst.CacheCreation1hTokens = 0, 0
+	if split := dst.policyCacheCreation; split != nil {
+		dst.CacheCreationInputTokens = split.total
+	}
+	restorePolicyCacheCreation(dst)
 }
 
 func syncAnthropicResponsesUsage(state *apicompat.AnthropicEventToResponsesState, usage ClaudeUsage) {
@@ -371,6 +379,7 @@ func syncAnthropicResponsesUsage(state *apicompat.AnthropicEventToResponsesState
 	state.OutputTokens = usage.OutputTokens
 	state.CacheReadInputTokens = usage.CacheReadInputTokens
 	state.CacheCreationInputTokens = usage.CacheCreationInputTokens
+	state.CacheCreation = actualCacheCreationJSON(&usage)
 }
 
 func normalizeAnthropicEventUsageForResponses(event *apicompat.AnthropicStreamEvent, usage ClaudeUsage) {
@@ -382,6 +391,7 @@ func normalizeAnthropicEventUsageForResponses(event *apicompat.AnthropicStreamEv
 		dst.OutputTokens = usage.OutputTokens
 		dst.CacheReadInputTokens = usage.CacheReadInputTokens
 		dst.CacheCreationInputTokens = usage.CacheCreationInputTokens
+		dst.CacheCreation = actualCacheCreationJSON(&usage)
 	}
 	normalize(event.Usage)
 	if event.Message != nil {
@@ -516,6 +526,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	// Update usage from accumulated delta
 	if usage.hasObservedTokens() {
 		finalResp.Usage = apicompat.AnthropicUsage{
+			CacheCreation:            actualCacheCreationJSON(&usage),
 			InputTokens:              usage.InputTokens,
 			OutputTokens:             usage.OutputTokens,
 			CacheCreationInputTokens: usage.CacheCreationInputTokens,

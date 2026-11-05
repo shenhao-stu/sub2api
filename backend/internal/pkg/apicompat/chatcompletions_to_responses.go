@@ -38,6 +38,7 @@ func ChatCompletionsToResponsesWithMinOutputTokens(req *ChatCompletionsRequest, 
 	}
 
 	out := &ResponsesRequest{
+		CacheControl:       req.CacheControl,
 		Model:              req.Model,
 		Instructions:       req.Instructions,
 		Input:              inputJSON,
@@ -261,8 +262,35 @@ func chatAssistantToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 		}
 	}
 
-	if content != "" {
-		parts := []ResponsesContentPart{{Type: "output_text", Text: content}}
+	var markedParts []ChatContentPart
+	var responseParts []ResponsesContentPart
+	if json.Unmarshal(m.Content, &markedParts) == nil {
+		marked := false
+		for _, p := range markedParts {
+			marked = marked || len(p.CacheControl) > 0
+		}
+		if marked {
+			if m.ReasoningContent != "" {
+				responseParts = append(responseParts, ResponsesContentPart{Type: "output_text", Text: "<thinking>" + m.ReasoningContent + "</thinking>"})
+			}
+			var rawParts []json.RawMessage
+			_ = json.Unmarshal(m.Content, &rawParts)
+			for i, p := range markedParts {
+				partText, err := parseAssistantContent(append(append([]byte{'['}, rawParts[i]...), ']'))
+				if err != nil {
+					return nil, err
+				}
+				if partText != "" || len(p.CacheControl) > 0 {
+					responseParts = append(responseParts, ResponsesContentPart{Type: "output_text", Text: partText, CacheControl: p.CacheControl})
+				}
+			}
+		}
+	}
+	if content != "" || len(responseParts) > 0 {
+		parts := responseParts
+		if parts == nil {
+			parts = []ResponsesContentPart{{Type: "output_text", Text: content}}
+		}
 		partsJSON, err := json.Marshal(parts)
 		if err != nil {
 			return nil, err
@@ -368,9 +396,10 @@ func chatToolToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 		output = "(empty)"
 	}
 	return []ResponsesInputItem{{
-		Type:   "function_call_output",
-		CallID: m.ToolCallID,
-		Output: output,
+		CacheControl: m.CacheControl,
+		Type:         "function_call_output",
+		CallID:       m.ToolCallID,
+		Output:       output,
 	}}, nil
 }
 
@@ -391,9 +420,10 @@ func chatFunctionToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 		callID = m.Name
 	}
 	return []ResponsesInputItem{{
-		Type:   "function_call_output",
-		CallID: callID,
-		Output: output,
+		CacheControl: m.CacheControl,
+		Type:         "function_call_output",
+		CallID:       callID,
+		Output:       output,
 	}}, nil
 }
 
@@ -448,9 +478,10 @@ func convertChatContentPartsToResponses(parts []ChatContentPart) []ResponsesCont
 	for _, p := range parts {
 		switch p.Type {
 		case "text":
-			if p.Text != "" || len(p.PromptCacheBreakpoint) > 0 {
+			if p.Text != "" || len(p.PromptCacheBreakpoint) > 0 || len(p.CacheControl) > 0 {
 				responseParts = append(responseParts, ResponsesContentPart{
 					PromptCacheBreakpoint: p.PromptCacheBreakpoint,
+					CacheControl:          p.CacheControl,
 					Type:                  "input_text",
 					Text:                  p.Text,
 				})
@@ -459,6 +490,7 @@ func convertChatContentPartsToResponses(parts []ChatContentPart) []ResponsesCont
 			if p.ImageURL != nil && p.ImageURL.URL != "" && !isEmptyBase64DataURI(p.ImageURL.URL) {
 				responseParts = append(responseParts, ResponsesContentPart{
 					PromptCacheBreakpoint: p.PromptCacheBreakpoint,
+					CacheControl:          p.CacheControl,
 					Type:                  "input_image",
 					ImageURL:              p.ImageURL.URL,
 				})
@@ -467,6 +499,7 @@ func convertChatContentPartsToResponses(parts []ChatContentPart) []ResponsesCont
 			if p.File != nil && (p.File.FileData != "" || p.File.FileID != "") {
 				responseParts = append(responseParts, ResponsesContentPart{
 					PromptCacheBreakpoint: p.PromptCacheBreakpoint,
+					CacheControl:          p.CacheControl,
 					Type:                  "input_file",
 					Filename:              p.File.Filename,
 					FileData:              p.File.FileData,
@@ -516,7 +549,7 @@ func convertChatToolsToResponses(tools []ChatTool, functions []ChatFunction) []R
 	for _, t := range tools {
 		toolType := strings.ToLower(strings.TrimSpace(t.Type))
 		if toolType == "x_search" {
-			out = append(out, ResponsesTool{
+			out = append(out, ResponsesTool{CacheControl: t.CacheControl,
 				Type:                     "x_search",
 				AllowedXHandles:          t.AllowedXHandles,
 				ExcludedXHandles:         t.ExcludedXHandles,
@@ -528,13 +561,13 @@ func convertChatToolsToResponses(tools []ChatTool, functions []ChatFunction) []R
 			continue
 		}
 		if toolType == "web_search" || toolType == "code_execution" {
-			out = append(out, ResponsesTool{Type: toolType})
+			out = append(out, ResponsesTool{CacheControl: t.CacheControl, Type: toolType})
 			continue
 		}
 		if t.Type != "function" || t.Function == nil {
 			continue
 		}
-		rt := ResponsesTool{
+		rt := ResponsesTool{CacheControl: t.CacheControl,
 			Type:        "function",
 			Name:        t.Function.Name,
 			Description: t.Function.Description,

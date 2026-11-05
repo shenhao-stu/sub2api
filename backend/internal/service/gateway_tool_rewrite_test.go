@@ -138,7 +138,7 @@ func TestApplyToolsLastCacheBreakpoint_InjectsDefault(t *testing.T) {
 	body := []byte(`{"tools":[{"name":"a","input_schema":{}},{"name":"b","input_schema":{}}]}`)
 	out := applyToolsLastCacheBreakpoint(body)
 	require.Equal(t, "ephemeral", gjson.GetBytes(out, "tools.1.cache_control.type").String())
-	require.Equal(t, "5m", gjson.GetBytes(out, "tools.1.cache_control.ttl").String())
+	require.Equal(t, "1h", gjson.GetBytes(out, "tools.1.cache_control.ttl").String())
 	// First tool untouched
 	require.False(t, gjson.GetBytes(out, "tools.0.cache_control").Exists())
 }
@@ -163,7 +163,7 @@ func TestApplyToolsLastCacheBreakpoint_SkipsDeferredFinalTool(t *testing.T) {
 	out := applyToolsLastCacheBreakpoint(body)
 
 	require.Equal(t, "ephemeral", gjson.GetBytes(out, "tools.0.cache_control.type").String())
-	require.Equal(t, "5m", gjson.GetBytes(out, "tools.0.cache_control.ttl").String())
+	require.Equal(t, "1h", gjson.GetBytes(out, "tools.0.cache_control.ttl").String())
 	require.False(t, gjson.GetBytes(out, "tools.1.cache_control").Exists())
 }
 
@@ -188,7 +188,7 @@ func TestAddMessageCacheBreakpoints_LastMessageOnly(t *testing.T) {
 	body := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 	out := addMessageCacheBreakpoints(body)
 	require.Equal(t, "ephemeral", gjson.GetBytes(out, "messages.0.content.0.cache_control.type").String())
-	require.Equal(t, "5m", gjson.GetBytes(out, "messages.0.content.0.cache_control.ttl").String())
+	require.Equal(t, "1h", gjson.GetBytes(out, "messages.0.content.0.cache_control.ttl").String())
 }
 
 func TestAddMessageCacheBreakpoints_SecondToLastUserTurn(t *testing.T) {
@@ -216,7 +216,7 @@ func TestAddMessageCacheBreakpoints_StringContentPromoted(t *testing.T) {
 	require.True(t, gjson.GetBytes(out, "messages.0.content").IsArray())
 	require.Equal(t, "text", gjson.GetBytes(out, "messages.0.content.0.type").String())
 	require.Equal(t, "hi", gjson.GetBytes(out, "messages.0.content.0.text").String())
-	require.Equal(t, "5m", gjson.GetBytes(out, "messages.0.content.0.cache_control.ttl").String())
+	require.Equal(t, "1h", gjson.GetBytes(out, "messages.0.content.0.cache_control.ttl").String())
 }
 
 func TestRewriteMessageCacheControlIfEnabled_DefaultKeepsClientAnchors(t *testing.T) {
@@ -247,10 +247,7 @@ func TestRewriteMessageCacheControlIfEnabled_OptInPreservesLegacyRewrite(t *test
 	svc := &GatewayService{settingService: NewSettingService(repo, &config.Config{})}
 
 	out := svc.rewriteMessageCacheControlIfEnabled(context.Background(), body)
-
-	require.Equal(t, "5m", gjson.GetBytes(out, "messages.0.content.0.cache_control.ttl").String())
-	require.False(t, gjson.GetBytes(out, "messages.2.content.0.cache_control").Exists())
-	require.Equal(t, "5m", gjson.GetBytes(out, "messages.3.content.0.cache_control.ttl").String())
+	require.JSONEq(t, string(body), string(out), "opt-in must not remove explicit client cache breakpoints")
 }
 
 func TestBuildToolNameRewriteFromBody_ReverseOrderedByLengthDesc(t *testing.T) {
@@ -306,7 +303,7 @@ func TestApplyToolNameRewriteToBody_Spans(t *testing.T) {
 	require.Equal(t, `sessions_"quoted`, gjson.GetBytes(out, "messages.0.content.0.input.name").String())
 	require.Equal(t, `sessions_"quoted`, gjson.GetBytes(out, "metadata.name").String())
 	require.False(t, gjson.GetBytes(out, "tools.1.cache_control").Exists())
-	require.Equal(t, "5m", gjson.GetBytes(out, "tools.0.cache_control.ttl").String())
+	require.Equal(t, "1h", gjson.GetBytes(out, "tools.0.cache_control.ttl").String())
 	require.False(t, gjson.GetBytes(out, "messages.0.content.1.name").Exists())
 }
 

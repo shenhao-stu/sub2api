@@ -47,6 +47,12 @@ func checkAnthropicMessagesCredential(account *Account) error {
 }
 
 func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token, tokenType, modelID string, reqStream bool, mimicClaudeCode bool) (*http.Request, []byte, error) {
+	var cacheErr error
+	body, cacheErr = prepareClaudeCacheTTL(c, body, modelID)
+	if cacheErr != nil {
+		return nil, nil, cacheErr
+	}
+
 	if err := checkAnthropicMessagesCredential(account); err != nil {
 		return nil, nil, err
 	}

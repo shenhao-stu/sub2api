@@ -356,6 +356,17 @@ func ParseGatewayRequest(body *RequestBodyRef, protocol string) (*ParsedRequest,
 	if err := parseGatewayRequestCurrentBody(parsed, protocol); err != nil {
 		return nil, err
 	}
+	if protocol == PlatformAnthropic {
+		next, err := normalizeClaudeCacheTTL(body.Bytes(), parsed.Model)
+		if err != nil {
+			return nil, err
+		}
+		if !bytes.Equal(next, body.Bytes()) {
+			if err := parsed.ReplaceBody(next); err != nil {
+				return nil, err
+			}
+		}
+	}
 	return parsed, nil
 }
 
@@ -470,8 +481,10 @@ func stripEmptyTextBlocksFromSlice(blocks []any) ([]any, bool) {
 		}
 		blockType, _ := blockMap["type"].(string)
 
-		// Strip empty text blocks
-		if blockType == "text" {
+		// A cache breakpoint is semantic even on invalid/empty text. Preserve it
+		// for upstream validation instead of silently changing the cache prefix.
+		_, hasCacheControl := blockMap["cache_control"]
+		if blockType == "text" && !hasCacheControl {
 			if txt, _ := blockMap["text"].(string); txt == "" {
 				if result == nil {
 					result = make([]any, 0, len(blocks))

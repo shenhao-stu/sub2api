@@ -524,6 +524,7 @@ func chatUsageFromResponsesUsage(u *ResponsesUsage) *ChatUsage {
 		usage.missingPromptTokens = !u.inputTokensPresent || !u.receiptCountersValid
 		usage.missingCompletionTokens = !u.outputTokensPresent || !u.receiptCountersValid
 	}
+	usage.CacheCreation = u.CacheCreation
 	usage.PromptTokensDetails = promptDetailsFromResponses(u.InputTokensDetails)
 	if u.CacheCreationInputTokens > 0 {
 		if usage.PromptTokensDetails == nil {

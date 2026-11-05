@@ -8,6 +8,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/tidwall/gjson"
 )
 
 const compatPromptCacheKeyPrefix = "compat_cc_"
@@ -129,7 +130,7 @@ func deriveAnthropicCacheControlPromptCacheKey(req *apicompat.AnthropicRequest) 
 		for _, block := range systemBlocks {
 			if block.Type == "text" &&
 				block.CacheControl != nil &&
-				strings.TrimSpace(block.CacheControl.Type) == "ephemeral" &&
+				strings.TrimSpace(gjson.GetBytes(block.CacheControl, "type").String()) == "ephemeral" &&
 				strings.TrimSpace(block.Text) != "" {
 				parts = append(parts, "system:"+strings.TrimSpace(block.Text))
 			}
@@ -146,7 +147,7 @@ func deriveAnthropicCacheControlPromptCacheKey(req *apicompat.AnthropicRequest) 
 		for _, block := range blocks {
 			if block.Type != "text" ||
 				block.CacheControl == nil ||
-				strings.TrimSpace(block.CacheControl.Type) != "ephemeral" ||
+				strings.TrimSpace(gjson.GetBytes(block.CacheControl, "type").String()) != "ephemeral" ||
 				strings.TrimSpace(block.Text) == "" {
 				continue
 			}
