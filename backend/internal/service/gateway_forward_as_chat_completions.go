@@ -151,6 +151,9 @@ func (s *GatewayService) ForwardAsChatCompletions(
 
 	// 12. Handle error response with failover
 	if resp.StatusCode >= 400 {
+		if result, err, handled := s.handleModelBudgetResponse(c, account, resp, originalModel, mappedModel, clientStream, startTime); handled {
+			return result, err
+		}
 		respBody, _ := s.readUpstreamErrorBody(resp)
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
