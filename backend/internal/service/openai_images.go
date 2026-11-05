@@ -716,6 +716,17 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 			})
 			return nil, newOpenAIImagesInsufficientBalanceFailoverError(resp.StatusCode, resp.Header, respBody)
 		}
+		if imageRejectionHasNoGenerationEvidence(respBody) && isOpenAIHTTPUpstreamAccessStateError(resp.StatusCode, "", respBody) {
+			message := sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage(respBody))
+			s.handleOpenAIAccountUpstreamError(upstreamCtx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,
+				ProxyID: opsUpstreamProxyID(account), ProxyName: opsUpstreamProxyName(account),
+				UpstreamStatusCode: resp.StatusCode, UpstreamRequestID: resp.Header.Get("x-request-id"),
+				Kind: "failover", Message: message,
+			})
+			return nil, newOpenAIUpstreamFailoverError(resp.StatusCode, resp.Header, respBody, message, false)
+		}
 		upErr := openAIImagesUpstreamErrorFromHTTP(resp.StatusCode, resp.Header, respBody)
 		if resp.StatusCode < 400 {
 			upErr.StatusCode, upErr.Code, upErr.Message = http.StatusBadGateway, "image_redirect_not_followed", "Upstream image redirect was not followed; automatic replay is disabled"

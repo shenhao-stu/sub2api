@@ -53,6 +53,7 @@ func TestImagesAPIKeyTerminalUsageSurvivesFailure(t *testing.T) {
 		{"http_failure", 503, `{"error":{"message":"failed","status_code":503},"usage":` + imageTerminalMeter + `}`, false},
 		{"embedded_failure", 200, `{"error":{"message":"failed","status_code":503},"usage":` + imageTerminalMeter + `}`, false},
 		{"output_missing", 200, `{"data":[],"usage":` + imageTerminalMeter + `}`, false},
+		{"access_after_meter", 403, `{"error":{"code":"organization_suspended","message":"failed"},"usage":` + imageTerminalMeter + `}`, false},
 		{"balance_after_meter", 502, `{"error":{"code":"insufficient_balance","message":"failed"},"usage":` + imageTerminalMeter + `}`, false},
 		{"stream_error", 200, "data: {\"type\":\"error\",\"error\":{\"message\":\"failed\",\"status_code\":503},\"usage\":" + imageTerminalMeter + "}\n\n", true},
 	} {
