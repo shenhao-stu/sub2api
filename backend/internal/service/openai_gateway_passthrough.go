@@ -2057,10 +2057,19 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		flushPending = false
 	}
 	defer flushPendingOutput()
-	writePendingLines := func() bool {
+	firstWritePrepared := false
+	prepareFirstWrite := func() {
+		if firstWritePrepared {
+			return
+		}
+		stopKeepalive()
+		firstWritePrepared = true
 		if !c.Writer.Written() {
 			s.bindOpenAIRelayTurnState(c, account, extractOpenAICodexTurnState(c.Writer.Header()))
 		}
+	}
+	writePendingLines := func() bool {
+		prepareFirstWrite()
 		for _, pending := range pendingLines {
 			if _, err := fmt.Fprintln(w, pending); err != nil {
 				clientDisconnected = true
@@ -2326,7 +2335,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			// 真实输出开始，心跳的使命结束。停拍是幂等的，且会与心跳 goroutine
 			// 建立 happens-before —— 之后 ResponseWriter 由本循环独占。
 			if !clientOutputStarted {
-				stopKeepalive()
+				prepareFirstWrite()
 			}
 			if !clientOutputStarted && len(pendingLines) > 0 {
 				if !writePendingLines() {
