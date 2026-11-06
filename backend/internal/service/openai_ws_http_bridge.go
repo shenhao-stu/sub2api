@@ -26,6 +26,12 @@ const (
 	openAIWSHTTPBridgeErrorBodyLimitBytes         = 64 * 1024
 )
 
+// SetGrokWSAdmissionParent preserves the original first-turn lineage for policy
+// matching when routing legitimately removes it from the upstream request.
+func SetGrokWSAdmissionParent(c *gin.Context, id string) {
+	c.Set("grok_ws_admission_parent", id)
+}
+
 const openAIWSHTTPBridgeToolStateContextKey = "openai_ws_http_bridge_tool_state"
 
 type openAIWSHTTPBridgeToolState struct {
@@ -448,7 +454,11 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	if err != nil {
 		return nil, fmt.Errorf("prepare http bridge body: %w", err)
 	}
-	guard, refusal := s.grokRefusalAdmission(ctx, c, account, payload)
+	var parent string
+	if turn == 1 && c != nil {
+		parent = c.GetString("grok_ws_admission_parent")
+	}
+	guard, refusal := s.grokRefusalAdmission(ctx, c, account, payload, parent)
 	if refusal != nil {
 		frame, _ := json.Marshal(map[string]any{"type": "error", "sequence_number": 0, "status": refusal.StatusCode, "error": refusal})
 		if err := writeClientMessage(frame); err != nil {

@@ -281,6 +281,15 @@ func TestGrokRefusalWebSocketConsecutiveTurns(t *testing.T) {
 	require.Nil(t, r)
 	require.Equal(t, "grok_session_isolated", gjson.GetBytes(frame, "error.type").Str)
 	require.EqualValues(t, 1, upstreamCalls.Load())
+	// A reconnect can legitimately remove the parent before the first upstream
+	// turn. Retain it only for local admission; never restore it on the wire.
+	SetGrokWSAdmissionParent(c, id)
+	body := []byte(`{"type":"response.create","input":"new input without repeated history","model":"grok-4.7"}`)
+	r, err = s.proxyOpenAIWSHTTPBridgeTurn(c.Request.Context(), c, a, "offline", body, len(body), "grok-4.7", "", "", "", "", 1, func(b []byte) error { frame = b; return nil })
+	require.Error(t, err)
+	require.Nil(t, r)
+	require.Equal(t, "grok_session_isolated", gjson.GetBytes(frame, "error.type").Str)
+	require.EqualValues(t, 1, upstreamCalls.Load())
 }
 
 type grokRefusalScoreRecorder struct {

@@ -75,7 +75,7 @@ func (s *OpenAIGatewayService) CheckGrokRefusalSession(ctx context.Context, c *g
 			o.grokRefusal = nil
 		}
 	}
-	guard, fields := s.grokRefusalAdmission(ctx, c, account, body)
+	guard, fields := s.grokRefusalAdmission(ctx, c, account, body, "")
 	if fields != nil {
 		if fields.StatusCode == http.StatusForbidden {
 			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
@@ -92,7 +92,7 @@ func (s *OpenAIGatewayService) CheckGrokRefusalSession(ctx context.Context, c *g
 	return nil
 }
 
-func (s *OpenAIGatewayService) grokRefusalAdmission(ctx context.Context, c *gin.Context, account *Account, body []byte) (*grokRefusalSession, *openAIClientErrorFields) {
+func (s *OpenAIGatewayService) grokRefusalAdmission(ctx context.Context, c *gin.Context, account *Account, body []byte, originalParent string) (*grokRefusalSession, *openAIClientErrorFields) {
 	if c == nil || s.cfg == nil || !s.cfg.Gateway.Grok.RefusalSessionIsolationEnabled {
 		return nil, nil
 	}
@@ -120,7 +120,11 @@ func (s *OpenAIGatewayService) grokRefusalAdmission(ctx context.Context, c *gin.
 	scope := "grok-refusal:v1:" + principal
 	session := firstNonEmpty(extractClaudeCodeSessionID(c, body), explicitOpenAIHeaderSessionID(c), c.GetHeader(grokConversationIDHeader))
 	guard := &grokRefusalSession{store: store, scope: scope, body: body, accountID: account.ID}
-	guard.previous = guard.sessionKey(grokPreviousResponseSessionSeed(body))
+	previous := grokPreviousResponseSessionSeed(body)
+	if previous == "" && ClassifyOpenAIPreviousResponseIDKind(originalParent) == OpenAIPreviousResponseIDKindResponseID {
+		previous = "grok-prev-resp:" + originalParent
+	}
+	guard.previous = guard.sessionKey(previous)
 	if session != "" {
 		guard.explicit = guard.sessionKey(session)
 	}
