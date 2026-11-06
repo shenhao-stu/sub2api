@@ -1366,6 +1366,7 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		return nil
 	}
 	keys := []string{
+		"personal_nano_image_adapter",
 		// Provider identity must survive candidate projection so Command Code
 		// transport restrictions remain effective before loading full credentials.
 		"provider",

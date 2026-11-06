@@ -11,6 +11,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestSchedulerMetadataPreservesPersonalImageAdapterIsolation(t *testing.T) {
+	for _, flagged := range []bool{true, false} {
+		account := service.Account{ID: 42, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, GroupIDs: []int64{94}, Extra: map[string]any{"personal_nano_image_adapter": flagged, "private_diagnostic": "excluded"}}
+		projected := buildSchedulerMetadataAccount(account)
+		require.Equal(t, flagged, projected.Extra["personal_nano_image_adapter"])
+		require.Equal(t, []int64{94}, projected.GroupIDs)
+		require.NotContains(t, projected.Extra, "private_diagnostic")
+	}
+}
+
 func TestSchedulerMetadataPreservesEndpointSpecificCapability(t *testing.T) {
 	account := service.Account{ID: 42, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
 		Credentials: map[string]any{"base_url": "https://relay.example"},
