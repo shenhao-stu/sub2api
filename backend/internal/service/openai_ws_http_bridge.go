@@ -26,6 +26,12 @@ const (
 	openAIWSHTTPBridgeErrorBodyLimitBytes         = 64 * 1024
 )
 
+// SetGrokWSAdmissionParent preserves the original first-turn lineage for policy
+// matching when routing legitimately removes it from the upstream request.
+func SetGrokWSAdmissionParent(c *gin.Context, id string) {
+	c.Set("grok_ws_admission_parent", id)
+}
+
 const openAIWSHTTPBridgeToolStateContextKey = "openai_ws_http_bridge_tool_state"
 
 type openAIWSHTTPBridgeToolState struct {
@@ -444,12 +450,24 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	if writeClientMessage == nil {
 		return nil, errors.New("client websocket writer is nil")
 	}
-	responseModelObserver := &upstreamResponseModelObserver{}
-
 	body, err := prepareOpenAIWSHTTPBridgeBody(account, payload)
 	if err != nil {
 		return nil, fmt.Errorf("prepare http bridge body: %w", err)
 	}
+	var parent string
+	if turn == 1 && c != nil {
+		parent = c.GetString("grok_ws_admission_parent")
+	}
+	guard, refusal := s.grokRefusalAdmission(ctx, c, account, payload, parent)
+	if refusal != nil {
+		frame, _ := json.Marshal(map[string]any{"type": "error", "sequence_number": 0, "status": refusal.StatusCode, "error": refusal})
+		if err := writeClientMessage(frame); err != nil {
+			return nil, err
+		}
+		markOpenAIWSClientVisibleFailure(c, "error", frame)
+		return nil, fmt.Errorf("%w: %s", errGrokRequestScoped, refusal.Type)
+	}
+	responseModelObserver := &upstreamResponseModelObserver{grokRefusal: guard}
 	grokIntentSourceBody := append([]byte(nil), body...)
 	_, grokExplicitToolsField := openAIWSHTTPBridgeRawField(grokIntentSourceBody, "tools")
 	grokExplicitToolIntent := account.Platform == PlatformGrok && hasGrokResponsesToolIntent(grokIntentSourceBody)
@@ -587,6 +605,26 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, openAIWSHTTPBridgeErrorBodyLimitBytes))
 		_ = resp.Body.Close()
+		if guard != nil && isGrokContentPolicyRejection(resp.StatusCode, respBody) {
+			guard.mark()
+			fields := openAIClientErrorFields{Type: "content_refusal", Code: "content_policy_violation", Message: "Request blocked by upstream content policy", StatusCode: resp.StatusCode}
+			wire := map[string]any{"type": "error", "sequence_number": 0, "status": resp.StatusCode, "error": fields}
+			var result *OpenAIForwardResult
+			if usage := openAIMeteredHTTPUsage(respBody); usage != nil {
+				result = openAICompatMeteredResult(c, resp, *usage, originalModel, originalModel, actualModel, turnStart)
+				result.OpenAIWSMode = true
+				result.Stream = true
+				result.UpstreamTerminalEvent = "response.failed"
+				result.RequestID = firstNonEmpty(resp.Header.Get("x-request-id"), resp.Header.Get("xai-request-id"))
+				wire["usage"] = policyOpenAIWireUsage(usage)
+			}
+			frame, _ := json.Marshal(wire)
+			writeErr := writeClientMessage(frame)
+			if writeErr == nil {
+				markOpenAIWSClientVisibleFailure(c, "error", frame)
+			}
+			return result, errors.Join(ErrGrokWSContentRefusal, writeErr)
+		}
 		markOpenAICyberPolicyEvent(c, respBody, resp.StatusCode, nil)
 		if resp.StatusCode == http.StatusBadRequest &&
 			extractUpstreamErrorCode(respBody) == openAIWSFallbackReasonInvalidEncryptedContent {

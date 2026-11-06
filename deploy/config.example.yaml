@@ -471,6 +471,10 @@ gateway:
     # Setting true enables POST /admin/grok/oauth/password (password → SSO → Build OAuth).
     # Prefer SSO cookie, browser OAuth, or refresh_token re-auth in production.
     password_auth_enabled: false
+    # Isolate a confirmed xAI policy refusal for 24 h. Set false to restore prior forwarding.
+    refusal_session_isolation_enabled: true
+    # Only trusted internal relay keys that strip and stamp X-GeToken-User-Id.
+    refusal_session_relay_key_ids: []
     free_quota_soft_gate_enabled: true
     free_quota_token_limit: 500000
     free_quota_soft_gate_percent: 95

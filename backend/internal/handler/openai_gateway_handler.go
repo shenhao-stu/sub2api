@@ -3162,7 +3162,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				)
 				partialGrokTimeout := service.ShouldRecordGrokFirstSemanticTimeoutUsage(account, result, turnErr)
 				if turnErr != nil {
-					if result == nil || (result.ImageCount <= 0 && !partialGrokTimeout) {
+					if result == nil || (result.ImageCount <= 0 && !partialGrokTimeout && !errors.Is(turnErr, service.ErrGrokWSContentRefusal)) {
 						return
 					}
 					// cyber 命中时该 turn 的用量已由 recordCyberPolicyIfMarked(forwardErrored=true)
@@ -3194,7 +3194,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				if scheduleModel == "" {
 					scheduleModel = turnRequestedModel
 				}
-				h.gatewayService.ReportOpenAIAccountScheduleResult(account, scheduleModel, !partialGrokTimeout && openAIForwardSucceededForScheduling(result), result.FirstTokenMs)
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account, scheduleModel, !partialGrokTimeout && openAIForwardSucceededForScheduling(result), result.FirstTokenMs, turnErr)
 				inboundEndpoint := GetInboundEndpoint(c)
 				upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, result)
 				quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
@@ -3237,6 +3237,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		// 故剥离首包里的 previous_response_id，改用首包内 input 重建上下文；带 function_call_output 的
 		// 工具续链无法重建，保持原样。仅作用于首轮首包，后续 turn 的续链由 WS 转发层既有逻辑处理。
 		if previousResponseID != "" && !scheduleDecision.StickyPreviousHit && previousResponseCanMove {
+			if account.IsGrok() {
+				service.SetGrokWSAdmissionParent(c, gjson.GetBytes(wsFirstMessage, "previous_response_id").Str)
+			}
 			wsFirstMessage = service.RemovePreviousResponseIDFromBody(wsFirstMessage)
 			reqLog.Debug("openai.websocket_previous_response_id_stripped_cross_group",
 				zap.Int64("account_id", account.ID),

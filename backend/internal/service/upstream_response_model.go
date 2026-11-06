@@ -26,9 +26,10 @@ const (
 // separate from the final outbound request tier until usage recording resolves
 // the billable tier for the selected credential protocol.
 type upstreamResponseModelObserver struct {
-	first    string
-	terminal string
-	conflict bool
+	grokRefusal *grokRefusalSession
+	first       string
+	terminal    string
+	conflict    bool
 
 	// firstTier holds the first non-terminal tier declaration; it is discarded
 	// when later non-terminal declarations disagree. terminalTier comes from a
@@ -69,6 +70,9 @@ func normalizeObservedUpstreamResponseModel(model string) string {
 }
 
 func (o *upstreamResponseModelObserver) ObserveOpenAI(payload []byte, eventType string) {
+	if o.grokRefusal != nil {
+		o.grokRefusal.observeEvent(payload, eventType)
+	}
 	model := firstValidTrimmedGJSONString(payload, "response.model", "model")
 	terminal := isUpstreamResponseModelTerminalEvent(eventType)
 	o.Observe(model, terminal)
@@ -186,7 +190,7 @@ func (o *upstreamResponseModelObserver) Conflict() bool {
 }
 
 func beginUpstreamResponseModelObservation(c *gin.Context) *upstreamResponseModelObserver {
-	observer := &upstreamResponseModelObserver{}
+	observer := &upstreamResponseModelObserver{grokRefusal: grokRefusalGuardFromContext(c)}
 	if c != nil {
 		c.Set(upstreamResponseModelObserverContextKey, observer)
 	}

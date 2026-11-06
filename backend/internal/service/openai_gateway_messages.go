@@ -33,6 +33,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	promptCacheKey string,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	if err := s.CheckGrokRefusalSession(ctx, c, account, body); err != nil {
+		return nil, err
+	}
 	if account.IsCommandCodeGo() {
 		if err := validateCommandCodeGoIngress(body, "messages", c.Request.URL.Path); err != nil {
 			writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())

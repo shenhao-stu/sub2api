@@ -1168,6 +1168,8 @@ type GatewayConfig struct {
 //   - free_quota_stats_cache_seconds: cache TTL for free-tier usage stats
 //     (hot path never blocks on DB; misses fail open and refresh in background).
 type GatewayGrokConfig struct {
+	RefusalSessionRelayKeyIDs      []int64 `mapstructure:"refusal_session_relay_key_ids"`
+	RefusalSessionIsolationEnabled bool    `mapstructure:"refusal_session_isolation_enabled"`
 	// PasswordAuthEnabled controls the optional password-to-SSO OAuth flow.
 	// It defaults to false and must be explicitly enabled by the operator.
 	// When true, POST /admin/grok/oauth/password is functional (not ignored).
@@ -2538,6 +2540,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_proxy_stream_circuit.ttl_seconds", 600)
 	// Grok free-tier local soft gate (scheduler-only; admin QueryQuota does not use this).
 	// Enabled by default because free detection requires an explicit free tier marker.
+	viper.SetDefault("gateway.grok.refusal_session_isolation_enabled", true)
+	viper.SetDefault("gateway.grok.refusal_session_relay_key_ids", []int64{})
 	viper.SetDefault("gateway.grok.free_quota_soft_gate_enabled", true)
 	viper.SetDefault("gateway.grok.password_auth_enabled", false)
 	// Free soft-gate nominal limit: 500k tokens / rolling 24h (operator policy).
