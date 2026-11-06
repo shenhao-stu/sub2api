@@ -672,17 +672,30 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if err != nil {
 		return nil, err
 	}
-	upstreamReq, err := s.buildOpenAIImagesRequest(upstreamCtx, c, account, forwardBody, forwardContentType, token, parsed.Endpoint)
+	var upstreamReq *http.Request
+	var resp *http.Response
+	nano := nanoRouteFromContext(upstreamCtx)
+	if personalNanoAccount(account) || nano != nil {
+		if nano == nil || !nano.Allows(account) {
+			return nil, fmt.Errorf("private image adapter requires an admitted request")
+		}
+		upstreamReq, err = nano.outgoing(upstreamCtx, account, token, forwardBody)
+	} else {
+		upstreamReq, err = s.buildOpenAIImagesRequest(upstreamCtx, c, account, forwardBody, forwardContentType, token, parsed.Endpoint)
+	}
 	if err != nil {
 		return nil, err
 	}
-
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
 	upstreamStart := time.Now()
-	resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account)
+	if nano != nil && personalNanoAccount(account) {
+		resp, err = nanoClient.Do(upstreamReq)
+	} else {
+		proxyURL := ""
+		if account.ProxyID != nil && account.Proxy != nil {
+			proxyURL = account.Proxy.URL()
+		}
+		resp, err = s.doOpenAIUpstream(upstreamReq, proxyURL, account)
+	}
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
@@ -706,7 +719,11 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		// A status alone cannot prove that a paid generation never ran. Only an
 		// explicit pre-generation balance rejection without output/usage evidence
 		// may select another account. Never replay an ambiguous dispatched 5xx.
-		if isOpenAIImagesInsufficientBalance(respBody) && imageRejectionHasNoGenerationEvidence(respBody) {
+		if nano != nil && nano.declined(upstreamReq, resp, respBody) {
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{Platform: account.Platform, AccountID: account.ID, UpstreamStatusCode: resp.StatusCode, Kind: "failover", Message: "Private image peer confirmed refusal before provider dispatch"})
+			return nil, ErrPersonalNanoCapacity
+		}
+		if nano == nil && isOpenAIImagesInsufficientBalance(respBody) && imageRejectionHasNoGenerationEvidence(respBody) {
 			s.coolOpenAIImagesInsufficientBalance(upstreamCtx, account)
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,
@@ -716,7 +733,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 			})
 			return nil, newOpenAIImagesInsufficientBalanceFailoverError(resp.StatusCode, resp.Header, respBody)
 		}
-		if imageRejectionHasNoGenerationEvidence(respBody) && isOpenAIHTTPUpstreamAccessStateError(resp.StatusCode, "", respBody) {
+		if nano == nil && imageRejectionHasNoGenerationEvidence(respBody) && isOpenAIHTTPUpstreamAccessStateError(resp.StatusCode, "", respBody) {
 			message := sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage(respBody))
 			s.handleOpenAIAccountUpstreamError(upstreamCtx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
