@@ -525,6 +525,9 @@ func (s *OpenAIGatewayService) forwardGrokChatCompletionsViaResponses(
 	promptCacheKey string,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	if err := s.CheckGrokRefusalSession(ctx, c, account, body); err != nil {
+		return nil, err
+	}
 	startTime := time.Now()
 
 	var chatReq apicompat.ChatCompletionsRequest

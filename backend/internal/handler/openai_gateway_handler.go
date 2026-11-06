@@ -3162,7 +3162,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				)
 				partialGrokTimeout := service.ShouldRecordGrokFirstSemanticTimeoutUsage(account, result, turnErr)
 				if turnErr != nil {
-					if result == nil || (result.ImageCount <= 0 && !partialGrokTimeout) {
+					if result == nil || (result.ImageCount <= 0 && !partialGrokTimeout && !errors.Is(turnErr, service.ErrGrokWSContentRefusal)) {
 						return
 					}
 					// cyber 命中时该 turn 的用量已由 recordCyberPolicyIfMarked(forwardErrored=true)

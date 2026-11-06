@@ -79,6 +79,11 @@ func (s *OpenAIGatewayService) handleMeteredOpenAIHTTPError(ctx context.Context,
 	if resp.StatusCode < http.StatusBadRequest {
 		return nil, nil
 	}
+	if resp.StatusCode == http.StatusForbidden && account != nil && account.IsGrok() {
+		if guard := grokRefusalGuardFromContext(c); guard != nil && isGrokContentPolicyRejection(resp.StatusCode, responseBody) {
+			guard.mark()
+		}
+	}
 	usage := openAIMeteredHTTPUsage(responseBody)
 	if usage == nil {
 		return nil, nil

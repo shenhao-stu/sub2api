@@ -10,6 +10,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -73,6 +74,9 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletionsWithStartTime(
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
 
+	if err := s.CheckGrokRefusalSession(ctx, c, account, body); err != nil {
+		return nil, err
+	}
 	// 1. Parse minimal fields needed for routing/billing
 	originalModel := gjson.GetBytes(body, "model").String()
 	if originalModel == "" {
@@ -205,6 +209,12 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletionsWithStartTime(
 	targetURL, err := s.rawChatCompletionsURL(account)
 	if err != nil {
 		return nil, err
+	}
+	if account.IsGrok() && xai.IsOfficialBaseURL(targetURL) {
+		upstreamBody, err = normalizeGrokChatMessageNames(upstreamBody)
+		if err != nil {
+			return nil, fmt.Errorf("normalize Grok chat message names: %w", err)
+		}
 	}
 	upstreamBody, err = normalizeStrictChatDeveloperRoles(account, targetURL, upstreamBody)
 	if err != nil {

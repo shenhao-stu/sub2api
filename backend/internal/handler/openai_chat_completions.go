@@ -272,6 +272,13 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		if channelMapping.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
 		}
+		// A local session refusal must precede an upstream usage-receipt claim.
+		if err := h.gatewayService.CheckGrokRefusalSession(c.Request.Context(), c, account, body); err != nil {
+			if accountReleaseFunc != nil {
+				accountReleaseFunc()
+			}
+			return
+		}
 		if receiptRequested && !h.gatewayService.SupportsChatUsageReceipt(c.Request.Context(), account, forwardBody) {
 			if accountReleaseFunc != nil {
 				accountReleaseFunc()
