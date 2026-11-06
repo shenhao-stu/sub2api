@@ -282,3 +282,24 @@ func TestGrokRefusalWebSocketConsecutiveTurns(t *testing.T) {
 	require.Equal(t, "grok_session_isolated", gjson.GetBytes(frame, "error.type").Str)
 	require.EqualValues(t, 1, upstreamCalls.Load())
 }
+
+type grokRefusalScoreRecorder struct {
+	OpenAIAccountScheduler
+	calls int
+}
+
+func (r *grokRefusalScoreRecorder) ReportResult(_ int64, _ bool, _ *int) { r.calls++ }
+func TestGrokRefusalNeverPenalizesAccountScheduler(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	t.Cleanup(resetOpenAIAdvancedSchedulerSettingCacheForTest)
+	openAIAdvancedSchedulerSettingCache.Store(&cachedOpenAIAdvancedSchedulerSetting{enabled: true, expiresAt: time.Now().Add(time.Minute).UnixNano()})
+	spy := &grokRefusalScoreRecorder{}
+	s := &OpenAIGatewayService{openaiScheduler: spy}
+	a := &Account{ID: 123, Platform: PlatformGrok}
+	for _, e := range []error{ErrGrokWSContentRefusal, fmt.Errorf("%w: isolated", errGrokRequestScoped)} {
+		s.ReportOpenAIAccountScheduleResult(a, "grok-4.7", false, nil, e)
+	}
+	require.Zero(t, spy.calls)
+	s.ReportOpenAIAccountScheduleResult(a, "grok-4.7", false, nil, fmt.Errorf("transport failure"))
+	require.Equal(t, 1, spy.calls)
+}

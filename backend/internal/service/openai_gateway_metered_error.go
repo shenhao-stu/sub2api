@@ -117,7 +117,7 @@ func (s *OpenAIGatewayService) handleMeteredOpenAIHTTPError(ctx context.Context,
 	result.Stream = stream
 	result.ServiceTier = resolvedOpenAIUpstreamServiceTier(c, extractOpenAIServiceTierFromBody(requestBody))
 	result.ReasoningEffort = extractOpenAIReasoningEffortFromBody(requestBody, upstreamModel, billingModel, originalModel)
-	forwardErr := fmt.Errorf("upstream HTTP %d after reported usage: %s", resp.StatusCode, message)
+	forwardErr := grokRefusalForwardError(c, fmt.Errorf("upstream HTTP %d after reported usage: %s", resp.StatusCode, message))
 	compactCommitted := StopOpenAICompactSSEKeepaliveCommitted(c)
 	errorType := firstNonEmpty(gjson.GetBytes(responseBody, "error.type").String(), gjson.GetBytes(responseBody, "response.error.type").String(), "upstream_error")
 	errorBody := gin.H{"type": errorType, "message": message}

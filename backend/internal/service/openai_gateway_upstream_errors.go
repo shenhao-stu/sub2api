@@ -638,7 +638,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 			writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 		}
 		writeGrokContentPolicyError(c, clientMsg)
-		return nil, fmt.Errorf("grok content policy rejection: %s", clientMsg)
+		return nil, grokRefusalForwardError(c, fmt.Errorf("grok content policy rejection: %s", clientMsg))
 	}
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
@@ -891,7 +891,7 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 		clientMsg := grokContentPolicyClientMessage(body)
 		setOpsUpstreamError(c, resp.StatusCode, clientMsg, truncateString(string(body), 2048))
 		writeGrokContentPolicyError(c, clientMsg)
-		return nil, fmt.Errorf("grok content policy rejection: %s", clientMsg)
+		return nil, grokRefusalForwardError(c, fmt.Errorf("grok content policy rejection: %s", clientMsg))
 	}
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))

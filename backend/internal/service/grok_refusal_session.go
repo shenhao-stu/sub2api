@@ -20,7 +20,15 @@ import (
 )
 
 // ErrGrokWSContentRefusal ends a turn; only a separately observed meter can settle it.
-var ErrGrokWSContentRefusal = errors.New("upstream Grok content policy refusal")
+var errGrokRequestScoped = errors.New("Grok request-scoped decision")
+var ErrGrokWSContentRefusal = fmt.Errorf("%w: upstream content policy refusal", errGrokRequestScoped)
+
+func grokRefusalForwardError(c *gin.Context, err error) error {
+	if guard := grokRefusalGuardFromContext(c); guard != nil && guard.marked {
+		return errors.Join(errGrokRequestScoped, err)
+	}
+	return err
+}
 
 const grokRefusalSessionContextKey = "grok_refusal_session"
 const grokRefusalSessionTTL = 24 * time.Hour
@@ -73,7 +81,7 @@ func (s *OpenAIGatewayService) CheckGrokRefusalSession(ctx context.Context, c *g
 			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
 		}
 		writeOpenAIErrorFields(c, *fields, false)
-		return errors.New(fields.Type)
+		return fmt.Errorf("%w: %s", errGrokRequestScoped, fields.Type)
 	}
 	if guard != nil {
 		c.Set(grokRefusalSessionContextKey, guard)

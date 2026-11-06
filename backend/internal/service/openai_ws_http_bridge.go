@@ -455,7 +455,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			return nil, err
 		}
 		markOpenAIWSClientVisibleFailure(c, "error", frame)
-		return nil, errors.New(refusal.Type)
+		return nil, fmt.Errorf("%w: %s", errGrokRequestScoped, refusal.Type)
 	}
 	responseModelObserver := &upstreamResponseModelObserver{grokRefusal: guard}
 	grokIntentSourceBody := append([]byte(nil), body...)

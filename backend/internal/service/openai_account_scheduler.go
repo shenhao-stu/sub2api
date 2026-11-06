@@ -2519,9 +2519,8 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(account *Accoun
 	if account == nil {
 		return false
 	}
-	// Pricing admission fails before any supplier work. It must not lower
-	// account health or scheduling scores when handlers report the rejection.
-	if !success && len(observedErr) > 0 && errors.Is(observedErr[0], ErrModelPricingUnavailable) {
+	// A price gate or a request-scoped safety refusal is not evidence of account health.
+	if len(observedErr) > 0 && (errors.Is(observedErr[0], errGrokRequestScoped) || (!success && errors.Is(observedErr[0], ErrModelPricingUnavailable))) {
 		return false
 	}
 	accountID := account.ID
@@ -2548,7 +2547,7 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(account *Accoun
 // ObserveOpenAIAccountHealthFailure records failures that cannot reach the
 // scheduler-result path, for example after semantic response bytes were sent.
 func (s *OpenAIGatewayService) ObserveOpenAIAccountHealthFailure(ctx context.Context, account *Account, observedErr error) bool {
-	if s == nil || s.rateLimitService == nil || account == nil || observedErr == nil {
+	if s == nil || s.rateLimitService == nil || account == nil || observedErr == nil || errors.Is(observedErr, errGrokRequestScoped) {
 		return false
 	}
 	return s.rateLimitService.ObserveOpenAIAPIKeyHealthFailure(ctx, account, observedErr)
