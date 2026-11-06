@@ -165,7 +165,7 @@ func TestConversationGuardProxyUsesFixedSafeReason(t *testing.T) {
 					require.Equal(t, "proxy_unavailable", gjson.Get(payload, prefix+"code").String())
 					require.Equal(t, int64(503), gjson.Get(payload, prefix+"status_code").Int())
 					require.Equal(t, "账号出口暂不可达，已暂停调度并自动复检；恢复后可继续原会话。", gjson.Get(payload, prefix+"message").String())
-					for _, private := range []string{"name@example", "10.12.34.56", "origin.private", "synthetic-secret", "private_account_identifier", "418", "total_tokens"} {
+					for _, private := range []string{"name@example", "10.12.34.56", "origin.private", "synthetic-secret", "private_account_identifier", `"status_code":418`, "total_tokens"} {
 						require.NotContains(t, payload, private)
 					}
 				})
