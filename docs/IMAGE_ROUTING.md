@@ -26,3 +26,5 @@ images do not belong in operational reports. Roll back touched configuration
 fields only; never restore an old database over current usage.
 
 This is a configuration correction on `0.2.13+g5`, not a new Sub2API binary.
+
+For opt-in private Grok and Nano generation pools, see [Private image pools](PERSONAL_IMAGE_ROUTING.md).

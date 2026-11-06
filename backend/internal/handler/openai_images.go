@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
@@ -169,16 +170,59 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	defer func() { stopJSONKeepalive() }()
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
 
+	intent, intentErr := service.PersonalImageIntent(requestCtx, apiKey, clientRequestModel, c.Request.Header)
+	if intentErr != nil {
+		h.errorResponse(c, http.StatusForbidden, "image_admission_unavailable", "Authenticated image principal unavailable")
+		return
+	}
+	if intent != nil {
+		if h.personalImageIntents == nil {
+			h.errorResponse(c, 503, "image_admission_unavailable", "Image admission store unavailable")
+			return
+		}
+		claimed, claimErr := h.personalImageIntents.CreateProcessing(requestCtx, intent)
+		if claimErr != nil {
+			h.errorResponse(c, 503, "image_admission_unavailable", "Image admission could not be confirmed")
+			return
+		}
+		if !claimed {
+			h.errorResponse(c, 409, "image_request_already_claimed", "Image request has already been admitted")
+			return
+		}
+	}
+	nano := service.PreparePersonalNanoImageRoute(apiKey, parsed, routingModel, channelMapping.MappedModel, body, intent)
 	for {
 		reqLog.Debug("openai.images.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForImages(
-			requestCtx,
-			apiKey.GroupID,
-			sessionHash,
-			routingModel,
-			failedAccountIDs,
-			parsed.RequiredCapabilityForModel(channelMapping.MappedModel),
-		)
+		var err error
+		var selection *service.AccountSelectionResult
+		var scheduleDecision service.OpenAIAccountScheduleDecision
+		if pool, enabled := personalGrokImagePool(personalImagePolicy(), apiKey.Group, parsed, routingModel, channelMapping.MappedModel, body); enabled && intent != nil && len(failedAccountIDs) == 0 {
+			selection, scheduleDecision, err = h.chooseGrokPrimary(requestCtx, pool, routingModel)
+		}
+		usingNano := false
+		if nano != nil && len(failedAccountIDs) == 0 && selection == nil && err == nil {
+			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForImages(nano.Context(requestCtx), &nano.PoolID, "", routingModel, nil, service.OpenAIImagesCapabilityAPIKey)
+			if errors.Is(err, service.ErrNoAvailableAccounts) {
+				err = nil
+			}
+			if selection != nil && (!selection.Acquired || !nano.Allows(selection.Account)) {
+				if selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				selection = nil
+			}
+			usingNano = selection != nil && err == nil
+		}
+		if selection == nil && err == nil {
+			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForImages(
+				requestCtx,
+				apiKey.GroupID,
+				sessionHash,
+				routingModel,
+				failedAccountIDs,
+				parsed.RequiredCapabilityForModel(channelMapping.MappedModel),
+			)
+		}
 		if err != nil {
 			if failoverClientGone(c) {
 				reqLog.Info("openai.images.account_select_aborted_client_disconnected", zap.Error(err))
@@ -230,11 +274,30 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		)
 
 		account := selection.Account
-		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
+		admissionHash := ensureOpenAIPoolModeSessionHash(sessionHash, account)
+		if account.IsGrokOAuth() || usingNano {
+			admissionHash = ""
+		} else {
+			sessionHash = admissionHash
+		}
 		reqLog.Debug("openai.images.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
-		accountReleaseFunc, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, parsed.Stream, &streamStarted, reqLog)
+		var accountReleaseFunc func()
+		slotResult := openAISlotAcquireOK
+		if account.IsGrokOAuth() || usingNano {
+			// Private selection accepts only an already acquired slot and has no
+			// profit veto or sticky write. Keep it until the detached POST ends.
+			if selection.ReleaseFunc != nil {
+				accountReleaseFunc = sync.OnceFunc(selection.ReleaseFunc)
+				defer accountReleaseFunc()
+			}
+			if failoverClientGone(c) {
+				return
+			}
+		} else {
+			accountReleaseFunc, slotResult = h.acquireResponsesAccountSlot(c, apiKey.GroupID, admissionHash, selection, parsed.Stream, &streamStarted, reqLog)
+		}
 		if slotResult == openAISlotAcquireProfitVetoed {
 			// Images 调度不装利润门，此分支实际不可达；防御性排除重选并受同一否决上限约束。
 			if !recordOpenAIProfitVeto(failedAccountIDs, account.ID, &profitVetoCount) {
@@ -260,7 +323,14 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					accountReleaseFunc()
 				}
 			}()
-			return h.gatewayService.ForwardImages(requestCtx, c, account, body, parsed, channelMapping.MappedModel)
+			if account.IsGrokOAuth() {
+				return h.gatewayService.ForwardGrokMedia(requestCtx, c, account, service.GrokMediaEndpointImagesGenerations, "", body, parsed.ContentType)
+			}
+			forwardCtx := requestCtx
+			if usingNano {
+				forwardCtx = nano.Context(requestCtx)
+			}
+			return h.gatewayService.ForwardImages(forwardCtx, c, account, body, parsed, channelMapping.MappedModel)
 		}()
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
@@ -280,6 +350,24 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					zap.Error(err),
 				)
 			} else {
+				// After a native submission never re-enter either scheduler. Provider
+				// 5xx, transport failures and empty HTTP 200 can have incurred cost.
+				if account.IsGrokOAuth() {
+					if personalGrokCredentialCanFallback(err) && !failoverClientGone(c) && service.OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) == writerSizeBeforeForward {
+						failedAccountIDs[account.ID] = struct{}{}
+						continue
+					}
+					reqLog.Warn("openai.images.native_grok_submission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+					h.gatewayService.ReportOpenAIAccountScheduleResult(account, routingModel, false, nil, err)
+					if !openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err) {
+						h.ensureForwardErrorResponse(c, streamStarted)
+					}
+					return
+				}
+				if usingNano && errors.Is(err, service.ErrPersonalNanoCapacity) && !failoverClientGone(c) && service.OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) == writerSizeBeforeForward {
+					failedAccountIDs[account.ID] = struct{}{}
+					continue
+				}
 				var imageUpstreamErr *service.OpenAIImagesUpstreamError
 				if errors.As(err, &imageUpstreamErr) {
 					retryableServerError := service.IsOpenAIImagesRetryableUpstreamError(imageUpstreamErr)
@@ -299,6 +387,13 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 						zap.String("error_code", imageUpstreamErr.Code),
 						zap.Error(err),
 					)
+					return
+				}
+				if usingNano { // All remaining bridge failures are terminal, including empty successes and transport errors.
+					h.gatewayService.ReportOpenAIAccountScheduleResult(account, routingModel, false, nil, err)
+					if !openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err) {
+						h.ensureForwardErrorResponse(c, streamStarted)
+					}
 					return
 				}
 				var failoverErr *service.UpstreamFailoverError
@@ -383,7 +478,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestModel, false, result), false, nil, err)
 		} else if result != nil {
 			// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
-			if account.Type == service.AccountTypeOAuth && !account.IsShadow() {
+			if account.IsOpenAIOAuth() && !account.IsShadow() {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
 			}
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestModel, false, result), true, result.FirstTokenMs)
