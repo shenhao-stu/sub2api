@@ -256,7 +256,7 @@ func collectAnthropicBufferedStream(reader io.Reader, limit int64) (*anthropicBu
 	return m, nil
 }
 
-func (s *GatewayService) writeAnthropicBufferedStream(ctx context.Context, resp *http.Response, c *gin.Context, input anthropicPassthroughForwardInput) (*ForwardResult, error) {
+func (s *GatewayService) writeAnthropicBufferedStream(ctx context.Context, resp *http.Response, c *gin.Context, input anthropicPassthroughForwardInput, refusal *anthropicRefusalSession) (*ForwardResult, error) {
 	collected, err := awaitAnthropicBody(c, resp.Body, func() (*anthropicBufferedMessage, error) {
 		return collectAnthropicBufferedStream(resp.Body, resolveUpstreamResponseReadLimit(s.cfg))
 	})
@@ -265,6 +265,7 @@ func (s *GatewayService) writeAnthropicBufferedStream(ctx context.Context, resp 
 		Stream: false, Duration: time.Since(input.StartTime)}
 	metadata, _ := json.Marshal(collected.message)
 	observer := beginUpstreamResponseModelObservation(c)
+	refusal.observe(metadata)
 	observer.ObserveAnthropic(metadata)
 	result.UpstreamResponseModel = observedUpstreamResponseModel(c)
 	result.UpstreamResponseModelConflict = observedUpstreamResponseModelConflict(c)
@@ -274,6 +275,7 @@ func (s *GatewayService) writeAnthropicBufferedStream(ctx context.Context, resp 
 		var upstream *sseStreamErrorEventError
 		if errors.As(err, &upstream) {
 			raw := []byte(upstream.RawData)
+			refusal.observe(raw)
 			status = openAIImagesExplicitErrorStatus(raw, anthropicStreamErrorStatus(raw))
 		}
 		var reportedUsage map[string]json.RawMessage

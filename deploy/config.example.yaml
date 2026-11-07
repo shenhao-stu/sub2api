@@ -224,6 +224,11 @@ security:
 # 网关配置
 # =============================================================================
 gateway:
+  # Optional Claude Code session quarantine for trusted relay keys and upstream accounts.
+  # With both lists configured, mount this mode-0700 journal across gateway instances.
+  anthropic_refusal_relay_key_ids: []
+  anthropic_refusal_source_account_ids: []
+  anthropic_refusal_journal_dir: ""
   # Minimum max_output_tokens when converting Chat Completions or Anthropic requests to Responses (minimum 16, default 128)
   # Chat Completions 或 Anthropic 请求转换为 Responses 时的最小 max_output_tokens（最小 16，默认 128）
   min_output_tokens: 128

@@ -236,6 +236,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 
+	if err := h.gatewayService.AdmitAnthropicRefusalSession(c.Request.Context(), c, apiKey, parsedReq); err != nil {
+		return
+	}
+
 	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolAnthropicMessages, reqModel, body); decision != nil && !decision.AllowNextStage {
 		h.anthropicSecurityAuditError(c, decision)
 		return

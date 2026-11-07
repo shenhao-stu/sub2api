@@ -10,6 +10,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -982,6 +983,10 @@ const (
 
 // GatewayConfig API网关相关配置
 type GatewayConfig struct {
+	// Opt-in shared transit keys and verified upstream accounts for Claude session refusal protection.
+	AnthropicRefusalRelayKeyIDs      []int64 `mapstructure:"anthropic_refusal_relay_key_ids"`
+	AnthropicRefusalSourceAccountIDs []int64 `mapstructure:"anthropic_refusal_source_account_ids"`
+	AnthropicRefusalJournalDir       string  `mapstructure:"anthropic_refusal_journal_dir"`
 	// Must be on persistent storage; no receipt/request bodies or provider keys
 	// are stored. An unavailable journal blocks new v2 dispatch only.
 	ChatUsageReceiptJournalDir string `mapstructure:"chat_usage_receipt_journal_dir"`
@@ -2540,6 +2545,9 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_proxy_stream_circuit.ttl_seconds", 600)
 	// Grok free-tier local soft gate (scheduler-only; admin QueryQuota does not use this).
 	// Enabled by default because free detection requires an explicit free tier marker.
+	viper.SetDefault("gateway.anthropic_refusal_relay_key_ids", []int64{})
+	viper.SetDefault("gateway.anthropic_refusal_source_account_ids", []int64{})
+	viper.SetDefault("gateway.anthropic_refusal_journal_dir", "")
 	viper.SetDefault("gateway.grok.refusal_session_isolation_enabled", true)
 	viper.SetDefault("gateway.grok.refusal_session_relay_key_ids", []int64{})
 	viper.SetDefault("gateway.grok.free_quota_soft_gate_enabled", true)
@@ -2744,6 +2752,22 @@ func setEnvReachableDefaults() {
 }
 
 func (c *Config) Validate() error {
+	if (len(c.Gateway.AnthropicRefusalRelayKeyIDs) == 0) != (len(c.Gateway.AnthropicRefusalSourceAccountIDs) == 0) {
+		return fmt.Errorf("Anthropic session refusal protection requires both relay key IDs and source account IDs")
+	}
+	if len(c.Gateway.AnthropicRefusalRelayKeyIDs) > 0 {
+		dir := c.Gateway.AnthropicRefusalJournalDir
+		if !filepath.IsAbs(dir) || filepath.Clean(dir) != dir || filepath.Dir(dir) == dir {
+			return fmt.Errorf("Anthropic session refusal protection requires an absolute private journal directory")
+		}
+	}
+	for _, ids := range [][]int64{c.Gateway.AnthropicRefusalRelayKeyIDs, c.Gateway.AnthropicRefusalSourceAccountIDs} {
+		for _, id := range ids {
+			if id <= 0 {
+				return fmt.Errorf("Anthropic session refusal protection requires positive IDs")
+			}
+		}
+	}
 	if err := c.RequestCapture.Validate(c.RequestCaptureBodyLimit()); err != nil {
 		return err
 	}

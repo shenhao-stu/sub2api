@@ -93,6 +93,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	if parsed == nil {
 		return nil, fmt.Errorf("parse request: empty request")
 	}
+	if err := checkAnthropicRefusalSession(ctx, c); err != nil {
+		return nil, err
+	}
 	if err := s.RequireForwardPricing(ctx, c, account, parsed.Model); err != nil {
 		return nil, err
 	}
@@ -401,6 +404,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		lastWireBody = wireBody
 
 		// 发送请求
+		if err := checkAnthropicRefusalSession(ctx, c); err != nil {
+			return nil, err
+		}
 		resp, err = awaitAnthropicUpstream(c, func() (*http.Response, error) {
 			return s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, tlsProfile)
 		})
@@ -483,6 +489,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					retryReq, retryWireBody, buildErr := s.buildUpstreamRequest(retryCtx, c, account, filteredBody, token, tokenType, reqModel, reqStream, shouldMimicClaudeCode)
 					releaseRetryCtx()
 					if buildErr == nil {
+						if err := checkAnthropicRefusalSession(ctx, c); err != nil {
+							return nil, err
+						}
 						retryResp, retryErr := awaitAnthropicUpstream(c, func() (*http.Response, error) {
 							return s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, tlsProfile)
 						})
@@ -532,6 +541,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 									retryReq2, retryWireBody2, buildErr2 := s.buildUpstreamRequest(retryCtx2, c, account, filteredBody2, token, tokenType, reqModel, reqStream, shouldMimicClaudeCode)
 									releaseRetryCtx2()
 									if buildErr2 == nil {
+										if err := checkAnthropicRefusalSession(ctx, c); err != nil {
+											return nil, err
+										}
 										retryResp2, retryErr2 := awaitAnthropicUpstream(c, func() (*http.Response, error) {
 											return s.httpUpstream.DoWithTLS(retryReq2, proxyURL, account.ID, account.Concurrency, tlsProfile)
 										})
@@ -621,6 +633,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 						budgetRetryReq, budgetWireBody, buildErr := s.buildUpstreamRequest(budgetRetryCtx, c, account, rectifiedBody, token, tokenType, reqModel, reqStream, shouldMimicClaudeCode)
 						releaseBudgetRetryCtx()
 						if buildErr == nil {
+							if err := checkAnthropicRefusalSession(ctx, c); err != nil {
+								return nil, err
+							}
 							budgetRetryResp, retryErr := awaitAnthropicUpstream(c, func() (*http.Response, error) {
 								return s.httpUpstream.DoWithTLS(budgetRetryReq, proxyURL, account.ID, account.Concurrency, tlsProfile)
 							})
