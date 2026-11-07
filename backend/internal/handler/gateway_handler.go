@@ -236,6 +236,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 
+	if err := h.gatewayService.AdmitAnthropicRefusalSession(c.Request.Context(), c, apiKey, parsedReq); err != nil {
+		return
+	}
+
 	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolAnthropicMessages, reqModel, body); decision != nil && !decision.AllowNextStage {
 		h.anthropicSecurityAuditError(c, decision)
 		return
@@ -247,10 +251,6 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 绑定错误透传服务，允许 service 层在非 failover 错误场景复用规则。
 	if h.errorPassthroughService != nil {
 		service.BindErrorPassthroughService(c, h.errorPassthroughService)
-	}
-
-	if err := h.gatewayService.AdmitAnthropicRefusalSession(c.Request.Context(), c, apiKey, parsedReq); err != nil {
-		return
 	}
 
 	// 获取订阅信息（可能为nil）- 提前获取用于后续检查
