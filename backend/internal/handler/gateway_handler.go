@@ -249,6 +249,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		service.BindErrorPassthroughService(c, h.errorPassthroughService)
 	}
 
+	if err := h.gatewayService.AdmitAnthropicRefusalSession(c.Request.Context(), c, apiKey, parsedReq); err != nil {
+		return
+	}
+
 	// 获取订阅信息（可能为nil）- 提前获取用于后续检查
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
 

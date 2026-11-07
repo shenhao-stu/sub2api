@@ -28,15 +28,37 @@ func isContentRefusal(status int, body []byte) bool {
 }
 
 func (s *GatewayService) handleContentRefusalResponse(c *gin.Context, account *Account, resp *http.Response, model, upstreamModel string, stream bool, start time.Time) (*ForwardResult, error, bool) {
-	if resp == nil || resp.Body == nil || resp.StatusCode != http.StatusForbidden {
+	guard := s.trustedAnthropicRefusal(c, account)
+	if resp == nil || resp.Body == nil || (resp.StatusCode != http.StatusForbidden &&
+		(resp.StatusCode < http.StatusBadRequest || guard == nil)) {
 		return nil, nil, false
 	}
-	body, readErr := s.readUpstreamErrorBody(resp, c)
-	_ = resp.Body.Close()
-	resp.Body = io.NopCloser(bytes.NewReader(body))
-	if readErr != nil || !isContentRefusal(resp.StatusCode, body) {
+	var body []byte
+	var readErr error
+	if guard == nil {
+		body, readErr = s.readUpstreamErrorBody(resp, c)
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+	} else {
+		original := resp.Body
+		body, readErr = awaitAnthropicBody(c, original, func() ([]byte, error) {
+			return io.ReadAll(io.LimitReader(original, (64<<10)+1))
+		})
+		resp.Body = &anthropicErrorPrefixBody{prefix: bytes.NewReader(body), source: original, readErr: readErr}
+	}
+	if readErr != nil {
 		return nil, nil, false
 	}
+	if guard.observe(body) {
+		defer resp.Body.Close()
+		fields := openAIClientErrorFields{Type: "policy_blocked", Code: "refusal_guard", Message: "Anthropic refused this request under its usage policy. Do not retry this request.", StatusCode: http.StatusBadRequest}
+		result, err := s.handleRequestRejectionBody(c, account, resp, body, parseClaudeUsageFromResponseBody(body), model, upstreamModel, stream, start, fields)
+		return result, err, true
+	}
+	if !isContentRefusal(resp.StatusCode, body) {
+		return nil, nil, false
+	}
+	defer resp.Body.Close()
 	result, err := s.handleContentRefusalBody(c, account, resp, body, parseClaudeUsageFromResponseBody(body), model, upstreamModel, stream, start)
 	return result, err, true
 }

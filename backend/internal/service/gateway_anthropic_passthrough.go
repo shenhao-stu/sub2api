@@ -124,6 +124,9 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			input.Body = input.Parsed.Body.Bytes()
 		}
 
+		if err := checkAnthropicRefusalSession(ctx, c); err != nil {
+			return nil, err
+		}
 		resp, err = awaitAnthropicUpstream(c, func() (*http.Response, error) {
 			return s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 		})
@@ -285,7 +288,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		return s.handleErrorResponse(ctx, resp, c, account, input.RequestModel)
 	}
 	if bufferedStream && strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
-		return s.writeAnthropicBufferedStream(ctx, resp, c, input)
+		return s.writeAnthropicBufferedStream(ctx, resp, c, input, s.trustedAnthropicRefusal(c, account))
 	}
 
 	var usage *ClaudeUsage
@@ -545,6 +548,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 	}
 	inPartialEvent := false
 	var pingState anthropicPingState
+	refusal := s.trustedAnthropicRefusal(c, account)
 	reportedUnnamedPing := false
 
 	for {
@@ -586,6 +590,9 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 			line := ev.line
 			if data, ok := extractAnthropicSSEDataLine(line); ok {
 				trimmed := strings.TrimSpace(data)
+				if refusal != nil {
+					refusal.observe([]byte(trimmed))
+				}
 				observer.ObserveAnthropic([]byte(trimmed))
 				if anthropicStreamEventIsTerminal("", trimmed) {
 					sawTerminalEvent = true
@@ -910,6 +917,9 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
+	}
+	if refusal := s.trustedAnthropicRefusal(c, account); refusal != nil {
+		refusal.observe(body)
 	}
 	observer.ObserveAnthropic(body)
 
