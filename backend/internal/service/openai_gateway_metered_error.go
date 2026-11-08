@@ -171,14 +171,14 @@ func (s *OpenAIGatewayService) handleMeteredOpenAIHTTPError(ctx context.Context,
 // Optional usage extends the existing error envelope without changing its
 // status or error fields. Only upstream-reported quantities are supplied here.
 func openAIErrorBodyWithUsage(body gin.H, usage ...*OpenAIUsage) gin.H {
-	if len(usage) > 0 && openAIUsageHasTokens(usage[0]) {
+	if len(usage) > 0 && (openAIUsageHasTokens(usage[0]) || hasMeteredSearch(usage[0])) {
 		body["usage"] = policyOpenAIWireUsage(usage[0])
 	}
 	return body
 }
 
 func anthropicErrorBodyWithOpenAIUsage(body gin.H, usage ...*OpenAIUsage) gin.H {
-	if len(usage) > 0 && openAIUsageHasTokens(usage[0]) {
+	if len(usage) > 0 && (openAIUsageHasTokens(usage[0]) || hasMeteredSearch(usage[0])) {
 		converted := *usage[0]
 		// Messages input_tokens excludes both cache buckets; Responses includes them.
 		converted.InputTokens = max(0, converted.InputTokens-converted.CacheReadInputTokens-converted.CacheCreationInputTokens)
@@ -223,10 +223,15 @@ func openAIErrorSSEWithUsage(payload []byte, usage ...*OpenAIUsage) []byte {
 // Preserve only observed usage on an unsuccessful buffered attempt. A nil
 // result keeps the existing zero-usage error and failover behavior unchanged.
 func openAICompatMeteredResult(c *gin.Context, resp *http.Response, usage OpenAIUsage, originalModel, billingModel, upstreamModel string, startTime time.Time) *OpenAIForwardResult {
-	if !openAIUsageHasTokens(&usage) {
+	if !openAIUsageHasTokens(&usage) && !hasMeteredSearch(&usage) {
 		return nil
 	}
+	searchCount := 0
+	if usage.ServerToolUse != nil {
+		searchCount = usage.ServerToolUse.WebSearchRequests
+	}
 	return &OpenAIForwardResult{
+		SearchCount:                   searchCount,
 		RequestID:                     resp.Header.Get("x-request-id"),
 		UpstreamHeaders:               resp.Header,
 		Usage:                         usage,

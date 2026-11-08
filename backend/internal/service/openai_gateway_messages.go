@@ -651,6 +651,9 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 		writeAnthropicErrorWithUsage(c, http.StatusBadGateway, "api_error", "Upstream stream ended without a terminal response event", &usage)
 		return partialResult(), fmt.Errorf("upstream stream ended without terminal event")
 	}
+	acc.SupplementResponseOutput(finalResponse)
+	searchCount := grokResponseSearchCount(account, finalResponse)
+	usage.ServerToolUse = grokSearchMeter(searchCount)
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
@@ -678,7 +681,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 			return openAICompatMeteredResult(c, resp, usage, originalModel, billingModel, upstreamModel, startTime), fmt.Errorf("openai cyber_policy: %s", msg)
 		}
 		message := openAICompatFailedResponseMessage(finalResponse)
-		if !openAIUsageHasTokens(&usage) && openAIStreamFailedEventShouldFailover(payload, message) {
+		if !openAIUsageHasTokens(&usage) && !hasMeteredSearch(&usage) && openAIStreamFailedEventShouldFailover(payload, message) {
 			return nil, s.newOpenAIStreamFailoverErrorWithModel(c, account, false, requestID, payload, message, upstreamModel, resp.Header)
 		}
 		if openAIUsageHasTokens(&usage) {
@@ -704,11 +707,8 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 		logOpenAISuccessMissingUsage(c.Request.Context(), c, account, resp, &usage, "response.completed", false)
 	}
 
-	// When the terminal event has an empty output array, reconstruct from
-	// accumulated delta events so the client receives the full content.
-	acc.SupplementResponseOutput(finalResponse)
-
 	anthropicResp := apicompat.ResponsesToAnthropic(finalResponse, originalModel)
+	anthropicResp.Usage.ServerToolUse = grokSearchMeter(searchCount)
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -730,14 +730,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 		Stream:                        false,
 		Duration:                      time.Since(startTime),
 	}
-	// Grok /v1/messages uses Responses upstream; count native search for surcharge.
-	if account != nil && account.IsGrok() && finalResponse != nil {
-		if body, err := json.Marshal(finalResponse); err == nil {
-			if n := countGrokNativeSearchCallsFromJSONBytes(body); n > 0 {
-				result.SearchCount = n
-			}
-		}
-	}
+	result.SearchCount = searchCount
 	return result, nil
 }
 
@@ -1133,6 +1126,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 		}
 		observer.ObserveOpenAI([]byte(payload), event.Type)
 		s.parseSSEUsageBytesWithType([]byte(payload), event.Type, &usage)
+		usage.ServerToolUse = grokSearchMeter(searchCount)
 
 		eventType := strings.TrimSpace(event.Type)
 		isBareErrorEvent := eventType == "error"
@@ -1217,6 +1211,9 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 		events := apicompat.ResponsesEventToAnthropicEvents(&event, state)
 		if !clientDisconnected {
 			for _, evt := range events {
+				if evt.Usage != nil {
+					evt.Usage.ServerToolUse = grokSearchMeter(searchCount)
+				}
 				sse, err := apicompat.ResponsesAnthropicEventToSSE(evt)
 				if err != nil {
 					logger.L().Warn("openai messages stream: failed to marshal event",
@@ -1252,6 +1249,9 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 		}
 		if finalEvents := apicompat.FinalizeResponsesAnthropicStream(state); len(finalEvents) > 0 && !clientDisconnected {
 			for _, evt := range finalEvents {
+				if evt.Usage != nil {
+					evt.Usage.ServerToolUse = grokSearchMeter(searchCount)
+				}
 				sse, err := apicompat.ResponsesAnthropicEventToSSE(evt)
 				if err != nil {
 					continue

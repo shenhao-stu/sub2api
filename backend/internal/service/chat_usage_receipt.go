@@ -163,7 +163,7 @@ func ValidateChatUsageReceipt(receipt *UsageReceipt) bool {
 	if receipt == nil || receipt.Version != 2 || receipt.Object != "sub2api.usage_receipt" || receipt.Source != "wire_final" || !ValidUsageReceiptID(receipt.RequestID) || receipt.Model == "" || receipt.InboundEndpoint != ChatReceiptEndpoint || receipt.BillingMode != "token" || receipt.RecordedAt.IsZero() {
 		return false
 	}
-	if receipt.InputTokens < 0 || receipt.OutputTokens < 0 || receipt.CacheReadTokens < 0 || receipt.CacheCreationTokens < 0 || receipt.ReasoningTokens < 0 || receipt.ReasoningTokens > receipt.OutputTokens || receipt.WebSearchCalls != 0 || receipt.CacheCreation5mTokens != 0 || receipt.CacheCreation1hTokens != 0 {
+	if receipt.InputTokens < 0 || receipt.OutputTokens < 0 || receipt.CacheReadTokens < 0 || receipt.CacheCreationTokens < 0 || receipt.ReasoningTokens < 0 || receipt.ReasoningTokens > receipt.OutputTokens || receipt.WebSearchCalls < 0 || receipt.CacheCreation5mTokens != 0 || receipt.CacheCreation1hTokens != 0 {
 		return false
 	}
 	if receipt.CacheReadTokens > math.MaxInt-receipt.InputTokens || receipt.CacheCreationTokens > math.MaxInt-receipt.InputTokens-receipt.CacheReadTokens {
@@ -305,7 +305,18 @@ func parseChatReceiptMeter(data []byte) *UsageReceipt {
 			return nil
 		}
 	}
-	return &UsageReceipt{InputTokens: input - cached - write, OutputTokens: output, CacheReadTokens: cached, CacheCreationTokens: write, ReasoningTokens: reasoning}
+	var searches int
+	if raw, exists := fields["server_tool_use"]; exists {
+		tools, valid := receiptObject(raw)
+		if !valid {
+			return nil
+		}
+		searches, valid = receiptCounter(tools, "web_search_requests")
+		if !valid {
+			return nil
+		}
+	}
+	return &UsageReceipt{InputTokens: input - cached - write, OutputTokens: output, CacheReadTokens: cached, CacheCreationTokens: write, ReasoningTokens: reasoning, WebSearchCalls: searches}
 }
 
 // Aliases are evidence for one bucket, not additional billable quantities.
@@ -382,7 +393,11 @@ func (s *OpenAIGatewayService) completeChatUsageReceipt(ctx context.Context, c *
 			"request_id", capture.claim.RequestID, "account_id", accountID,
 			"billing_request_id", resolveUsageBillingRequestID(ctx, ""), "forward_failed", forwardErr != nil)
 	}
-	if capture == nil || capture.meter == nil || result == nil || account == nil || result.ImageCount != 0 || result.AudioUsage != nil || result.SearchCount != 0 || result.WebSearchCalls != 0 {
+	if capture == nil || capture.meter == nil || result == nil || account == nil || result.ImageCount != 0 || result.AudioUsage != nil || result.WebSearchCalls != 0 {
+		return
+	}
+	// Search receipts must agree with the provider ledger; never finalize a lost counter as zero.
+	if capture.meter.WebSearchCalls != result.SearchCount || (result.SearchCount != 0 && !account.IsGrok()) {
 		return
 	}
 	repo, ok := s.usageLogRepo.(ChatUsageReceiptRepository)

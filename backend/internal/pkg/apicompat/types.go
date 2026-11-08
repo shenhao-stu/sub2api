@@ -161,13 +161,20 @@ type AnthropicPromptTokensDetails struct {
 	CachedTokens int `json:"cached_tokens,omitempty"`
 }
 
+// ServerToolUsage preserves executed server-side search counts across protocols.
+// This is cumulative usage, not a list of client tools or requested capabilities.
+type ServerToolUsage struct {
+	WebSearchRequests int `json:"web_search_requests"`
+}
+
 // AnthropicUsage holds token counts in Anthropic format.
 type AnthropicUsage struct {
-	CacheCreation            json.RawMessage `json:"cache_creation,omitempty"`
-	InputTokens              int             `json:"input_tokens"`
-	OutputTokens             int             `json:"output_tokens"`
-	CacheCreationInputTokens int             `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int             `json:"cache_read_input_tokens"`
+	ServerToolUse            *ServerToolUsage `json:"server_tool_use,omitempty"`
+	CacheCreation            json.RawMessage  `json:"cache_creation,omitempty"`
+	InputTokens              int              `json:"input_tokens"`
+	OutputTokens             int              `json:"output_tokens"`
+	CacheCreationInputTokens int              `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int              `json:"cache_read_input_tokens"`
 	// Anthropic-compatible providers can also expose their native OpenAI-style
 	// total/cache fields. Preserve them so callers can normalize provider totals
 	// into Anthropic's mutually-exclusive billing buckets.
@@ -822,7 +829,8 @@ type ChatChoice struct {
 
 // ChatUsage holds token counts in Chat Completions format.
 type ChatUsage struct {
-	CacheCreation           json.RawMessage `json:"cache_creation,omitempty"`
+	ServerToolUse           *ServerToolUsage `json:"server_tool_use,omitempty"`
+	CacheCreation           json.RawMessage  `json:"cache_creation,omitempty"`
 	missingPromptTokens     bool
 	missingCompletionTokens bool
 	PromptTokens            int               `json:"prompt_tokens"`

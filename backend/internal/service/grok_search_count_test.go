@@ -16,7 +16,7 @@ func TestCountGrokNativeSearchCallsFromJSONBytes(t *testing.T) {
 		{"type":"function_call","name":"tool_search","call_id":"ts1"},
 		{"type":"function_call","name":"lookup","call_id":"other"}
 	]}`)
-	require.Equal(t, 3, countGrokNativeSearchCallsFromJSONBytes(body))
+	require.Equal(t, 2, countGrokNativeSearchCallsFromJSONBytes(body))
 }
 
 func TestCountGrokNativeSearchCallsFromJSONBytes_PrefersNestedResponse(t *testing.T) {
@@ -59,7 +59,7 @@ func TestCountGrokNativeSearchCallsInSSEDataDedup_NoIDStillDedups(t *testing.T) 
 	t.Parallel()
 	// Upstream sometimes omits call_id/id; synthetic keys must still prevent 2×.
 	seen := make(map[string]struct{})
-	done := []byte(`{"type":"response.output_item.done","item":{"type":"web_search_call"}}`)
+	done := []byte(`{"type":"response.output_item.done","output_index":0,"item":{"type":"web_search_call"}}`)
 	completed := []byte(`{"type":"response.completed","response":{"output":[{"type":"web_search_call"}]}}`)
 	require.Equal(t, 1, countGrokNativeSearchCallsInSSEDataDedup(done, seen))
 	require.Equal(t, 0, countGrokNativeSearchCallsInSSEDataDedup(completed, seen))
@@ -68,8 +68,8 @@ func TestCountGrokNativeSearchCallsInSSEDataDedup_NoIDStillDedups(t *testing.T) 
 func TestCountGrokNativeSearchCallsInSSEDataDedup_MultipleNoIDCalls(t *testing.T) {
 	t.Parallel()
 	seen := make(map[string]struct{})
-	firstDone := []byte(`{"type":"response.output_item.done","item":{"type":"web_search_call"}}`)
-	secondDone := []byte(`{"type":"response.output_item.done","item":{"type":"web_search_call"}}`)
+	firstDone := []byte(`{"type":"response.output_item.done","output_index":0,"item":{"type":"web_search_call"}}`)
+	secondDone := []byte(`{"type":"response.output_item.done","output_index":1,"item":{"type":"web_search_call"}}`)
 	completed := []byte(`{"type":"response.completed","response":{"output":[{"type":"web_search_call"},{"type":"web_search_call"}]}}`)
 	require.Equal(t, 1, countGrokNativeSearchCallsInSSEDataDedup(firstDone, seen))
 	require.Equal(t, 1, countGrokNativeSearchCallsInSSEDataDedup(secondDone, seen))
@@ -82,4 +82,23 @@ func stringsJoin(lines ...string) string {
 		out += l + "\n\n"
 	}
 	return out
+}
+
+func TestGrokSearchUnindexedDuplicateWaitsForFinal(t *testing.T) {
+	seen := make(map[string]struct{})
+	item := []byte(`{"type":"response.output_item.done","item":{"type":"web_search_call"}}`)
+	require.Zero(t, countGrokNativeSearchCallsInSSEDataDedup(item, seen))
+	require.Zero(t, countGrokNativeSearchCallsInSSEDataDedup(item, seen))
+	final := []byte(`{"type":"response.completed","response":{"output":[{"type":"web_search_call"},{"type":"web_search_call"}]}}`)
+	require.Equal(t, 2, countGrokNativeSearchCallsInSSEDataDedup(final, seen))
+	require.Zero(t, countGrokNativeSearchCallsInSSEDataDedup(final, seen))
+}
+func TestGrokSearchIndexedDuplicateAndAliases(t *testing.T) {
+	seen := make(map[string]struct{})
+	item := []byte(`{"type":"response.output_item.done","output_index":0,"item":{"type":"web_search_call"}}`)
+	require.Equal(t, 1, countGrokNativeSearchCallsInSSEDataDedup(item, seen))
+	require.Zero(t, countGrokNativeSearchCallsInSSEDataDedup(item, seen))
+	final := []byte(`{"type":"response.completed","response":{"output":[{"type":"web_search_call","id":"ws","call_id":"c"}]}}`)
+	require.Zero(t, countGrokNativeSearchCallsInSSEDataDedup(final, seen))
+	require.Zero(t, countGrokNativeSearchCallsInSSEDataDedup([]byte(`{"type":"response.output_item.done","item":{"type":"web_search_call","call_id":"c"}}`), seen))
 }
