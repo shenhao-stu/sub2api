@@ -745,6 +745,9 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 		writeChatCompletionsErrorWithUsage(c, http.StatusBadGateway, "api_error", "Upstream stream ended without a terminal response event", &usage)
 		return partialResult(), fmt.Errorf("upstream stream ended without terminal event")
 	}
+	acc.SupplementResponseOutput(finalResponse)
+	searchCount := grokResponseSearchCount(account, finalResponse)
+	usage.ServerToolUse = grokSearchMeter(searchCount)
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
@@ -754,6 +757,9 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	observer.ObserveServiceTier(finalResponse.ServiceTier, true)
 	if finalResponse.CompleteReceiptMetering() {
 		wire := apicompat.ResponsesToChatCompletions(finalResponse, originalModel)
+		if wire.Usage != nil {
+			wire.Usage.ServerToolUse = grokSearchMeter(searchCount)
+		}
 		observeChatReceiptMeter(c, wire.Usage, wire.ServiceTier, finalResponse.Status)
 	}
 	if strings.TrimSpace(finalResponse.Status) == "failed" {
@@ -777,7 +783,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 			return openAICompatMeteredResult(c, resp, usage, originalModel, billingModel, upstreamModel, startTime), fmt.Errorf("openai cyber_policy: %s", msg)
 		}
 		message := openAICompatFailedResponseMessage(finalResponse)
-		if !openAIUsageHasTokens(&usage) && openAIStreamFailedEventShouldFailover(payload, message) {
+		if !openAIUsageHasTokens(&usage) && !hasMeteredSearch(&usage) && openAIStreamFailedEventShouldFailover(payload, message) {
 			return nil, s.newOpenAIStreamFailoverErrorWithModel(c, account, false, requestID, payload, message, upstreamModel, resp.Header)
 		}
 		if openAIUsageHasTokens(&usage) {
@@ -807,16 +813,15 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 		logOpenAISuccessMissingUsage(c.Request.Context(), c, account, resp, &usage, "response.completed", false)
 	}
 
-	if requiresBillableGrokChatUsage(account, billingModel, upstreamModel, finalResponse.Model) && !hasBillableGrokChatUsage(usage) {
+	if requiresBillableGrokChatUsage(account, billingModel, upstreamModel, finalResponse.Model) && !hasBillableGrokChatUsage(usage) && !hasMeteredSearch(&usage) {
 		upstreamRequestID := firstNonEmpty(requestID, resp.Header.Get("xai-request-id"))
 		return nil, newGrokMissingUsageFailoverError(c, account, upstreamRequestID)
 	}
 
-	// When the terminal event has an empty output array, reconstruct from
-	// accumulated delta events so the client receives the full content.
-	acc.SupplementResponseOutput(finalResponse)
-
 	chatResp := apicompat.ResponsesToChatCompletions(finalResponse, originalModel)
+	if chatResp.Usage != nil {
+		chatResp.Usage.ServerToolUse = grokSearchMeter(searchCount)
+	}
 	gemini := newGeminiChatDelivery(originalModel, upstreamModel)
 	if gemini.enabled {
 		payload, err := json.Marshal(chatResp)
@@ -853,14 +858,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 		Stream:                        false,
 		Duration:                      time.Since(startTime),
 	}
-	// Grok chat bridge: bill native search tools found in the terminal Responses body.
-	if account != nil && account.IsGrok() && finalResponse != nil {
-		if body, err := json.Marshal(finalResponse); err == nil {
-			if n := countGrokNativeSearchCallsFromJSONBytes(body); n > 0 {
-				result.SearchCount = n
-			}
-		}
-	}
+	result.SearchCount = searchCount
 	return result, nil
 }
 
@@ -1067,6 +1065,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		observer.ObserveOpenAI([]byte(payload), event.Type)
 		refusalDetector.ObservePayload([]byte(payload))
 		s.parseSSEUsageBytesWithType([]byte(payload), event.Type, &usage)
+		usage.ServerToolUse = grokSearchMeter(searchCount)
 
 		isTerminalEvent := isOpenAICompatResponsesTerminalEvent(event.Type)
 		if gemini.enabled && !isTerminalEvent && strings.HasPrefix(strings.TrimSpace(event.Type), "response.") {
@@ -1077,6 +1076,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		if isTerminalEvent && event.CompleteReceiptMetering() {
 			receiptState := *state
 			apicompat.ResponsesEventToChatChunks(&event, &receiptState)
+			if receiptState.Usage != nil {
+				receiptState.Usage.ServerToolUse = grokSearchMeter(searchCount)
+			}
 			terminal := strings.TrimPrefix(event.Type, "response.")
 			if terminal == "done" {
 				terminal = "completed"
@@ -1191,6 +1193,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		chunks := apicompat.ResponsesEventToChatChunks(&event, state)
 		if !clientDisconnected {
 			for _, chunk := range chunks {
+				if chunk.Usage != nil {
+					chunk.Usage.ServerToolUse = grokSearchMeter(searchCount)
+				}
 				refusalDetector.ObserveChatChunk(chunk)
 				sse, err := apicompat.ChatChunkToSSE(chunk)
 				if err != nil {
@@ -1258,6 +1263,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		}
 		if finalChunks := apicompat.FinalizeResponsesChatStream(state); len(finalChunks) > 0 && !clientDisconnected {
 			for _, chunk := range finalChunks {
+				if chunk.Usage != nil {
+					chunk.Usage.ServerToolUse = grokSearchMeter(searchCount)
+				}
 				refusalDetector.ObserveChatChunk(chunk)
 				sse, err := apicompat.ChatChunkToSSE(chunk)
 				if err != nil {

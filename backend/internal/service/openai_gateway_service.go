@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"log/slog"
 	"math/rand"
 	"net/http"
@@ -222,6 +223,7 @@ func (s *OpenAICodexUsageSnapshot) Normalize() *NormalizedCodexLimits {
 
 // OpenAIUsage represents OpenAI API response usage
 type OpenAIUsage struct {
+	ServerToolUse            *apicompat.ServerToolUsage `json:"server_tool_use,omitempty"`
 	policyCacheCreation      *policyCacheCreationSplit
 	InputTokens              int  `json:"input_tokens"`
 	ImageInputTokens         int  `json:"image_input_tokens,omitempty"`
