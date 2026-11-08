@@ -19,36 +19,44 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestGrokStringStopRealHTTP(t *testing.T) {
-	runGrokStopHTTP(t, PlatformGrok, false, `"synthetic-stop"`, `["synthetic-stop"]`)
-}
-
 func TestGrokStopWirePreservesStreamAndOtherPlatforms(t *testing.T) {
 	for _, stream := range []bool{false, true} {
-		for _, tc := range []struct{ platform, stop, want string }{
-			{PlatformGrok, `"  \nend"`, `["  \nend"]`},
-			{PlatformGrok, `["one","two"]`, `["one","two"]`},
-			{PlatformGrok, `null`, `null`},
-			{PlatformGrok, `42`, `42`},
-			{PlatformOpenAI, `"synthetic-stop"`, `"synthetic-stop"`},
+		for _, tc := range []struct {
+			name, platform, model, baseURL, stop, want string
+		}{
+			{"official 4.7 string", PlatformGrok, "grok-4.7", "https://api.x.ai/v1", `"END"`, ""},
+			{"official 4.7 array", PlatformGrok, "grok-4.7", "https://api.x.ai/v1", `["one","two"]`, ""},
+			{"official 4.7 empty", PlatformGrok, "grok-4.7", "https://api.x.ai/v1", `[]`, ""},
+			{"official 4.7 null", PlatformGrok, "grok-4.7", "https://api.x.ai/v1", `null`, ""},
+			{"official 4.6 string", PlatformGrok, "grok-4.6", "https://api.x.ai/v1", `"  \nend"`, `["  \nend"]`},
+			{"custom Grok", PlatformGrok, "grok-4.7", "https://relay.example.com/v1", `["END"]`, `["END"]`},
+			{"OpenAI", PlatformOpenAI, "gpt-4o", "https://api.openai.com/v1", `"synthetic-stop"`, `"synthetic-stop"`},
 		} {
-			t.Run(fmt.Sprintf("%s/%s/stream=%t", tc.platform, tc.stop, stream), func(t *testing.T) { runGrokStopHTTP(t, tc.platform, stream, tc.stop, tc.want) })
+			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, stream), func(t *testing.T) {
+				runGrokStopHTTP(t, tc.platform, tc.model, tc.baseURL, stream, tc.stop, tc.want)
+			})
 		}
 	}
 }
 
-func runGrokStopHTTP(t *testing.T, platform string, stream bool, stop, want string) {
+func runGrokStopHTTP(t *testing.T, platform, model, baseURL string, stream bool, stop, want string) {
 	t.Helper()
 	var calls atomic.Int32
 	var actual map[string]json.RawMessage
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&actual))
-		var gotStop, wantStop any
-		if json.Unmarshal(actual["stop"], &gotStop) != nil || json.Unmarshal([]byte(want), &wantStop) != nil || !assert.ObjectsAreEqual(wantStop, gotStop) {
-			w.WriteHeader(422)
-			io.WriteString(w, "synthetic stop expects sequence")
-			return
+		if want == "" {
+			if _, sent := actual["stop"]; sent {
+				http.Error(w, "Model grok-4.7 does not support parameter stop.", http.StatusBadRequest)
+				return
+			}
+		} else {
+			var gotStop, wantStop any
+			if json.Unmarshal(actual["stop"], &gotStop) != nil || json.Unmarshal([]byte(want), &wantStop) != nil || !assert.ObjectsAreEqual(wantStop, gotStop) {
+				http.Error(w, "synthetic stop differs from the expected value", http.StatusBadRequest)
+				return
+			}
 		}
 		if stream {
 			w.Header().Set("Content-Type", "text/event-stream")
@@ -63,11 +71,7 @@ func runGrokStopHTTP(t *testing.T, platform string, stream bool, stop, want stri
 	require.NoError(t, err)
 	svc := openAIClientToolsTestService(nil)
 	svc.httpUpstream = &grokRefusalHTTPUpstream{client: server.Client(), url: dest}
-	account := &Account{ID: 25001, Platform: platform, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "offline-only", "base_url": "https://api.x.ai/v1"}}
-	model := "grok-4.7"
-	if platform == PlatformOpenAI {
-		model = "gpt-4o"
-	}
+	account := &Account{ID: 25001, Platform: platform, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "offline-only", "base_url": baseURL}}
 	body := []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"synthetic"}],"stop":%s,"stream":%t}`, model, stop, stream))
 	original := string(body)
 	rec := httptest.NewRecorder()

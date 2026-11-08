@@ -771,7 +771,10 @@ func normalizeGrokResponsesReasoningEffort(body []byte, upstreamModel string) ([
 	return out, nil
 }
 
-func normalizeGrokChatStop(body []byte) ([]byte, error) {
+func normalizeGrokChatStop(body []byte, unsupported bool) ([]byte, error) {
+	if unsupported {
+		return sjson.DeleteBytes(body, "stop")
+	}
 	stop := gjson.GetBytes(body, "stop")
 	if stop.Type != gjson.String {
 		return body, nil

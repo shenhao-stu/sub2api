@@ -742,6 +742,39 @@ func TestForwardGrokRawChatErrorRecordsActualEndpoint(t *testing.T) {
 	require.Equal(t, grokChatRawEndpoint, GetActualOpenAIUpstreamEndpoint(c))
 }
 
+func TestForwardGrokChatStopUsesMappedOAuthModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"grok","stop":["END"],"stream":false,"messages":[{"role":"user","content":"synthetic"}]}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, grokChatRawEndpoint, bytes.NewReader(body))
+	c.Set("api_key", &APIKey{ID: 7602})
+	account := grokChatBridgeTestAccount(76)
+	account.Credentials["model_mapping"] = map[string]any{"grok": "grok-4.7"}
+	repo := &grokQuotaAccountRepo{mockAccountRepoForPlatform: &mockAccountRepoForPlatform{
+		accountsByID: map[int64]*Account{account.ID: account},
+	}}
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl","object":"chat.completion","choices":[],"usage":{"prompt_tokens":7,"completion_tokens":2}}`)),
+	}}
+	svc := &OpenAIGatewayService{
+		billingService: newLocalFixtureBilling(), httpUpstream: upstream,
+		grokTokenProvider: NewGrokTokenProvider(repo, nil), accountRepo: repo,
+	}
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+	require.NoError(t, err)
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, xai.DefaultCLIBaseURL+"/chat/completions", upstream.lastReq.URL.String())
+	require.Equal(t, "grok-4.7", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Empty(t, gjson.GetBytes(upstream.lastBody, "stop").Raw)
+	require.Equal(t, "synthetic", gjson.GetBytes(upstream.lastBody, "messages.0.content").String())
+	require.Equal(t, `["END"]`, gjson.GetBytes(body, "stop").Raw)
+	require.Equal(t, 7, result.Usage.InputTokens)
+	require.Equal(t, 2, result.Usage.OutputTokens)
+}
+
 func grokChatBridgeTestAccount(id int64) *Account {
 	return &Account{
 		ID:          id,
