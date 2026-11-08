@@ -574,6 +574,11 @@ func (s *OpenAIGatewayService) applyGrokUpstreamFailureDecision(
 		}
 		markGrokTeamModelRateLimit(account, decision.Model, until)
 	case GrokFailureBilling:
+		if plan := grokQuotaWaitPlan(account, time.Now()); plan.OfficialResetAt != nil {
+			// A verified exhausted text window is stronger than error wording.
+			s.rateLimitGrok(ctx, account, plan.RetryAt)
+			return true
+		}
 		low := strings.ToLower(decision.Reason)
 		if strings.Contains(low, "spending") || strings.Contains(low, "credits") || isGrokUsageLimitReachedText(low) {
 			// Spending-limit/credit exhaustion is a billing-window condition. Keep

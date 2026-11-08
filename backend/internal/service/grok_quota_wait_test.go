@@ -189,3 +189,36 @@ func TestGrokUsageLimitReached402UsesRecoverableNativeCooldown(t *testing.T) {
 		require.False(t, isGrokUsageLimitReachedText(message), message)
 	}
 }
+
+func TestGrokBillingFailureUsesVerifiedTextWindowRegardlessOfWording(t *testing.T) {
+	for _, message := range []string{"Grok Build usage balance exhausted", "payment required"} {
+		t.Run(message, func(t *testing.T) {
+			now := time.Now().UTC().Truncate(time.Second)
+			a := quotaWaitFixture(now, []xai.BillingProductSummary{{Product: "GrokBuild", UsagePercent: floatPtr(100)}})
+			a.Schedulable = false
+			r := &grokQuotaAccountRepo{}
+			s := &OpenAIGatewayService{accountRepo: r}
+			d := classifyGrokUpstreamFailure(http.StatusPaymentRequired, []byte(message), "grok-4.7")
+			require.Equal(t, GrokFailureBilling, d.Class)
+			require.True(t, s.applyGrokUpstreamFailureDecision(context.Background(), a, d))
+			require.Equal(t, 1, r.rateLimitedCalls)
+			require.Zero(t, r.tempUnschedCalls)
+			require.Equal(t, now.Add(72*time.Hour), r.lastRateLimitResetAt)
+			require.False(t, a.Schedulable, "never lift a manual stop")
+		})
+	}
+}
+
+func TestGrokBillingFailureDoesNotUseImageOnlyOrUnverifiedWindow(t *testing.T) {
+	for _, product := range []string{"GrokImagine", "FutureUnknown"} {
+		t.Run(product, func(t *testing.T) {
+			a := quotaWaitFixture(time.Now().UTC(), []xai.BillingProductSummary{{Product: product, UsagePercent: floatPtr(100)}})
+			r := &grokQuotaAccountRepo{}
+			s := &OpenAIGatewayService{accountRepo: r}
+			d := classifyGrokUpstreamFailure(http.StatusPaymentRequired, []byte("Grok Build usage balance exhausted"), "grok-4.7")
+			require.True(t, s.applyGrokUpstreamFailureDecision(context.Background(), a, d))
+			require.Zero(t, r.rateLimitedCalls)
+			require.Equal(t, 1, r.tempUnschedCalls)
+		})
+	}
+}
