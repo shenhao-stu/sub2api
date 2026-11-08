@@ -18,13 +18,13 @@ func TestGrokStopPreservesValuesAndOtherFields(t *testing.T) {
 	} {
 		body := []byte(`{"stop":` + tc.in + `,"messages":[{"role":"user","content":"synthetic","stop":"inner"}],"max_tokens":321}`)
 		original := string(body)
-		got, err := normalizeGrokChatStop(body)
+		got, err := normalizeGrokChatStop(body, false)
 		require.NoError(t, err)
 		require.Equal(t, `{"stop":`+tc.out+`,"messages":[{"role":"user","content":"synthetic","stop":"inner"}],"max_tokens":321}`, string(got))
 		require.Equal(t, original, string(body))
 	}
 	body := []byte(`{"messages":[{"role":"user","content":"synthetic"}]}`)
-	got, err := normalizeGrokChatStop(body)
+	got, err := normalizeGrokChatStop(body, false)
 	require.NoError(t, err)
 	require.Equal(t, body, got)
 }
@@ -35,7 +35,7 @@ func TestGrokStopConcurrentReadDoesNotMutateRequest(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 64 {
 		wg.Go(func() {
-			got, err := normalizeGrokChatStop(body)
+			got, err := normalizeGrokChatStop(body, false)
 			if err != nil || string(got) != `{"stop":["synthetic"],"metadata":{"stop":"untouched"}}` {
 				t.Errorf("normalization failed: %v", err)
 			}

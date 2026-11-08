@@ -185,10 +185,6 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletionsWithStartTime(
 		if err != nil {
 			return nil, fmt.Errorf("normalize Grok chat reasoning effort: %w", err)
 		}
-		upstreamBody, err = normalizeGrokChatStop(upstreamBody)
-		if err != nil {
-			return nil, fmt.Errorf("normalize Grok chat stop: %w", err)
-		}
 		upstreamBody, err = sanitizeGrokUnsupportedFields(upstreamBody)
 		if err != nil {
 			return nil, fmt.Errorf("sanitize Grok unsupported fields: %w", err)
@@ -210,10 +206,18 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletionsWithStartTime(
 	if err != nil {
 		return nil, err
 	}
-	if account.IsGrok() && xai.IsOfficialBaseURL(targetURL) {
-		upstreamBody, err = normalizeGrokChatMessageNames(upstreamBody)
+	if account.IsGrok() {
+		official := xai.IsOfficialBaseURL(targetURL)
+		stopUnsupported := official && xai.ResolveGrokTextResponsesModelID(upstreamModel) == "grok-4.7"
+		upstreamBody, err = normalizeGrokChatStop(upstreamBody, stopUnsupported)
 		if err != nil {
-			return nil, fmt.Errorf("normalize Grok chat message names: %w", err)
+			return nil, fmt.Errorf("normalize Grok chat stop: %w", err)
+		}
+		if official {
+			upstreamBody, err = normalizeGrokChatMessageNames(upstreamBody)
+			if err != nil {
+				return nil, fmt.Errorf("normalize Grok chat message names: %w", err)
+			}
 		}
 	}
 	upstreamBody, err = normalizeStrictChatDeveloperRoles(account, targetURL, upstreamBody)
