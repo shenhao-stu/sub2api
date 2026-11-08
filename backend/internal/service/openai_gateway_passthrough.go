@@ -762,6 +762,9 @@ func stripOpenAILegacyResponsesBeta(headers http.Header) {
 }
 
 func shouldFailoverOpenAIPassthroughResponse(account *Account, statusCode int, responseBody []byte) bool {
+	if isOpenAIClientRestriction(statusCode, responseBody) {
+		return false
+	}
 	if statusCode == http.StatusConflict && isConversationGuardError(statusCode, responseBody) {
 		return true // Request-scoped terminal sentinel, never a retry permission.
 	}
@@ -932,6 +935,11 @@ func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
 ) error {
 	MarkResponseCommitted(c)
 	body := s.redactAgentIdentitySensitiveBody(ctx, account, responseBody)
+	if isOpenAIClientRestriction(resp.StatusCode, body) {
+		recordOpenAIClientRestriction(c, account, resp.Header)
+		writeOpenAIClientRestriction(c)
+		return fmt.Errorf("upstream request rejected: client_not_allowed")
+	}
 
 	// cyber_policy 仍按原始 body 打内部标记，供 handler 事后写风控/邮件；面向客户端的
 	// 错误体在下方统一重建。cyber 是上游网络安全策略拦截，不冷却账号，
