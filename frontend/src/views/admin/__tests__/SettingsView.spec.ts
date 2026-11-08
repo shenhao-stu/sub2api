@@ -97,6 +97,7 @@ vi.mock("@/api", () => ({
       getStreamTimeoutSettings,
       getRectifierSettings,
       getBetaPolicySettings,
+      getRegistrationEmailBlacklist: vi.fn().mockResolvedValue({ emails: [], max: 20000 }),
     },
     accounts: {
       getUpstreamBillingProbeSettings,
@@ -1219,7 +1220,7 @@ describe("admin SettingsView payment visible method controls", () => {
     );
   });
 
-  it("submits Anthropic cache TTL injection gateway setting", async () => {
+  it("keeps legacy global TTL injection disabled when saving settings", async () => {
     getSettings.mockResolvedValueOnce({
       ...baseSettingsResponse,
       enable_anthropic_cache_ttl_1h_injection: true,
@@ -1234,7 +1235,7 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(updateSettings).toHaveBeenCalledTimes(1);
     expect(updateSettings).toHaveBeenCalledWith(
       expect.objectContaining({
-        enable_anthropic_cache_ttl_1h_injection: true,
+        enable_anthropic_cache_ttl_1h_injection: false,
       }),
     );
   });

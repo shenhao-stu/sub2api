@@ -118,7 +118,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		return nil, err
 	}
 
-	geminiReq, err := convertClaudeMessagesToGeminiGenerateContent(claudeBody)
+	geminiReq, err := convertClaudeMessagesToGeminiGenerateContent(claudeBody, mappedModel)
 	if err != nil {
 		return nil, s.writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
@@ -755,10 +755,10 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 	nextBlockIndex := 0
 	openBlockIndex := -1
 	openBlockType := ""
-	seenText := ""
-	seenThought := ""
+	var seenText geminiTextDelta
+	var seenThought geminiTextDelta
 	openToolIndex := -1
-	seenToolJSON := ""
+	var seenToolJSON geminiTextDelta
 
 	closeOpenBlock := func() bool {
 		if openBlockIndex < 0 {
@@ -775,7 +775,7 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 		}
 		disconnected := emitAnthropicEvent(&apicompat.AnthropicStreamEvent{Type: "content_block_stop"})
 		openToolIndex = -1
-		seenToolJSON = ""
+		seenToolJSON.reset()
 		return disconnected
 	}
 
@@ -839,8 +839,7 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 								}
 							}
 							if text, ok := part["text"].(string); ok && isGeminiThoughtPart(part) {
-								delta, newSeen := computeGeminiTextDelta(seenThought, text)
-								seenThought = newSeen
+								delta := seenThought.next(text)
 								if delta == "" {
 									continue
 								}
@@ -879,8 +878,7 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 										return streamResult(), nil
 									}
 								}
-								delta, newSeen := computeGeminiTextDelta(seenText, text)
-								seenText = newSeen
+								delta := seenText.next(text)
 								if delta == "" {
 									continue
 								}
@@ -964,8 +962,7 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 										argsJSONText = string(b)
 									}
 								}
-								delta, newSeen := computeGeminiTextDelta(seenToolJSON, argsJSONText)
-								seenToolJSON = newSeen
+								delta := seenToolJSON.next(argsJSONText)
 								if delta != "" {
 									if emitAnthropicEvent(&apicompat.AnthropicStreamEvent{
 										Type: "content_block_delta",
@@ -999,7 +996,7 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 		return streamResult(), fail("upstream_incomplete_response", "Upstream stream did not contain a valid terminal response and usage", nil)
 	}
 	usage.receiptMeasured = nativeMeter.receipt
-	if seenText == "" && !sawToolUse {
+	if seenText.seen.Len() == 0 && !sawToolUse {
 		return streamResult(), fail("upstream_empty_completion", "Upstream returned no response content; reported usage is retained", nil)
 	}
 

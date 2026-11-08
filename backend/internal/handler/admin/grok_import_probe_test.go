@@ -3,7 +3,6 @@
 package admin
 
 import (
-	"bytes"
 	"context"
 	"log/slog"
 	"sync"
@@ -261,10 +260,17 @@ func TestGrokImportProbeSchedulerSkipsMissingServiceAndNonGrokAccounts(t *testin
 	require.Empty(t, calls)
 }
 
+type grokProbeLogSink chan string
+
+func (sink grokProbeLogSink) Write(p []byte) (int, error) {
+	sink <- string(p)
+	return len(p), nil
+}
+
 func TestGrokImportProbeFailureLogDoesNotIncludeErrorMessage(t *testing.T) {
-	var logs bytes.Buffer
+	logs := make(grokProbeLogSink, 4)
 	previousLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
 	defer slog.SetDefault(previousLogger)
 
 	scheduler := newGrokImportProbeScheduler(1, time.Second)
@@ -273,9 +279,12 @@ func TestGrokImportProbeFailureLogDoesNotIncludeErrorMessage(t *testing.T) {
 	scheduler.schedule(prober, newGrokOAuthImportAccount(401))
 	awaitGrokProbeSignal(t, prober.done)
 
-	require.Eventually(t, func() bool {
-		return bytes.Contains(logs.Bytes(), []byte("grok_import_active_probe_failed"))
-	}, time.Second, 10*time.Millisecond)
-	require.Contains(t, logs.String(), "GROK_TEST_PROBE_FAILED")
-	require.NotContains(t, logs.String(), "refresh-token-secret")
+	select {
+	case line := <-logs:
+		require.Contains(t, line, "grok_import_active_probe_failed")
+		require.Contains(t, line, "GROK_TEST_PROBE_FAILED")
+		require.NotContains(t, line, "refresh-token-secret")
+	case <-time.After(time.Second):
+		t.Fatal("probe failure log was not emitted")
+	}
 }
