@@ -523,6 +523,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		Platform:                   quotaPlatform,
 		SimpleModeKeyRateLimitOnly: simpleModeKeyRateLimitOnly,
 		HistoricalVideo:            input.HistoricalVideo,
+		ChatLedgerReceipt:          result.chatLedgerReceipt(usageLog, cost),
 	}, s.billingDeps(), s.usageBillingRepo)
 
 	if billingErr != nil {

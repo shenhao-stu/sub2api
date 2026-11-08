@@ -76,6 +76,7 @@ type usageLogBestEffortWriter interface {
 // postUsageBillingParams 统一扣费所需的参数
 type postUsageBillingParams struct {
 	HistoricalVideo       bool
+	ChatLedgerReceipt     *ChatLedgerReceipt
 	Cost                  *CostBreakdown
 	User                  *User
 	APIKey                *APIKey
@@ -354,6 +355,9 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 	}
 
 	cmd.Normalize()
+	if cmd.BalanceCost > 0 || cmd.SubscriptionCost > 0 {
+		cmd.ChatLedgerReceipt = p.ChatLedgerReceipt
+	}
 	return cmd
 }
 

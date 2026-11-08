@@ -18,6 +18,7 @@ var ErrUsageBillingRequestConflict = errors.New("usage billing request fingerpri
 // UsageBillingCommand describes one billable request that must be applied at most once.
 type UsageBillingCommand struct {
 	HistoricalVideo    bool
+	ChatLedgerReceipt  *ChatLedgerReceipt
 	RequestID          string
 	APIKeyID           int64
 	RequestFingerprint string

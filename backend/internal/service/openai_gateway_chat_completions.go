@@ -1086,6 +1086,12 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			observeChatReceiptMeter(c, receiptState.Usage, receiptState.ServiceTier, terminal)
 		}
 		if isTerminalEvent {
+			if capture := chatReceiptFromContext(c.Request.Context()); capture != nil {
+				capture.ledgerTerminal = event.PositivePartialReceiptInput()
+				if capture.ledgerTerminal {
+					capture.terminal = strings.TrimPrefix(event.Type, "response.")
+				}
+			}
 			terminalEventType = strings.TrimSpace(event.Type)
 			c.Set("openai_responses_usage_state", event.TerminalMeteringState())
 		}

@@ -1057,6 +1057,35 @@ func (evt *ResponsesStreamEvent) CompleteReceiptMetering() bool {
 	}
 	return evt.Usage != nil || inner != nil
 }
+
+// PositivePartialReceiptInput recognizes a terminal Responses meter with
+// reported input and a missing output field. It never supplies a wire zero.
+func (evt *ResponsesStreamEvent) PositivePartialReceiptInput() bool {
+	if evt == nil || evt.ambiguousUsage || evt.Usage != nil || evt.Response == nil || evt.Response.ambiguousUsage {
+		return false
+	}
+	switch evt.Type {
+	case "response.completed", "response.incomplete", "response.failed":
+	default:
+		return false
+	}
+	u := evt.Response.Usage
+	if evt.Response.Status != strings.TrimPrefix(evt.Type, "response.") ||
+		u == nil || !u.receiptCountersValid || !u.inputTokensPresent || u.outputTokensPresent ||
+		u.InputTokens <= 0 || (u.reportedTotalTokens != nil && *u.reportedTotalTokens != u.InputTokens) ||
+		(u.OutputTokensDetails != nil && *u.OutputTokensDetails != (ResponsesOutputTokensDetails{})) {
+		return false
+	}
+	usage := chatUsageFromResponsesUsage(u)
+	if usage.PromptTokensDetails == nil {
+		return true
+	}
+	details := usage.PromptTokensDetails
+	write := max(details.CacheCreationTokens, details.CacheWriteTokens)
+	return details.AudioTokens == 0 && details.CachedTokens <= usage.PromptTokens &&
+		write <= usage.PromptTokens-details.CachedTokens
+}
+
 func (r *ResponsesResponse) CompleteReceiptMetering() bool {
 	if r == nil || r.ambiguousUsage || !r.Usage.completeReceiptMetering() {
 		return false

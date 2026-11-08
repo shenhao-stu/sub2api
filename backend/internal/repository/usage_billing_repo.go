@@ -90,6 +90,11 @@ func (r *usageBillingRepository) Apply(ctx context.Context, cmd *service.UsageBi
 		if err := r.applyUsageBillingEffects(ctx, tx, cmd, result); err != nil {
 			return nil, err
 		}
+		if cmd.ChatLedgerReceipt != nil {
+			if err := commitChatLedgerReceipt(ctx, tx, cmd); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if cmd.HistoricalVideo {
 		if _, err := tx.ExecContext(ctx, `UPDATE pending_video_billing SET state='settled',lease_until=NULL,last_error='',updated_at=NOW()

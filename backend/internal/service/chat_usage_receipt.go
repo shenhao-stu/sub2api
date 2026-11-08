@@ -21,6 +21,7 @@ import (
 const ChatReceiptVersionHeader = "X-Sub2API-Usage-Receipt"
 const ChatReceiptIDHeader = "X-Sub2API-Usage-Receipt-ID"
 const ChatReceiptEndpoint = "/v1/chat/completions"
+const ChatLedgerReceiptSource = "sub2api_ledger"
 
 type ChatUsageReceiptClaim struct {
 	APIKeyID    int64  `json:"api_key_id"`
@@ -56,6 +57,7 @@ type chatReceiptCapture struct {
 	rawReady       bool
 	rawDone        bool
 	rawInvalidTail bool
+	ledgerTerminal bool
 }
 
 // Only adapters with final downstream Chat-meter capture can acknowledge v2.
@@ -160,13 +162,18 @@ func observeChatReceiptMeter(c *gin.Context, meter *apicompat.ChatUsage, tier, t
 }
 
 func ValidateChatUsageReceipt(receipt *UsageReceipt) bool {
-	if receipt == nil || receipt.Version != 2 || receipt.Object != "sub2api.usage_receipt" || receipt.Source != "wire_final" || !ValidUsageReceiptID(receipt.RequestID) || receipt.Model == "" || receipt.InboundEndpoint != ChatReceiptEndpoint || receipt.BillingMode != "token" || receipt.RecordedAt.IsZero() {
+	if receipt == nil || receipt.Version != 2 || receipt.Object != "sub2api.usage_receipt" || (receipt.Source != "wire_final" && receipt.Source != ChatLedgerReceiptSource) || !ValidUsageReceiptID(receipt.RequestID) || receipt.Model == "" || receipt.InboundEndpoint != ChatReceiptEndpoint || receipt.BillingMode != "token" || receipt.RecordedAt.IsZero() {
 		return false
 	}
 	if receipt.InputTokens < 0 || receipt.OutputTokens < 0 || receipt.CacheReadTokens < 0 || receipt.CacheCreationTokens < 0 || receipt.ReasoningTokens < 0 || receipt.ReasoningTokens > receipt.OutputTokens || receipt.WebSearchCalls < 0 || receipt.CacheCreation5mTokens != 0 || receipt.CacheCreation1hTokens != 0 {
 		return false
 	}
 	if receipt.CacheReadTokens > math.MaxInt-receipt.InputTokens || receipt.CacheCreationTokens > math.MaxInt-receipt.InputTokens-receipt.CacheReadTokens {
+		return false
+	}
+	if receipt.Source == ChatLedgerReceiptSource &&
+		(!geminiChatLedgerModel(receipt.Model) || (receipt.InputTokens == 0 && receipt.CacheReadTokens == 0 && receipt.CacheCreationTokens == 0) ||
+			receipt.WebSearchCalls != 0 || receipt.ReasoningTokens != 0) {
 		return false
 	}
 	switch receipt.ServiceTier {
@@ -393,7 +400,11 @@ func (s *OpenAIGatewayService) completeChatUsageReceipt(ctx context.Context, c *
 			"request_id", capture.claim.RequestID, "account_id", accountID,
 			"billing_request_id", resolveUsageBillingRequestID(ctx, ""), "forward_failed", forwardErr != nil)
 	}
-	if capture == nil || capture.meter == nil || result == nil || account == nil || result.ImageCount != 0 || result.AudioUsage != nil || result.WebSearchCalls != 0 {
+	if capture == nil || result == nil || account == nil || result.ImageCount != 0 || result.AudioUsage != nil || result.WebSearchCalls != 0 {
+		return
+	}
+	if capture.meter == nil {
+		result.chatLedgerCloseout = chatLedgerCloseoutFor(capture, c, account, result, forwardErr)
 		return
 	}
 	// Search receipts must agree with the provider ledger; never finalize a lost counter as zero.

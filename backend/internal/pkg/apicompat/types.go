@@ -512,6 +512,7 @@ type ResponsesUsage struct {
 	decoded                bool
 	inputTokensPresent     bool
 	outputTokensPresent    bool
+	reportedTotalTokens    *int
 	explicitTokenTotals    bool
 	receiptCountersValid   bool
 	zeroTokenCountersValid bool
@@ -552,6 +553,7 @@ func (u *ResponsesUsage) UnmarshalJSON(data []byte) error {
 		OutputTokens        *int                `json:"output_tokens"`
 		PromptTokens        *int                `json:"prompt_tokens"`
 		CompletionTokens    *int                `json:"completion_tokens"`
+		TotalTokens         *int                `json:"total_tokens"`
 		InputTokensDetails  *cacheTokenPresence `json:"input_tokens_details"`
 		PromptTokensDetails *cacheTokenPresence `json:"prompt_tokens_details"`
 	}
@@ -562,6 +564,7 @@ func (u *ResponsesUsage) UnmarshalJSON(data []byte) error {
 	u.decoded = true
 	u.inputTokensPresent = nestedPresence.InputTokens != nil || nestedPresence.PromptTokens != nil
 	u.outputTokensPresent = nestedPresence.OutputTokens != nil || nestedPresence.CompletionTokens != nil
+	u.reportedTotalTokens = nestedPresence.TotalTokens
 	u.explicitTokenTotals = u.inputTokensPresent && u.outputTokensPresent
 	u.zeroTokenCountersValid = responsesZeroCountersValid(data)
 	u.receiptCountersValid = responsesZeroCountersValidObject(data, false, false)

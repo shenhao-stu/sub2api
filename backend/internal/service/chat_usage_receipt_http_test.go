@@ -54,7 +54,7 @@ func (r *chatReceiptCaptureRepo) CompleteChatUsageReceipt(ctx context.Context, c
 }
 
 func TestChatReceiptRealHTTPLateMeter(t *testing.T) {
-	for _, mode := range []string{"responses_stream", "responses_buffer", "cancel_before_headers", "raw_stream", "raw_buffer", "raw_http503", "responses_http503", "raw_http503_cancel", "terminal_zero", "missing_usage", "partial_usage", "duplicate_usage", "http400", "terminal_failed", "save_failure"} {
+	for _, mode := range []string{"responses_stream", "responses_buffer", "cancel_before_headers", "raw_stream", "raw_buffer", "raw_http503", "responses_http503", "raw_http503_cancel", "terminal_zero", "missing_usage", "partial_usage", "cpa_ledger", "duplicate_usage", "http400", "terminal_failed", "save_failure"} {
 		t.Run(mode, func(t *testing.T) {
 			var native string
 			switch mode {
@@ -62,8 +62,8 @@ func TestChatReceiptRealHTTPLateMeter(t *testing.T) {
 				native = `"usage":{"input_tokens":0,"output_tokens":0}`
 			case "missing_usage":
 				native = `"synthetic":true`
-			case "partial_usage":
-				native = `"usage":{"input_tokens":1000}`
+			case "partial_usage", "cpa_ledger":
+				native = `"usage":{"input_tokens":1000,"total_tokens":1000,"input_tokens_details":{"cached_tokens":900}}`
 			case "duplicate_usage":
 				native = `"usage":{"input_tokens":1000,"output_tokens":7},"usage":{"input_tokens":0,"output_tokens":0}`
 			default:
@@ -102,6 +102,9 @@ func TestChatReceiptRealHTTPLateMeter(t *testing.T) {
 					return
 				}
 				w.Header().Set("Content-Type", "text/event-stream")
+				if mode == "cpa_ledger" {
+					w.Header().Set("X-CPA-Request-ID", "29c51d26-9b2f-428a-8d9c-3892d5bbf624")
+				}
 				io.WriteString(w, independentHeaderCreated+independentHeaderDelta)
 				status, event := "completed", "response.completed"
 				if mode == "terminal_failed" {
@@ -122,10 +125,14 @@ func TestChatReceiptRealHTTPLateMeter(t *testing.T) {
 			svc := &OpenAIGatewayService{cfg: structuredInputRetryTestConfig(), httpUpstream: transport, usageLogRepo: repo}
 			account := structuredInputRetryTestAccount()
 			account.Credentials["base_url"] = upstream.URL
+			if mode == "cpa_ledger" {
+				account.Extra[AccountExtraUpstreamRequestIDHeader] = "X-CPA-Request-ID"
+			}
 			if strings.HasPrefix(mode, "raw") {
 				account.Extra["openai_responses_supported"] = false
 			}
 			done := make(chan error, 1)
+			ledgerResult := make(chan *OpenAIForwardResult, 1)
 			rid := uuid.NewString()
 			billingID := uuid.NewString()
 			gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +148,8 @@ func TestChatReceiptRealHTTPLateMeter(t *testing.T) {
 				c.Request = r.WithContext(ctx)
 				c.Header(ChatReceiptVersionHeader, "v2")
 				c.Header(ChatReceiptIDHeader, rid)
-				_, err = svc.ForwardAsChatCompletions(ctx, c, account, body, "", "")
+				result, err := svc.ForwardAsChatCompletions(ctx, c, account, body, "", "")
+				ledgerResult <- result
 				done <- err
 			}))
 			defer gateway.Close()
@@ -171,7 +179,19 @@ func TestChatReceiptRealHTTPLateMeter(t *testing.T) {
 			got := repo.receipt
 			gotBilling := repo.billingID
 			repo.mu.Unlock()
-			want := mode != "http400" && mode != "missing_usage" && mode != "partial_usage" && mode != "duplicate_usage"
+			result := <-ledgerResult
+			require.Equal(t, mode == "cpa_ledger", result.HasChatLedgerCloseout())
+			if mode == "cpa_ledger" {
+				endpoint, billingMode := ChatReceiptEndpoint, "token"
+				ledger := result.chatLedgerReceipt(&UsageLog{
+					APIKeyID: 11, AccountID: account.ID, RequestedModel: "gemini-4-argon", InboundEndpoint: &endpoint, BillingMode: &billingMode,
+					InputTokens: 100, CacheReadTokens: 900,
+				}, &CostBreakdown{ActualCost: 0.001})
+				require.NotNil(t, ledger)
+				require.Equal(t, ChatLedgerReceiptSource, ledger.Receipt.Source)
+				require.Equal(t, rid, ledger.Receipt.RequestID)
+			}
+			want := mode != "http400" && mode != "missing_usage" && mode != "partial_usage" && mode != "cpa_ledger" && mode != "duplicate_usage"
 			if !want {
 				require.Nil(t, got)
 				return
