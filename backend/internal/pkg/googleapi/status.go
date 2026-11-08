@@ -16,6 +16,8 @@ func HTTPStatusToGoogleStatus(status int) string {
 		return "NOT_FOUND"
 	case http.StatusServiceUnavailable:
 		return "UNAVAILABLE"
+	case http.StatusRequestTimeout:
+		return "DEADLINE_EXCEEDED"
 	case http.StatusTooManyRequests:
 		return "RESOURCE_EXHAUSTED"
 	case 499: // client closed request

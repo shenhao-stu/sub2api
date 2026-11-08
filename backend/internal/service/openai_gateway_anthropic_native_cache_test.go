@@ -89,7 +89,13 @@ func TestNativeAnthropicCacheWire(t *testing.T) {
 				case "responses-stream":
 					result, err = svc.handleResponsesStreamingFromNativeAnthropic(resp, c, "claude-sonnet-4", "claude-sonnet-4", "claude-sonnet-4", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
 				}
-				require.NoError(t, err)
+				if tc.name == "invalid_late_frame_eof" {
+					require.ErrorContains(t, err, "missing terminal event")
+					require.NotContains(t, rec.Body.String(), "[DONE]")
+					require.NotContains(t, rec.Body.String(), `"type":"response.completed"`)
+				} else {
+					require.NoError(t, err)
+				}
 				require.NotNil(t, result)
 				require.EqualValues(t, 1, calls.Load(), "a failed metering observation must not replay the provider request")
 				require.Equal(t, tc.total, result.Usage.CacheCreationInputTokens)

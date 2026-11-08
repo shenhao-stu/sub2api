@@ -95,6 +95,7 @@ func ProvideUsageLogRepository(client *ent.Client, db *sql.DB, cfg *config.Confi
 
 var ProviderSet = wire.NewSet(
 	NewUserRepository,
+	NewMCPOAuthRepository,
 	NewAPIKeyRepository,
 	NewGroupRepository,
 	NewAdminGroupRepository,

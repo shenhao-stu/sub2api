@@ -74,6 +74,14 @@ func TestAnthropicChatStreamAuthoritativeUsage(t *testing.T) {
 						if adapter == "native" {
 							svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
 							result, err := svc.forwardChatCompletionsViaNativeAnthropic(context.Background(), c, nativeAnthropicTestAccount(), body, "")
+							if terminal == "eof" && (tc.name == "overflow_counter" || tc.name == "string_counter") {
+								require.ErrorContains(t, err, "missing terminal event")
+								require.Contains(t, rec.Body.String(), "fixture answer")
+								require.Contains(t, rec.Body.String(), `"error"`)
+								require.NotContains(t, rec.Body.String(), `"usage":`)
+								require.NotContains(t, rec.Body.String(), "[DONE]")
+								return
+							}
 							require.NoError(t, err)
 							require.Equal(t, tc.totalInput, result.Usage.InputTokens)
 							require.Equal(t, tc.output, result.Usage.OutputTokens)

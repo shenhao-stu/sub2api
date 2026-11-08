@@ -262,7 +262,7 @@ func (g *grokRefusalSession) mark() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := g.store.SetCyberSessionBlocked(ctx, g.scope, keys, grokRefusalSessionTTL); err != nil {
+	if err := g.store.SetCyberSessionBlocked(ctx, CyberSessionBlock{ScopeKey: g.scope, Keys: keys}, grokRefusalSessionTTL); err != nil {
 		for _, k := range keys {
 			interruptedGrokRefusalWrites.SetDefault(k, true)
 		}

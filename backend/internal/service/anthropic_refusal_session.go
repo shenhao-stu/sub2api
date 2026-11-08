@@ -186,7 +186,7 @@ func (g *anthropicRefusalSession) observe(payload []byte) bool {
 		journalErr := recordAnthropicRefusalMarker(g.journalDir, g.key)
 		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(g.ctx), time.Second)
 		defer cancel()
-		redisErr := g.store.SetCyberSessionBlocked(writeCtx, "", []string{g.key}, 0)
+		redisErr := g.store.SetCyberSessionBlocked(writeCtx, CyberSessionBlock{Keys: []string{g.key}}, 0)
 		if journalErr != nil || redisErr != nil {
 			logger.LegacyPrintf("service.gateway", "Anthropic refusal storage degraded (journal_ack=%t, redis_ack=%t)", journalErr == nil, redisErr == nil)
 		}

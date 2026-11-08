@@ -28,7 +28,7 @@ type shutdownStreamRecorder struct {
 
 func TestDetachUpstreamContextRetainsForcedShutdown(t *testing.T) {
 	for name, detach := range map[string]func(context.Context) (context.Context, context.CancelFunc){
-		"always": detachUpstreamContext,
+		"always": func(ctx context.Context) (context.Context, context.CancelFunc) { return detachUpstreamContext(ctx) },
 		"stream": func(ctx context.Context) (context.Context, context.CancelFunc) {
 			return detachStreamUpstreamContext(ctx, true)
 		},
