@@ -87,7 +87,10 @@ func (s *UsageService) GetAPIKeyUsageReceipt(ctx context.Context, apiKeyID int64
 	if receipt.Version == 2 && (!ValidateChatUsageReceipt(receipt) || receipt.RequestID != id) {
 		return nil, ErrUsageReceiptUnavailable
 	}
-	receipt.Object, receipt.Source = "sub2api.usage_receipt", "wire_final"
+	receipt.Object = "sub2api.usage_receipt"
+	if receipt.Version == 1 {
+		receipt.Source = "wire_final"
+	}
 	receipt.RequestID = id
 	return receipt, nil
 }

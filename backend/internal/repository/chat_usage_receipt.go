@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -39,8 +40,34 @@ func (r *usageLogRepository) ClaimChatUsageReceipt(ctx context.Context, claim *s
 	return count == 1, err
 }
 
+func commitChatLedgerReceipt(ctx context.Context, tx *sql.Tx, cmd *service.UsageBillingCommand) error {
+	closeout := cmd.ChatLedgerReceipt
+	claim, receipt := closeout.Claim, closeout.Receipt
+	if claim == nil || !service.ValidateChatUsageReceipt(receipt) || receipt.Source != service.ChatLedgerReceiptSource ||
+		cmd.AccountID <= 0 || (cmd.BalanceCost <= 0 && cmd.SubscriptionCost <= 0) ||
+		claim.APIKeyID != cmd.APIKeyID || claim.RequestID != receipt.RequestID || claim.Model != receipt.Model ||
+		claim.Endpoint != receipt.InboundEndpoint || receipt.InputTokens != cmd.InputTokens ||
+		receipt.OutputTokens != cmd.OutputTokens || receipt.CacheReadTokens != cmd.CacheReadTokens ||
+		receipt.CacheCreationTokens != cmd.CacheCreationTokens {
+		return service.ErrChatReceiptConflict
+	}
+	final := chatReceiptEnvelope{State: "final", Claim: claim, AccountID: cmd.AccountID, BillingRequestID: cmd.RequestID, Receipt: receipt}
+	result, err := writeChatReceiptEnvelope(ctx, tx, final)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return service.ErrChatReceiptConflict
+	}
+	return nil
+}
+
 func (r *usageLogRepository) CompleteChatUsageReceipt(ctx context.Context, claim *service.ChatUsageReceiptClaim, accountID int64, billingRequestID string, receipt *service.UsageReceipt) error {
-	if claim == nil || !service.ValidateChatUsageReceipt(receipt) || accountID <= 0 || billingRequestID == "" || receipt.Version != 2 || receipt.RequestID != claim.RequestID || receipt.Model != claim.Model || receipt.InboundEndpoint != claim.Endpoint {
+	if claim == nil || !service.ValidateChatUsageReceipt(receipt) || receipt.Source != "wire_final" || accountID <= 0 || billingRequestID == "" || receipt.Version != 2 || receipt.RequestID != claim.RequestID || receipt.Model != claim.Model || receipt.InboundEndpoint != claim.Endpoint {
 		return service.ErrChatReceiptConflict
 	}
 	final := chatReceiptEnvelope{State: "final", Claim: claim, AccountID: accountID, BillingRequestID: billingRequestID, Receipt: receipt}
@@ -91,16 +118,7 @@ func (r *usageLogRepository) ReleaseChatUsageReceipt(_ context.Context, claim *s
 }
 
 func (r *usageLogRepository) completeChatReceiptEnvelope(ctx context.Context, final chatReceiptEnvelope) error {
-	claim := final.Claim
-	payload, err := json.Marshal(final)
-	if err != nil {
-		return err
-	}
-	claimJSON, err := json.Marshal(claim)
-	if err != nil {
-		return err
-	}
-	result, err := r.sql.ExecContext(ctx, `UPDATE provider_usage_receipts SET payload=$3 WHERE api_key_id=$1 AND request_id=$2 AND payload->>'state'='pending' AND payload->'claim'=$4::jsonb`, claim.APIKeyID, claim.RequestID, string(payload), string(claimJSON))
+	result, err := writeChatReceiptEnvelope(ctx, r.sql, final)
 	if err != nil {
 		return err
 	}
@@ -112,6 +130,21 @@ func (r *usageLogRepository) completeChatReceiptEnvelope(ctx context.Context, fi
 	// successful commit whose response was lost; only exact equality permits
 	// removal of the immutable journal entry.
 	return r.confirmChatReceiptEnvelope(ctx, final)
+}
+
+func writeChatReceiptEnvelope(ctx context.Context, db interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, final chatReceiptEnvelope) (sql.Result, error) {
+	claim := final.Claim
+	payload, err := json.Marshal(final)
+	if err != nil {
+		return nil, err
+	}
+	claimJSON, err := json.Marshal(claim)
+	if err != nil {
+		return nil, err
+	}
+	return db.ExecContext(ctx, `UPDATE provider_usage_receipts SET payload=$3 WHERE api_key_id=$1 AND request_id=$2 AND payload->>'state'='pending' AND payload->'claim'=$4::jsonb`, claim.APIKeyID, claim.RequestID, string(payload), string(claimJSON))
 }
 
 func (r *usageLogRepository) confirmChatReceiptEnvelope(ctx context.Context, final chatReceiptEnvelope) error {
