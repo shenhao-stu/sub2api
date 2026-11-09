@@ -93,6 +93,22 @@ def canonical_id(value):
     return value
 
 
+def transfer_batches(items):
+    """Bound work by compressed bytes as well as the existing file count cap."""
+    batch = []
+    size = 0
+    for item in items:
+        item_size = sum(item[key]['bytes'] for key in ['input', 'payload', 'headers', 'outcome'] if item.get(key))
+        if batch and (len(batch) == 128 or size + item_size > 8 * 1024**2):
+            yield batch
+            batch = []
+            size = 0
+        batch.append(item)
+        size += item_size
+    if batch:
+        yield batch
+
+
 def regular(path):
     try:
         info = path.lstat()
@@ -461,6 +477,13 @@ class Puller:
             raise LimitReached("run_time_limit")
         return min(45, left)
 
+    def transfer_budget(self):
+        # Bulk data can outlast a control RPC. Leave time for verified ACKs and GC.
+        left = self.deadline - self.cleanup_reserve - time.monotonic() - 45
+        if left <= 0:
+            raise LimitReached('run_time_limit')
+        return min(180, left)
+
     def descriptor(self, value, cid, suffix, cap):
         require(isinstance(value, dict) and set(value) == {"path","bytes","sha256"}, "invalid_descriptor")
         require(value["path"] == cid + suffix, "unsafe_descriptor_path")
@@ -754,7 +777,7 @@ class Puller:
                 require(self.namespace_bytes+size<=self.config.max_namespace_bytes,'namespace_space_limit')
                 require(shutil.disk_usage(self.config.root).free-size>=self.config.min_free_bytes,'nas_free_space_limit')
                 self.fetched_bytes+=size;self.namespace_bytes+=size
-                target=self.transport.fetch_batch(descriptors,Path(folder),self.time_budget())
+                target=self.transport.fetch_batch(descriptors,Path(folder),self.transfer_budget())
                 self.prefetched={d['path']:target/d['path']for d in descriptors}
             with ThreadPoolExecutor(max_workers=self.config.workers)as pool:
                 list(pool.map(lambda item:self.process_bounded(item,captures),items))
@@ -936,8 +959,8 @@ class Puller:
                     self.namespace_bytes+=metadata_reserve
                 admitted_bytes+=page_bytes;seen.update(item['capture_id'] for item in items)
                 self.result['listed']+=len(items)
-                for offset in range(0,len(items),128):
-                    try:self.process_batch(items[offset:offset+128],root/'captures')
+                for batch in transfer_batches(items):
+                    try:self.process_batch(batch,root/'captures')
                     except ArchiveError as exc:
                         self.record_error({'code':str(exc)});break
                 gc_complete=False

@@ -107,18 +107,16 @@ class RunBudget(unittest.TestCase):
         self.assertEqual(recovered['acks_confirmed'], 2)
         self.assertEqual(recovered['source_deleted'], 1)
 
-    def test_290_seconds_cannot_dispatch_ack_without_its_full_window(self):
+    def test_short_run_keeps_source_when_transfer_cannot_preserve_ack_window(self):
         result, transport, ids, elapsed, _ = self.slow_workload(290)
-        self.assertEqual(result['input_archived'], 256)
+        self.assertEqual(result['input_archived'], 0)
         self.assertEqual(result['acks_confirmed'], 0)
         self.assertEqual(result['source_deleted'], 0)
-        self.assertEqual(result['acks_pending'], 512)
-        self.assertEqual((transport.batches, transport.ack_batches), (2, 0))
-        self.assertEqual(elapsed, 245)
+        self.assertEqual(result['acks_pending'], 0)
+        self.assertEqual((transport.batches, transport.ack_batches), (0, 0))
+        self.assertEqual(elapsed, 200)
         self.assertEqual(sum((self.root/(cid+'.input.json')).exists() for cid in ids), 1000)
-        self.assertEqual(result['errors'], [{'code': 'ack_batch_deferred_time_limit'},
-                                          {'code': 'ack_batch_deferred_time_limit'},
-                                          {'code': 'transport_timeout'}])
+        self.assertEqual(result['errors'], [{'code': 'transport_timeout'}])
 
     def ack_window(self, remaining):
         cid = self.producer.add(outcome=True, headers={})

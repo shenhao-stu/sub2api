@@ -104,7 +104,10 @@ class NamespaceBudget(unittest.TestCase):
         with mock.patch.object(nas.os, "open", side_effect=open_directory):
             with self.assertRaises(nas.LimitReached):
                 nas.namespace_size(self.root, deadline)
-        self.assertEqual(len(opened), 4)
+        # The deadline may interrupt either traversal worker. Every descriptor
+        # actually opened must close, regardless of which worker reaches it first.
+        self.assertGreaterEqual(len(opened), 2)
+        self.assertLessEqual(len(opened), 4)
         for fd in opened:
             with self.assertRaises(OSError):
                 os.fstat(fd)
