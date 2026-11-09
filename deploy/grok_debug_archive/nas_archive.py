@@ -93,13 +93,13 @@ def canonical_id(value):
     return value
 
 
-def transfer_batches(items):
+def transfer_batches(items, max_bytes=8 * 1024**2):
     """Bound work by compressed bytes as well as the existing file count cap."""
     batch = []
     size = 0
     for item in items:
         item_size = sum(item[key]['bytes'] for key in ['input', 'payload', 'headers', 'outcome'] if item.get(key))
-        if batch and (len(batch) == 128 or size + item_size > 8 * 1024**2):
+        if batch and (len(batch) == 128 or size + item_size > max_bytes):
             yield batch
             batch = []
             size = 0
@@ -296,6 +296,7 @@ class Config:
     max_namespace_bytes: int = 32 * 1024 ** 3
     max_retention_scan: int = 1000
     max_pages_per_run: int = 1
+    max_transfer_batch_bytes: int = 8 * 1024 ** 2
 
     def validate(self):
         require(self.root.is_absolute() and self.root.name == "netcup-grok-test", "wrong_namespace")
@@ -315,6 +316,8 @@ class Config:
         require(self.max_payload_bytes <= self.max_namespace_bytes <= 1024 ** 4, "invalid_namespace_limit")
         require(1 <= self.max_retention_scan <= 10000,"invalid_retention_scan_limit")
         require(type(self.max_pages_per_run) is int and 1 <= self.max_pages_per_run <= 2,"invalid_page_limit")
+        require(type(self.max_transfer_batch_bytes) is int
+                and 65536 <= self.max_transfer_batch_bytes <= 8 * 1024 ** 2, "invalid_transfer_batch_limit")
 
 
 class SSHTransport:
@@ -961,7 +964,7 @@ class Puller:
                     self.namespace_bytes+=metadata_reserve
                 admitted_bytes+=page_bytes;seen.update(item['capture_id'] for item in items)
                 self.result['listed']+=len(items)
-                for batch in transfer_batches(items):
+                for batch in transfer_batches(items, self.config.max_transfer_batch_bytes):
                     try:self.process_batch(batch,root/'captures')
                     except ArchiveError as exc:
                         self.record_error({'code':str(exc)});break
