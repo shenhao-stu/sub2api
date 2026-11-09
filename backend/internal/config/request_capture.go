@@ -10,10 +10,12 @@ import (
 
 // RequestCaptureConfig never accepts client headers or public configuration.
 type RequestCaptureConfig struct {
-	GroupIDs      []int64
-	Directory     string
-	MinFreeBytes  uint64
-	MaxConcurrent int
+	GroupIDs             []int64
+	Directory            string
+	MinFreeBytes         uint64
+	MaxConcurrent        int
+	PressureFreeBytes    uint64
+	PressureMaxBodyBytes int64
 }
 
 func LoadRequestCaptureFromEnv() (RequestCaptureConfig, error) {
@@ -22,7 +24,9 @@ func LoadRequestCaptureFromEnv() (RequestCaptureConfig, error) {
 	dir := strings.TrimSpace(os.Getenv(prefix + "DIR"))
 	free := strings.TrimSpace(os.Getenv(prefix + "MIN_FREE_BYTES"))
 	concurrent := strings.TrimSpace(os.Getenv(prefix + "MAX_CONCURRENT"))
-	if groups == "" && dir == "" && free == "" && concurrent == "" {
+	pressure := strings.TrimSpace(os.Getenv(prefix + "PRESSURE_FREE_BYTES"))
+	pressureBody := strings.TrimSpace(os.Getenv(prefix + "PRESSURE_MAX_BODY_BYTES"))
+	if groups == "" && dir == "" && free == "" && concurrent == "" && pressure == "" && pressureBody == "" {
 		return RequestCaptureConfig{}, nil
 	}
 	cfg := RequestCaptureConfig{Directory: dir, MinFreeBytes: 5 << 30, MaxConcurrent: 2}
@@ -50,6 +54,20 @@ func LoadRequestCaptureFromEnv() (RequestCaptureConfig, error) {
 		}
 		cfg.MaxConcurrent = value
 	}
+	if pressure != "" {
+		value, err := strconv.ParseUint(pressure, 10, 64)
+		if err != nil || value == 0 {
+			return RequestCaptureConfig{}, fmt.Errorf("request capture PRESSURE_FREE_BYTES must be a positive integer")
+		}
+		cfg.PressureFreeBytes = value
+	}
+	if pressureBody != "" {
+		value, err := strconv.ParseInt(pressureBody, 10, 64)
+		if err != nil || value <= 0 {
+			return RequestCaptureConfig{}, fmt.Errorf("request capture PRESSURE_MAX_BODY_BYTES must be a positive integer")
+		}
+		cfg.PressureMaxBodyBytes = value
+	}
 	// The effective body limit is validated after the normal server defaults load.
 	if err := cfg.Validate(1); err != nil {
 		return RequestCaptureConfig{}, err
@@ -58,7 +76,7 @@ func LoadRequestCaptureFromEnv() (RequestCaptureConfig, error) {
 }
 
 func (c RequestCaptureConfig) Validate(bodyLimit int64) error {
-	if len(c.GroupIDs) == 0 && c.Directory == "" && c.MinFreeBytes == 0 && c.MaxConcurrent == 0 {
+	if len(c.GroupIDs) == 0 && c.Directory == "" && c.MinFreeBytes == 0 && c.MaxConcurrent == 0 && c.PressureFreeBytes == 0 && c.PressureMaxBodyBytes == 0 {
 		return nil
 	}
 	if len(c.GroupIDs) == 0 || !filepath.IsAbs(c.Directory) || strings.ContainsRune(c.Directory, 0) || filepath.Clean(c.Directory) == string(filepath.Separator) {
@@ -73,6 +91,10 @@ func (c RequestCaptureConfig) Validate(bodyLimit int64) error {
 	}
 	if c.MaxConcurrent < 1 || c.MaxConcurrent > 16 || c.MinFreeBytes == 0 {
 		return fmt.Errorf("request capture requires positive MIN_FREE_BYTES and MAX_CONCURRENT between 1 and 16")
+	}
+	if (c.PressureFreeBytes != 0 || c.PressureMaxBodyBytes != 0) &&
+		(c.PressureFreeBytes <= c.MinFreeBytes || c.PressureMaxBodyBytes <= 0) {
+		return fmt.Errorf("request capture pressure settings require PRESSURE_FREE_BYTES above MIN_FREE_BYTES and positive PRESSURE_MAX_BODY_BYTES")
 	}
 	if bodyLimit <= 0 {
 		return fmt.Errorf("request capture requires a positive server request body limit")

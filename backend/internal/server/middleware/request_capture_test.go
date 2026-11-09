@@ -596,3 +596,58 @@ func TestRequestCaptureHeaderJSONRemainsWithinArchiveManifestCap(t *testing.T) {
 	require.Less(t, info.Size(), int64(65536))
 	t.Logf("source input.json bytes=%d NAS input descriptor cap=65536", info.Size())
 }
+
+func TestRequestCapturePressureAdmissionAndRecovery(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		body       string
+		chunked    bool
+		pressured  bool
+		wantStatus int
+	}{
+		{"small", "exactly8", false, true, http.StatusOK},
+		{"small_chunked", "exactly8", true, true, http.StatusOK},
+		{"large", "larger than eight", false, true, http.StatusServiceUnavailable},
+		{"large_chunked", "larger than eight", true, true, http.StatusServiceUnavailable},
+		{"after_recovery", "larger than eight", false, false, http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "capture")
+			router, _, _ := captureAuthFixture(t, dir, func(cfg *config.Config, _ map[string]*service.APIKey) {
+				cfg.RequestCapture.PressureFreeBytes = cfg.RequestCapture.MinFreeBytes + 1
+				if test.pressured {
+					cfg.RequestCapture.PressureFreeBytes = ^uint64(0)
+				}
+				cfg.RequestCapture.PressureMaxBodyBytes = 8
+			})
+			var dispatched int
+			router.POST("/capture", func(c *gin.Context) {
+				dispatched++
+				body, err := io.ReadAll(c.Request.Body)
+				require.NoError(t, err)
+				require.Equal(t, test.body, string(body))
+				c.Status(http.StatusOK)
+			})
+			req := httptest.NewRequest(http.MethodPost, "/capture", strings.NewReader(test.body))
+			if test.chunked {
+				req.ContentLength = -1
+			}
+			req.Header.Set("x-api-key", "synthetic-selected")
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, req)
+			require.Equal(t, test.wantStatus, recorder.Code)
+			if test.wantStatus == http.StatusOK {
+				require.Equal(t, 1, dispatched)
+				require.True(t, captureJSONFiles(t, dir, ".input.json")[0]["body_complete"].(bool))
+				require.True(t, captureJSONFiles(t, dir, ".outcome.json")[0]["request_released"].(bool))
+				return
+			}
+			require.Zero(t, dispatched)
+			require.Equal(t, "60", recorder.Header().Get("Retry-After"))
+			require.Contains(t, recorder.Body.String(), "REQUEST_CAPTURE_UNAVAILABLE")
+			files, err := os.ReadDir(dir)
+			require.NoError(t, err)
+			require.Empty(t, files)
+		})
+	}
+}
