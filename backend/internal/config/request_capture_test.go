@@ -47,3 +47,37 @@ func TestRequestCaptureEnvironmentIsDefaultOffAndRejectsInvalidScope(t *testing.
 	cfg.Directory = "/private/\x00capture"
 	require.Error(t, cfg.Validate(256<<20))
 }
+
+func TestRequestCapturePressureEnvironment(t *testing.T) {
+	const prefix = "SUB2API_REQUEST_CAPTURE_"
+	t.Setenv(prefix+"GROUP_IDS", "78")
+	t.Setenv(prefix+"DIR", filepath.Join(t.TempDir(), "capture"))
+	t.Setenv(prefix+"MIN_FREE_BYTES", "12884901888")
+	t.Setenv(prefix+"MAX_CONCURRENT", "16")
+
+	for _, test := range []struct {
+		threshold string
+		maxBody   string
+		valid     bool
+	}{
+		{"", "", true},
+		{"21474836480", "8388608", true},
+		{"21474836480", "", false},
+		{"", "8388608", false},
+		{"12884901888", "8388608", false},
+		{"21474836480", "-1", false},
+	} {
+		t.Setenv(prefix+"PRESSURE_FREE_BYTES", test.threshold)
+		t.Setenv(prefix+"PRESSURE_MAX_BODY_BYTES", test.maxBody)
+		cfg, err := LoadRequestCaptureFromEnv()
+		if !test.valid {
+			require.Error(t, err)
+			continue
+		}
+		require.NoError(t, err)
+		if test.threshold != "" {
+			require.Equal(t, uint64(20<<30), cfg.PressureFreeBytes)
+			require.Equal(t, int64(8<<20), cfg.PressureMaxBodyBytes)
+		}
+	}
+}

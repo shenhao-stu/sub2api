@@ -30,6 +30,8 @@ const (
 	captureQueueTimeout = 90 * time.Second
 )
 
+var errCapturePressureBodyLimit = errors.New("capture_pressure_body_limit")
+
 // This captures inbound entity bytes only. It never wraps the response writer,
 // parses JSON, dispatches a model request, or captures upgraded WS messages.
 type requestCapture struct {
@@ -191,8 +193,26 @@ func (s *requestCapture) begin(c *gin.Context, key *service.APIKey) (finish func
 		return nil, false
 	}
 	root, err := s.openRoot()
-	if err != nil || !s.diskAvailable() {
+	if err != nil {
 		fail("capture_storage_unavailable", http.StatusServiceUnavailable)
+		return nil, false
+	}
+	usage, err := disk.Usage(s.cfg.Directory)
+	if err != nil || usage.Free < s.cfg.MinFreeBytes {
+		c.Header("Retry-After", "60")
+		fail("capture_storage_unavailable", http.StatusServiceUnavailable)
+		return nil, false
+	}
+	bodyLimit := s.bodyLimit
+	if usage.Free < s.cfg.PressureFreeBytes {
+		bodyLimit = min(bodyLimit, s.cfg.PressureMaxBodyBytes)
+	}
+	pressureRejected := func() {
+		c.Header("Retry-After", "60")
+		fail("capture_pressure_body_limit", http.StatusServiceUnavailable)
+	}
+	if bodyLimit < s.bodyLimit && c.Request.ContentLength > bodyLimit {
+		pressureRejected()
 		return nil, false
 	}
 	id, err := uuid.NewRandom()
@@ -234,7 +254,18 @@ func (s *requestCapture) begin(c *gin.Context, key *service.APIKey) (finish func
 		fail(code, http.StatusServiceUnavailable)
 		return finish, false
 	}
-	readErr, storageErr := s.spool(c, root, &input)
+	readErr, storageErr := s.spool(c, root, &input, bodyLimit)
+	if errors.Is(storageErr, errCapturePressureBodyLimit) {
+		// Only this request's unpublished scratch files exist. Retaining them
+		// would let rejected uploads consume the space the gate protects.
+		for _, name := range []string{input.HeadersFile, input.PayloadFile + ".partial"} {
+			if err := root.Remove(name); err != nil {
+				slog.Warn("request_capture_scratch_cleanup_failed", "capture_id", input.CaptureID)
+			}
+		}
+		pressureRejected()
+		return nil, false
+	}
 	if storageErr != nil {
 		code = "capture_write_failed"
 		fail(code, http.StatusServiceUnavailable)
@@ -270,7 +301,7 @@ func (s *requestCapture) begin(c *gin.Context, key *service.APIKey) (finish func
 	return finish, true
 }
 
-func (s *requestCapture) spool(c *gin.Context, root *os.Root, input *requestCaptureInput) (readErr, storageErr error) {
+func (s *requestCapture) spool(c *gin.Context, root *os.Root, input *requestCaptureInput, bodyLimit int64) (readErr, storageErr error) {
 	partial := input.PayloadFile + ".partial"
 	file, err := root.OpenFile(partial, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
@@ -292,9 +323,12 @@ func (s *requestCapture) spool(c *gin.Context, root *os.Root, input *requestCapt
 			}
 			n, err := reader.Read(buf)
 			if n > 0 {
-				if int64(n) > s.bodyLimit-input.RawBytes {
-					n = int(s.bodyLimit - input.RawBytes)
-					err = &http.MaxBytesError{Limit: s.bodyLimit}
+				if int64(n) > bodyLimit-input.RawBytes {
+					if bodyLimit < s.bodyLimit {
+						return nil, errCapturePressureBodyLimit
+					}
+					n = int(bodyLimit - input.RawBytes)
+					err = &http.MaxBytesError{Limit: bodyLimit}
 				}
 				if _, writeErr := writer.Write(buf[:n]); writeErr != nil {
 					_ = writer.Close()
