@@ -21,7 +21,7 @@ class RunBudget(unittest.TestCase):
                           source_dir=str(self.root), helper_path=str(source.INSTALL_PATH),
                           min_free_bytes=0, max_objects=1000, workers=8, max_seconds=seconds)
 
-    def slow_workload(self, seconds):
+    def slow_workload(self, seconds, scan_seconds=180):
         headers = {'Authorization': ['[REDACTED]'], 'X-Trace': ['one', 'two']}
         ids = [self.producer.add(raw=('body-'+str(i)).encode(), outcome=True, headers=headers)
                for i in range(1000)]
@@ -30,7 +30,7 @@ class RunBudget(unittest.TestCase):
         scan = nas.namespace_size
 
         def slow_scan(root, budget):
-            clock[0] += 180
+            clock[0] += scan_seconds
             return scan(root, budget)
 
         class TimedTransport(BatchTransport):
@@ -73,6 +73,33 @@ class RunBudget(unittest.TestCase):
             self.assertEqual(gzip.decompress((directory/(cid+'.request.gz')).read_bytes()),
                              ('body-'+str(i)).encode())
             self.assertEqual(json.loads(gzip.decompress((directory/(cid+'.headers.gz')).read_bytes()))['headers'], headers)
+            self.assertTrue(all((directory/(cid+'.'+kind+'-ack.done.json')).exists()
+                                for kind in ['input', 'outcome']))
+            self.assertFalse((self.root/(cid+'.input.json')).exists())
+
+    def test_500_second_scan_exhausts_old_window_without_deleting_source(self):
+        result, transport, ids, _, _ = self.slow_workload(600, scan_seconds=500)
+        self.assertEqual(result['input_archived'], 0)
+        self.assertEqual(result['acks_confirmed'], 0)
+        self.assertEqual(result['source_deleted'], 0)
+        self.assertEqual(transport.ack_batches, 0)
+        self.assertIn({'code': 'transport_timeout'}, result['errors'])
+        for cid in ids:
+            self.assertTrue((self.root/(cid+'.input.json')).exists())
+
+    def test_1200_seconds_finishes_full_scan_and_1000_verified_captures(self):
+        result, transport, ids, elapsed, _ = self.slow_workload(1200, scan_seconds=500)
+        self.assertEqual(result['errors'], [])
+        self.assertEqual(result['namespace_scan_seconds'], 500)
+        self.assertEqual(result['input_archived'], 1000)
+        self.assertEqual(result['outcome_archived'], 1000)
+        self.assertEqual(result['acks_confirmed'], 2000)
+        self.assertEqual(result['acks_pending'], 0)
+        self.assertEqual(result['source_deleted'], 1000)
+        self.assertEqual(elapsed, 747)
+        self.assertEqual((transport.batches, transport.ack_batches), (8, 8))
+        for cid in ids:
+            directory = self.config(1200).root/'captures'/cid
             self.assertTrue(all((directory/(cid+'.'+kind+'-ack.done.json')).exists()
                                 for kind in ['input', 'outcome']))
             self.assertFalse((self.root/(cid+'.input.json')).exists())
@@ -212,9 +239,9 @@ class RunBudget(unittest.TestCase):
         self.assertTrue((self.root/(cid+'.input.json')).exists())
 
     def test_window_bounds_cleanup_and_single_ssh_timeouts_remain_bounded(self):
-        for seconds in [30, 290, 600]:
+        for seconds in [30, 290, 600, 1200]:
             self.config(seconds).validate()
-        for seconds in [29, 601]:
+        for seconds in [29, 1201]:
             with self.assertRaisesRegex(nas.ArchiveError, 'invalid_resource_limit'):
                 self.config(seconds).validate()
         puller = nas.Puller(self.config(600))

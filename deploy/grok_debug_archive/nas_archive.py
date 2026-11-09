@@ -308,7 +308,9 @@ class Config:
         require(1 <= self.max_objects <= 1000 and 1 <= self.max_bytes <= 10 * 1024 ** 3, "invalid_run_limit")
         require(1 <= self.max_payload_bytes <= 512 * 1024 ** 2, "invalid_payload_limit")
         require(1 <= self.max_raw_bytes <= 512 * 1024 ** 2, "invalid_raw_limit")
-        require(30 <= self.max_seconds <= 600 and self.min_free_bytes >= 0, "invalid_resource_limit")
+        # A complete retained namespace scan can consume most of ten minutes.
+        # Longer runs remain opt-in; transfer/RPC and per-run data caps stay bounded.
+        require(30 <= self.max_seconds <= 1200 and self.min_free_bytes >= 0, "invalid_resource_limit")
         require(0 <= self.max_retention_deletes <= 1000, "invalid_retention_limit")
         require(self.max_payload_bytes <= self.max_namespace_bytes <= 1024 ** 4, "invalid_namespace_limit")
         require(1 <= self.max_retention_scan <= 10000,"invalid_retention_scan_limit")
