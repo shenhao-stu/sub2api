@@ -70,3 +70,9 @@ dual-ACK/hash checks and 30-day retention remain unchanged. `pages_completed`,
 unconfirmed second-page operation preserves the first page's confirmed counters.
 Install compatible code before adding the new config field, at the existing lock
 boundary, and retain the exact previous code/config for rollback.
+
+Set `resume_batch_transfers` to true to keep the last interrupted rsync batch
+as a bounded delta basis under the private archive namespace. Subsequent
+batches reuse matching filenames even if batch boundaries move. Staging files
+count toward the existing disk limits. The archive still checks the finished
+file sizes and hashes before publication or acknowledgment.
