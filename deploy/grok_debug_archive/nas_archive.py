@@ -297,6 +297,7 @@ class Config:
     max_retention_scan: int = 1000
     max_pages_per_run: int = 1
     max_transfer_batch_bytes: int = 8 * 1024 ** 2
+    resume_batch_transfers: bool = False
 
     def validate(self):
         require(self.root.is_absolute() and self.root.name == "netcup-grok-test", "wrong_namespace")
@@ -318,6 +319,7 @@ class Config:
         require(type(self.max_pages_per_run) is int and 1 <= self.max_pages_per_run <= 2,"invalid_page_limit")
         require(type(self.max_transfer_batch_bytes) is int
                 and 65536 <= self.max_transfer_batch_bytes <= 8 * 1024 ** 2, "invalid_transfer_batch_limit")
+        require(type(self.resume_batch_transfers) is bool, "invalid_transfer_resume_setting")
 
 
 class SSHTransport:
@@ -414,6 +416,16 @@ class SSHTransport:
         fd=os.open(names,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
         with os.fdopen(fd,'w')as f:f.write('\n'.join(expected)+'\n')
         target=directory/'files';private_dir(target,create=True)
+        resume = None
+        if self.config.resume_batch_transfers:
+            resume = self.config.root / '.run' / 'transfer-resume'
+            private_dir(resume, create=True)
+            for name, size in expected.items():
+                saved = resume / name
+                if saved.exists() or saved.is_symlink():
+                    info = regular(saved)
+                    require(info.st_size <= size, 'oversized_transfer_resume')
+                    os.replace(saved, target / name)
         def guard():
             for path in target.iterdir():
                 require(path.name in expected,'unexpected_batch_file')
@@ -421,10 +433,27 @@ class SSHTransport:
                 require(stat.S_ISREG(info.st_mode) and info.st_nlink==1 and info.st_uid==os.geteuid()
                         and info.st_size<=expected[path.name],'unsafe_or_oversized_batch_file')
         source=self.config.ssh_host+':'+self.config.source_dir.rstrip('/')+'/'
-        self.run(['rsync','--inplace','--no-implied-dirs','--files-from='+str(names),
-                  '--max-size='+str(max(expected.values())),'-e',shlex.join(['ssh',*self.options()]),
-                  '--',source,str(target)+'/'],timeout=timeout,output_limit=65536,
-                  file_size_limit=max(expected.values()),guard=guard)
+        try:
+            self.run(['rsync','--inplace','--no-implied-dirs','--files-from='+str(names),
+                      '--max-size='+str(max(expected.values())),'-e',shlex.join(['ssh',*self.options()]),
+                      '--',source,str(target)+'/'],timeout=timeout,output_limit=65536,
+                      file_size_limit=max(expected.values()),guard=guard)
+        except ArchiveError as error:
+            if resume is not None and str(error) in {'transport_timeout', 'transport_failed'}:
+                # Retain at most the last interrupted batch. These files are
+                # rsync delta bases only. Puller still verifies every final file.
+                guard()
+                for saved in resume.iterdir():
+                    require(UUID_RE.fullmatch(saved.name[:36])
+                            and saved.name[36:] in {'.input.json', '.request.gz', '.headers.gz', '.outcome.json'},
+                            'unexpected_transfer_resume_file')
+                    regular(saved)
+                    saved.unlink()
+                for partial in target.iterdir():
+                    if regular(partial).st_size:
+                        os.replace(partial, resume / partial.name)
+                fsync_dir(resume)
+            raise
         guard()
         return target
 

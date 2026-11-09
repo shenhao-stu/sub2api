@@ -76,3 +76,50 @@ class DirectBatchLimit(unittest.TestCase):
         items = [{'payload': {'bytes': size}} for size in sizes]
         self.assertEqual(list(nas.transfer_batches(items, 1024**2)),
                          [items[:2], items[2:3], items[3:]])
+
+    def test_interrupted_batch_reuses_partial_and_requires_full_ack(self):
+        from pathlib import Path
+
+        raw = random.Random(4).randbytes(64 * 1024)
+        cid = self.producer.add(raw=raw, outcome=True, headers={})
+        config = replace(self.config(), resume_batch_transfers=True)
+        payload = cid + '.request.gz'
+        test = self
+
+        class InterruptedTransport(BatchTransport):
+            def fetch_batch(self, descriptors, directory, timeout):
+                def receive(args, **kwargs):
+                    target = Path(args[-1])
+                    test.assertIn('--inplace', args)
+                    for desc in descriptors:
+                        data = (self.root / desc['path']).read_bytes()
+                        dest = target / desc['path']
+                        if self.batches == 1 and desc['path'] == payload:
+                            dest.write_bytes(data[:4096])
+                            dest.chmod(0o600)
+                            raise nas.ArchiveError('transport_timeout')
+                        if desc['path'] == payload:
+                            test.assertEqual(dest.read_bytes(), data[:4096])
+                        dest.write_bytes(data)
+                        dest.chmod(0o600)
+                    kwargs['guard']()
+                self.batches += 1
+                ssh = nas.SSHTransport.__new__(nas.SSHTransport)
+                ssh.config = config
+                ssh.control = 'unused'
+                ssh.run = receive
+                return ssh.fetch_batch(descriptors, directory, timeout)
+
+        transport = InterruptedTransport(self.root, config, self.state_root)
+        first = nas.Puller(config, transport, fixtures.NOW).run()
+        self.assertEqual(first['acks_confirmed'], 0)
+        self.assertEqual(first['source_deleted'], 0)
+        self.assertTrue((self.root / payload).exists())
+        cache = config.root / '.run' / 'transfer-resume'
+        self.assertEqual((cache / payload).stat().st_size, 4096)
+
+        second = nas.Puller(config, transport, fixtures.NOW).run()
+        self.assertEqual(second['acks_confirmed'], 2)
+        self.assertEqual(second['source_deleted'], 1)
+        self.assertEqual(list(cache.iterdir()), [])
+        self.assertEqual(gzip.decompress((config.root / 'captures' / cid / payload).read_bytes()), raw)
