@@ -16,7 +16,7 @@ import (
 // Synthetic terminal payload only: this invokes the real error writer and Ops
 // middleware, never a provider or a recorded customer request.
 func TestAnthropicLateHTTPErrorPreservesOpsStatus(t *testing.T) {
-	for _, status := range []int{400, 413, 503, 502} {
+	for _, status := range []int{400, 413, 429, 503, 502} {
 		for _, conflictingStatus := range []bool{false, true} {
 			for _, mode := range []string{"uncommitted", "sse_ping_committed", "json_space_committed"} {
 				t.Run(fmt.Sprintf("status=%d/conflict=%t/%s", status, conflictingStatus, mode), func(t *testing.T) {
@@ -28,6 +28,7 @@ func TestAnthropicLateHTTPErrorPreservesOpsStatus(t *testing.T) {
 					router.POST("/v1/messages", func(c *gin.Context) {
 						c.Set(opsAccountIDKey, int64(1))
 						c.Set(opsModelKey, "claude-sonnet-4-5")
+						c.Set(opsStreamKey, mode == "sse_ping_committed")
 						if mode == "sse_ping_committed" {
 							c.Header("Content-Type", "text/event-stream")
 							_, _ = c.Writer.WriteString("event: ping\ndata: {\"type\":\"ping\"}\n\n")
@@ -49,6 +50,7 @@ func TestAnthropicLateHTTPErrorPreservesOpsStatus(t *testing.T) {
 							marker, ok := service.GetOpsStreamError(c)
 							require.True(t, ok)
 							require.Equal(t, status, marker.IntendedStatus)
+							require.Equal(t, mode == "json_space_committed", marker.NonStream)
 						}
 					})
 					recorder := httptest.NewRecorder()
@@ -60,6 +62,7 @@ func TestAnthropicLateHTTPErrorPreservesOpsStatus(t *testing.T) {
 					require.Equal(t, wireStatus, recorder.Code)
 					require.Equal(t, int64(1), OpsErrorLogQueueLength())
 					job := <-opsErrorLogQueue
+					require.Equal(t, mode == "sse_ping_committed", job.entry.Stream, "JSON keepalive errors must not be recorded as streamed requests")
 					if mode != "uncommitted" {
 						body := recorder.Body.String()
 						if mode == "sse_ping_committed" {

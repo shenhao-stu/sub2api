@@ -556,6 +556,12 @@ gateway:
   # First whitespace commits HTTP 200; clients must inspect the final typed JSON error/success.
   # Environment: GATEWAY_ANTHROPIC_NONSTREAM_KEEPALIVE_INTERVAL (overrides this file).
   anthropic_nonstream_keepalive_interval: 0
+  # Delay the first whitespace until this many seconds after server ingress (0-90).
+  # 0 keeps interval-based timing. Upload/admission/failover do not restart this grace.
+  # After the first whitespace, late errors still cannot change HTTP 200.
+  # Has no effect while the interval above is 0; SSE behavior is unchanged.
+  # Environment: GATEWAY_ANTHROPIC_NONSTREAM_KEEPALIVE_GRACE_SECONDS.
+  anthropic_nonstream_keepalive_grace_seconds: 90
   # Image stream data interval timeout (seconds), 0=disable; independent from ordinary text streams
   # 图片流数据间隔超时（秒），0=禁用；独立于普通文本流式
   image_stream_data_interval_timeout: 900

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -64,9 +65,14 @@ func initMiddlewareTestLoggerWithLevel(t *testing.T, level string) *testLogSink 
 
 func TestRequestLogger_GenerateAndPropagateRequestID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	before := time.Now()
 	r := gin.New()
 	r.Use(RequestLogger())
 	r.GET("/t", func(c *gin.Context) {
+		started, ok := c.Request.Context().Value(ctxkey.RequestStartedAt).(time.Time)
+		if !ok || started.Before(before) || started.After(time.Now()) {
+			t.Fatal("server-observed ingress time missing or invalid")
+		}
 		reqID, ok := c.Request.Context().Value(ctxkey.RequestID).(string)
 		if !ok || reqID == "" {
 			t.Fatalf("request_id missing in context")
