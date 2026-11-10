@@ -70,6 +70,6 @@ func (s *OpenAIGatewayService) DiagnoseModelAvailabilityForPlatform(
 			supported = append(supported, &accounts[i])
 		}
 	}
-	diag.RetryAfterSeconds = modelPoolRetryAfter(supported, time.Now())
+	diag.RetryAfterSeconds = modelPoolRetryAfter(ctx, supported, requestedModel, time.Now())
 	return diag
 }

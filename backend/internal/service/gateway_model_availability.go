@@ -25,7 +25,7 @@ type ModelAvailabilityDiagnosis struct {
 	// HasRetiredSubscriptionModel records a ChatGPT upstream blocked by model
 	// retirement, so an unsupported request can include migration guidance.
 	HasRetiredSubscriptionModel bool
-	// RetryAfterSeconds is positive only when every model-capable candidate has a known active global rate limit.
+	// RetryAfterSeconds is positive only when every model-capable candidate has a known active rate limit for this request.
 	RetryAfterSeconds int
 }
 
@@ -114,6 +114,6 @@ func (s *GatewayService) DiagnoseModelAvailabilityForPlatform(
 			supported = append(supported, &accounts[i])
 		}
 	}
-	diag.RetryAfterSeconds = modelPoolRetryAfter(supported, time.Now())
+	diag.RetryAfterSeconds = modelPoolRetryAfter(ctx, supported, requestedModel, time.Now())
 	return diag
 }
