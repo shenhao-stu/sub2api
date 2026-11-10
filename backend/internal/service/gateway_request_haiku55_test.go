@@ -42,7 +42,7 @@ func TestValidateClaude55Request_Haiku55(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			body := []byte(prefix + tc.extra + "}")
-			err := validateAnthropicModelRequest(body, model)
+			err := validateClaude55Request(body, model)
 			if tc.wantErr == "" {
 				require.NoError(t, err)
 				return

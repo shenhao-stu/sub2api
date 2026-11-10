@@ -116,7 +116,14 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		}
 	}
 	if account != nil && account.Platform == PlatformAnthropic {
-		if err := validateAnthropicModelRequest(parsed.Body.Bytes(), validationModel); err != nil {
+		// Fast must obey the beta policy even when the client only sends speed.
+		if strings.EqualFold(strings.TrimSpace(parsed.Speed), "fast") {
+			policy := s.evaluateBetaPolicy(ctx, claude.BetaFastMode, account, validationModel)
+			if policy.blockErr != nil {
+				return nil, policy.blockErr
+			}
+		}
+		if err := validateClaude55Request(parsed.Body.Bytes(), validationModel); err != nil {
 			WriteAnthropicErrorResponse(c, http.StatusBadRequest, gin.H{"type": "error", "error": gin.H{"type": "invalid_request_error", "message": err.Error()}})
 			return nil, err
 		}
@@ -1026,6 +1033,9 @@ func anthropicSpeedServiceTier(account *Account, speed, model string) *string {
 }
 
 func modelSupportsAnthropicFastMode(model string) bool {
+	if claude.IsFable52(model) {
+		return true
+	}
 	modelLower := strings.ToLower(strings.TrimSpace(model))
 	if !strings.Contains(modelLower, "opus") {
 		return false

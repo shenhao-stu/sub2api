@@ -127,17 +127,6 @@ func normalizeBillingServiceTier(serviceTier string) string {
 	return strings.ToLower(strings.TrimSpace(serviceTier))
 }
 
-// billableModelServiceTier neutralizes stale fast labels on Fable 5.2 usage.
-func billableModelServiceTier(model, tier string) string {
-	if claude.IsFable52(model) {
-		switch normalizeBillingServiceTier(tier) {
-		case "fast", "priority", OpenAIFastTierUltrafast:
-			return ""
-		}
-	}
-	return tier
-}
-
 func usePriorityServiceTierPricing(serviceTier string, pricing *ModelPricing) bool {
 	if pricing == nil {
 		return false
@@ -1579,7 +1568,6 @@ type CostInput struct {
 // CalculateCostUnified 统一计费入口，支持三种计费模式。
 // 使用 ModelPricingResolver 解析定价，然后根据 BillingMode 分发计算。
 func (s *BillingService) CalculateCostUnified(input CostInput) (*CostBreakdown, error) {
-	input.ServiceTier = billableModelServiceTier(input.Model, input.ServiceTier)
 	if input.Resolver == nil {
 		// 无 Resolver，回退到旧路径
 		applyLongContextBilling := true
@@ -1920,7 +1908,7 @@ func (s *BillingService) calculateCostInternalWithPolicy(
 		return nil, err
 	}
 
-	return s.computeTokenBreakdown(pricing, tokens, rateMultiplier, billableModelServiceTier(model, serviceTier), longContextBillingEnabled), nil
+	return s.computeTokenBreakdown(pricing, tokens, rateMultiplier, serviceTier, longContextBillingEnabled), nil
 }
 
 // applyModelSpecificPricingPolicy 对目录数据做模型特定修正：DeepSeek 官方价
@@ -1971,15 +1959,15 @@ func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing
 	needsCacheCreationPolicy := usesCacheWritePremium && !pricing.CacheCreationPriceExplicit && (pricing.CacheCreationPricePerToken <= 0 ||
 		(pricing.InputPricePerTokenPriority > 0 && pricing.CacheCreationPricePerTokenPriority <= 0))
 	fastRatio := openAIModelFastPricingRatio(normalized)
-	needsOpus55FastMultiplier := claude.IsOpus55(model) && pricing.FastMultiplier == nil
-	if !needsCacheCreationPolicy && fastRatio <= 0 && !needsOpus55FastMultiplier {
+	needsClaudeFastMultiplier := (claude.IsOpus55(model) || claude.IsFable52(model)) && pricing.FastMultiplier == nil
+	if !needsCacheCreationPolicy && fastRatio <= 0 && !needsClaudeFastMultiplier {
 		return pricing
 	}
 	cloned := *pricing
 	if isOpenAIGPT6AstraModel(normalized) {
 		cloned.UltrafastMultiplier = 6
 	}
-	if needsOpus55FastMultiplier {
+	if needsClaudeFastMultiplier {
 		multiplier := 2.0
 		cloned.FastMultiplier = &multiplier
 	}

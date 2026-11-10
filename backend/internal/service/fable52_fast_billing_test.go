@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -29,30 +30,31 @@ func TestFable52FallbackPrices(t *testing.T) {
 			require.InDelta(t, 10e-6, p.CacheCreation5mPrice, 1e-12)
 			require.InDelta(t, 16e-6, p.CacheCreation1hPrice, 1e-12)
 			require.True(t, p.SupportsCacheBreakdown)
-			require.Nil(t, p.FastMultiplier)
 			require.Empty(t, p.ReasoningEffortMultipliers)
 		})
 	}
 }
 
-func TestFable52RejectsFastForMappedAlias(t *testing.T) {
+func TestFable52FastUsesMappedTargetAndPreservesUnsupportedPlatforms(t *testing.T) {
 	account := newAnthropicAPIKeyAccountForTest()
-	account.Credentials["model_mapping"] = map[string]any{"public-alias": "anthropic/claude-fable-5.2"}
-	up := &anthropicHTTPUpstreamRecorder{err: fmt.Errorf("unexpected upstream dispatch")}
-	svc := newForwardPartialUsageServiceForTest(up)
-	parsed, err := ParseGatewayRequest(NewRequestBodyRef([]byte(`{"model":"public-alias","speed":"fast","max_tokens":128,"messages":[{"role":"user","content":"synthetic"}]}`)), PlatformAnthropic)
-	require.NoError(t, err)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-	result, err := svc.Forward(context.Background(), c, account, parsed)
-	require.ErrorContains(t, err, "claude-fable-5-2 does not support speed=fast")
-	require.Nil(t, result)
-	require.Nil(t, up.lastReq)
-	require.Equal(t, http.StatusBadRequest, w.Code)
+	for _, tc := range []struct {
+		requested, target string
+		fast              bool
+	}{
+		{"public-alias", "claude-fable-5-2", true},
+		{"public-alias", "anthropic/claude-fable-5.2", true},
+		{"claude-fable-5-2", "claude-fable-5-1", false},
+		{"claude-fable-5-20", "", false},
+	} {
+		model := anthropicSpeedModel(&ParsedRequest{Model: tc.requested}, &ForwardResult{UpstreamModel: tc.target})
+		require.Equal(t, tc.fast, anthropicSpeedServiceTier(account, "fast", model) != nil, model)
+	}
+	for _, account := range []*Account{nil, {Platform: PlatformOpenAI}, {Platform: PlatformAnthropic, Type: AccountTypeBedrock}} {
+		require.Nil(t, anthropicSpeedServiceTier(account, "fast", "claude-fable-5-2"))
+	}
 }
 
-func TestFable52StaleFastTierBillsStandard(t *testing.T) {
+func TestFable52CatalogFastPricingAndExplicitOverride(t *testing.T) {
 	pricing := newStubPricingServiceFromJSON(t, `{"claude-fable-5-2":{"litellm_provider":"anthropic","mode":"chat",
 		"input_cost_per_token":8e-6,"output_cost_per_token":40e-6,"cache_read_input_token_cost":0.2e-6,
 		"cache_creation_input_token_cost":10e-6,"cache_creation_input_token_cost_above_1hr":16e-6,
@@ -60,30 +62,32 @@ func TestFable52StaleFastTierBillsStandard(t *testing.T) {
 	svc := NewBillingService(&config.Config{}, pricing)
 	tokens := UsageTokens{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 200, CacheCreationTokens: 20, CacheCreation5mTokens: 7, CacheCreation1hTokens: 13}
 	want := 100*8e-6 + 50*40e-6 + 200*.2e-6 + 7*10e-6 + 13*16e-6
-	for _, tier := range []string{"", "fast", "priority", "ultrafast"} {
+	for _, tier := range []string{"", "fast"} {
 		cost, err := svc.CalculateCostWithServiceTier("claude-fable-5-2", tokens, .7, tier)
 		require.NoError(t, err)
-		require.InDelta(t, want, cost.TotalCost, 1e-12)
-		require.InDelta(t, want*.7, cost.ActualCost, 1e-12)
+		multiplier := 1.0
+		if tier == "fast" {
+			multiplier = 2
+		}
+		require.InDelta(t, want*multiplier, cost.TotalCost, 1e-12)
+		require.InDelta(t, want*multiplier*.7, cost.ActualCost, 1e-12)
 	}
 	custom := &ChannelModelPricing{FastMultiplier: testPtrFloat64(1.5)}
 	cost, err := svc.calculateCostInternal("claude-fable-5-2", tokens, .7, "fast", custom)
 	require.NoError(t, err)
-	require.InDelta(t, want, cost.TotalCost, 1e-12)
-	require.InDelta(t, want*.7, cost.ActualCost, 1e-12)
-	cost, err = svc.CalculateCostUnified(CostInput{Model: "claude-fable-5-2", Tokens: tokens, RateMultiplier: .7, ServiceTier: "fast"})
-	require.NoError(t, err)
-	require.InDelta(t, want, cost.TotalCost, 1e-12)
-	require.InDelta(t, want*.7, cost.ActualCost, 1e-12)
+	require.InDelta(t, want*1.5, cost.TotalCost, 1e-12)
+	require.InDelta(t, want*1.5*.7, cost.ActualCost, 1e-12)
 }
 
-func TestFable52StandardForwardAndBilling(t *testing.T) {
+func TestFable52FastForwardAndBilling(t *testing.T) {
 	for _, mode := range []string{"passthrough", "apikey", "oauth"} {
 		for _, stream := range []bool{false, true} {
 			for _, tc := range []struct {
 				requested, observed string
+				multiplier          float64
 			}{
-				{"fast", ""}, {"standard", "standard"}, {"standard", "fast"}, {"", "fast"},
+				{"fast", "fast", 2}, {"fast", "standard", 1}, {"fast", "", 2},
+				{"standard", "standard", 1}, {"standard", "fast", 1}, {"", "fast", 1},
 			} {
 				t.Run(fmt.Sprintf("%s/stream=%v/%s/%s", mode, stream, tc.requested, tc.observed), func(t *testing.T) {
 					usage := map[string]any{"input_tokens": 100, "output_tokens": 50, "cache_read_input_tokens": 200,
@@ -124,17 +128,9 @@ func TestFable52StandardForwardAndBilling(t *testing.T) {
 					body := fmt.Sprintf(`{"model":"claude-fable-5-2",%s"max_tokens":256,"stream":%v,"messages":[{"role":"user","content":[{"type":"text","text":"synthetic","cache_control":{"type":"ephemeral","ttl":"5m"}}]}]}`, speedField, stream)
 					parsed, err := ParseGatewayRequest(NewRequestBodyRef([]byte(body)), PlatformAnthropic)
 					require.NoError(t, err)
-					w := httptest.NewRecorder()
-					c, _ := gin.CreateTestContext(w)
+					c, _ := gin.CreateTestContext(httptest.NewRecorder())
 					c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 					result, err := svc.Forward(context.Background(), c, account, parsed)
-					if tc.requested == "fast" {
-						require.ErrorContains(t, err, "claude-fable-5-2 does not support speed=fast")
-						require.Nil(t, result)
-						require.Nil(t, up.lastReq)
-						require.Equal(t, http.StatusBadRequest, w.Code)
-						return
-					}
 					require.NoError(t, err)
 					require.Equal(t, "claude-fable-5-2", gjson.GetBytes(up.lastBody, "model").String())
 					require.Equal(t, tc.requested, gjson.GetBytes(up.lastBody, "speed").String())
@@ -143,18 +139,48 @@ func TestFable52StandardForwardAndBilling(t *testing.T) {
 					require.Equal(t, 7, result.Usage.CacheCreation5mTokens)
 					require.Equal(t, 13, result.Usage.CacheCreation1hTokens)
 					require.Equal(t, tc.observed, result.UpstreamResponseServiceTier)
-					require.Nil(t, result.ServiceTier)
+					if tc.requested == "fast" {
+						require.Equal(t, "fast", optionalStringValue(result.ServiceTier))
+					}
 					logs := &openAIRecordUsageBestEffortLogRepoStub{}
 					billing, key := newGatewayRecordUsageServiceWithResolverForTest(logs)
 					key.Group.RateMultiplier = .7
 					err = billing.RecordUsage(context.Background(), &RecordUsageInput{Result: result, APIKey: key, User: &User{ID: 1}, Account: account})
 					require.NoError(t, err)
 					require.NotNil(t, logs.lastLog)
-					want := 100*8e-6 + 50*40e-6 + 200*.2e-6 + 7*10e-6 + 13*16e-6
+					want := (100*8e-6 + 50*40e-6 + 200*.2e-6 + 7*10e-6 + 13*16e-6) * tc.multiplier
 					require.InDelta(t, want, logs.lastLog.TotalCost, 1e-12)
 					require.InDelta(t, want*.7, logs.lastLog.ActualCost, 1e-12)
 				})
 			}
 		}
+	}
+}
+
+func TestAnthropicFastBodyObeysBetaBlockWithoutHeader(t *testing.T) {
+	settings, err := json.Marshal(BetaPolicySettings{Rules: []BetaPolicyRule{{
+		BetaToken: claude.BetaFastMode, Action: BetaPolicyActionBlock, Scope: BetaPolicyScopeAll,
+	}}})
+	require.NoError(t, err)
+	for _, model := range []string{"claude-fable-5-2", "claude-opus-5-5"} {
+		t.Run(model, func(t *testing.T) {
+			account := newAnthropicAPIKeyAccountForTest()
+			account.Credentials["model_mapping"] = map[string]any{"public-alias": model}
+			upstream := &anthropicHTTPUpstreamRecorder{err: fmt.Errorf("unexpected dispatch")}
+			svc := newForwardPartialUsageServiceForTest(upstream)
+			svc.settingService = NewSettingService(&betaPolicySettingRepoStub{values: map[string]string{
+				SettingKeyBetaPolicySettings: string(settings),
+			}}, &config.Config{})
+			body := []byte(`{"model":"public-alias","speed":"fast","max_tokens":128,"messages":[{"role":"user","content":"synthetic"}]}`)
+			parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), PlatformAnthropic)
+			require.NoError(t, err)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			result, err := svc.Forward(context.Background(), c, account, parsed)
+			var blocked *BetaBlockedError
+			require.ErrorAs(t, err, &blocked)
+			require.Nil(t, result)
+			require.Nil(t, upstream.lastReq)
+		})
 	}
 }
