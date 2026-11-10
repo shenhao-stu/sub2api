@@ -265,6 +265,7 @@ func TestAnthropicKeepaliveLongNonstreamHeaderWait(t *testing.T) {
 	svc := newForwardPartialUsageServiceForTest(&anthropicHTTPUpstreamRecorder{})
 	svc.httpUpstream = upstream
 	svc.cfg.Gateway.AnthropicNonstreamKeepaliveInterval = 10
+	svc.cfg.Gateway.AnthropicNonstreamKeepaliveGraceSeconds = 90
 	account := newAnthropicAPIKeyAccountForTest()
 	account.Extra["anthropic_passthrough"] = false
 	type outcome struct {
@@ -292,7 +293,8 @@ func TestAnthropicKeepaliveLongNonstreamHeaderWait(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	headerDelay := time.Since(started)
-	require.Less(t, headerDelay, 30*time.Second)
+	require.GreaterOrEqual(t, headerDelay, 89*time.Second)
+	require.Less(t, headerDelay, 100*time.Second)
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, time.Since(started), 130*time.Second)

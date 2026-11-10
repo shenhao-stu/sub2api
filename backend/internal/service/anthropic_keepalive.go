@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -23,6 +24,7 @@ type anthropicKeepalive struct {
 	interval        time.Duration
 	bytes           int
 	deadline        time.Time
+	nextBeat        time.Time
 	upstreamContext context.Context
 }
 
@@ -40,7 +42,15 @@ func (s *GatewayService) initAnthropicKeepalive(c *gin.Context, account *Account
 	if seconds > 0 {
 		k := &anthropicKeepalive{stream: stream, interval: time.Duration(seconds) * time.Second}
 		if !stream {
-			k.deadline = time.Now().Add(anthropicNonstreamRequestBudget)
+			now := time.Now()
+			k.deadline = now.Add(anthropicNonstreamRequestBudget)
+			if grace := s.cfg.Gateway.AnthropicNonstreamKeepaliveGraceSeconds; grace > 0 {
+				start, _ := c.Request.Context().Value(ctxkey.RequestStartedAt).(time.Time)
+				if start.IsZero() || start.After(now) {
+					start = now
+				}
+				k.nextBeat = start.Add(time.Duration(grace) * time.Second)
+			}
 		}
 		c.Set(anthropicKeepaliveKey, k)
 		return true
@@ -112,7 +122,14 @@ func awaitAnthropicUpstream[T any](c *gin.Context, operation func() (T, error)) 
 	}
 	done := make(chan result, 1)
 	go func() { value, err := operation(); done <- result{value, err} }()
-	timer := time.NewTicker(k.interval)
+	delay := k.interval
+	if !k.nextBeat.IsZero() {
+		delay = time.Until(k.nextBeat)
+		if delay < 0 {
+			delay = 0
+		}
+	}
+	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	ticks := timer.C
 	canceled := c.Request.Context().Done()
@@ -153,6 +170,10 @@ func awaitAnthropicUpstream[T any](c *gin.Context, operation func() (T, error)) 
 				continue
 			}
 			c.Writer.Flush()
+			if !k.stream {
+				k.nextBeat = time.Now().Add(k.interval)
+			}
+			timer.Reset(k.interval)
 		}
 	}
 }
@@ -204,7 +225,14 @@ func writeAnthropicErrorBody(c *gin.Context, status int, body []byte) {
 	if message == "" {
 		message = "Upstream request failed"
 	}
-	MarkOpsStreamFailure(c, "upstream_error", "", message, status)
+	stream := strings.HasPrefix(c.Writer.Header().Get("Content-Type"), "text/event-stream")
+	MarkOpsStreamErrorValue(c, OpsStreamError{
+		ErrType:         "upstream_error",
+		Message:         message,
+		IntendedStatus:  status,
+		CountTowardsSLA: true,
+		NonStream:       !stream,
+	})
 	var payload map[string]any
 	if json.Unmarshal(body, &payload) != nil || payload == nil {
 		payload = make(map[string]any)
@@ -223,7 +251,7 @@ func writeAnthropicErrorBody(c *gin.Context, status int, body []byte) {
 	errBody["status_code"] = status
 	payload["type"], payload["error"] = "error", errBody
 	encoded, _ := json.Marshal(payload)
-	if strings.HasPrefix(c.Writer.Header().Get("Content-Type"), "text/event-stream") {
+	if stream {
 		_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", encoded)
 		c.Writer.Flush()
 		return

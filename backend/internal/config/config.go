@@ -1163,6 +1163,8 @@ type GatewayConfig struct {
 	StreamKeepaliveInterval int `mapstructure:"stream_keepalive_interval"`
 	// AnthropicNonstreamKeepaliveInterval: opt-in JSON whitespace; late errors retain a committed HTTP 200.
 	AnthropicNonstreamKeepaliveInterval int `mapstructure:"anthropic_nonstream_keepalive_interval"`
+	// Grace before the first JSON whitespace commit; 0 retains interval-based timing.
+	AnthropicNonstreamKeepaliveGraceSeconds int `mapstructure:"anthropic_nonstream_keepalive_grace_seconds"`
 	// ImageStreamDataIntervalTimeout: 图片流数据间隔超时（秒），0表示禁用
 	ImageStreamDataIntervalTimeout int `mapstructure:"image_stream_data_interval_timeout"`
 	// ImageStreamKeepaliveInterval: 图片流式 keepalive 间隔（秒），0表示禁用
@@ -2653,6 +2655,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.stream_data_interval_timeout", 180)
 	viper.SetDefault("gateway.stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.anthropic_nonstream_keepalive_interval", 0)
+	viper.SetDefault("gateway.anthropic_nonstream_keepalive_grace_seconds", 90)
 	viper.SetDefault("gateway.image_stream_data_interval_timeout", 900)
 	viper.SetDefault("gateway.image_stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.image_nonstream_keepalive_interval", 0)
@@ -3599,6 +3602,9 @@ func (c *Config) Validate() error {
 	}
 	if n := c.Gateway.AnthropicNonstreamKeepaliveInterval; n != 0 && (n < 5 || n > 30) {
 		return fmt.Errorf("gateway.anthropic_nonstream_keepalive_interval must be 0 or between 5-30 seconds")
+	}
+	if n := c.Gateway.AnthropicNonstreamKeepaliveGraceSeconds; n < 0 || n > 90 {
+		return fmt.Errorf("gateway.anthropic_nonstream_keepalive_grace_seconds must be between 0-90 seconds")
 	}
 	if c.Gateway.StreamKeepaliveInterval < 0 {
 		return fmt.Errorf("gateway.stream_keepalive_interval must be non-negative")
