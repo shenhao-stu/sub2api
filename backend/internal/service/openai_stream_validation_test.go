@@ -84,3 +84,60 @@ func TestGrokBareValidationStreamingBeforeOutput(t *testing.T) {
 	require.Equal(t, 400, recorder.Code)
 	require.Equal(t, "invalid_request_error", gjson.Get(recorder.Body.String(), "error.type").String())
 }
+
+func TestGoogleNumericValidationKeepsStatusAndNoReplay(t *testing.T) {
+	payload := []byte(`{"response":{"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"},"status":"failed"},"sequence_number":2,"type":"response.failed"}`)
+	require.Equal(t, 400, openAIStreamFailureStatus(payload, extractOpenAISSEErrorMessage(payload)))
+	require.False(t, openAIStreamFailedEventShouldFailover(payload, extractOpenAISSEErrorMessage(payload)))
+	for _, bad := range []string{`{"error":{"code":429,"status":"INVALID_ARGUMENT"}}`, `{"error":{"code":"400","status":"INVALID_ARGUMENT"}}`, `{"error":{"code":400,"status":"INTERNAL"}}`, `{"code":400,"message":"Request contains an invalid argument."}`} {
+		require.False(t, isOpenAIStreamInvalidArguments([]byte(bad), "Request contains an invalid argument."))
+	}
+}
+
+func TestGoogleNumericValidationDeliveryAndUsage(t *testing.T) {
+	for _, committed := range []bool{false, true} {
+		for _, nonstream := range []bool{false, true} {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			if committed {
+				c.Header("Content-Type", "text/event-stream")
+				_, _ = c.Writer.WriteString(": ping\n\n")
+				c.Writer.Flush()
+			}
+			svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+			account := &Account{ID: 922801, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+			payload := `{"type":"response.failed","response":{"status":"failed","error":{"code":400,"status":"INVALID_ARGUMENT","message":"Request contains an invalid argument.","param":"tools"},"usage":{"input_tokens":17,"output_tokens":3}}}`
+			body := "event: response.failed\ndata: " + payload + "\n\n"
+			resp := &http.Response{StatusCode: 200, Header: http.Header{"X-Request-Id": []string{"grok-test"}}, Body: io.NopCloser(strings.NewReader(body))}
+			var err error
+			if nonstream {
+				r, e := svc.handleSSEToJSON(resp, c, account, []byte(body), "gemini-4-argon", "gemini-4-argon")
+				err = e
+				require.NotNil(t, r)
+				require.Equal(t, 17, r.usage.InputTokens)
+			} else {
+				r, e := svc.handleStreamingResponse(context.Background(), resp, c, account, time.Now(), "gemini-4-argon", "gemini-4-argon")
+				err = e
+				require.NotNil(t, r)
+				require.Equal(t, 17, r.usage.InputTokens)
+			}
+			require.Error(t, err)
+			var retry *UpstreamFailoverError
+			require.False(t, errors.As(err, &retry))
+			if committed {
+				require.Equal(t, 200, recorder.Code)
+				require.Contains(t, recorder.Body.String(), "response.failed")
+			} else {
+				require.Equal(t, 400, recorder.Code)
+			}
+			require.Contains(t, recorder.Body.String(), "invalid_argument")
+			require.Contains(t, recorder.Body.String(), `"input_tokens":17`)
+			events, _ := c.Get(OpsUpstreamErrorsKey)
+			require.Len(t, events, 1)
+			upstreamErrors, ok := events.([]*OpsUpstreamErrorEvent)
+			require.True(t, ok)
+			require.Equal(t, 400, upstreamErrors[0].UpstreamStatusCode)
+		}
+	}
+}

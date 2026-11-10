@@ -23,16 +23,20 @@ import (
 //     model). Returning 503 here misleads operators and trips reverse-proxy
 //     health checks; 404 lets the client surface the real problem.
 //
+//   - 429 rate_limit_error — every model-capable account has a known active
+//     rate limit; Retry-After carries the earliest reset.
+//
 //   - 503 api_error — accounts that could serve the model exist but are
-//     temporarily exhausted (rate limit, quota auto-pause, runtime block) OR
+//     temporarily exhausted for another or unknown reason OR
 //     the group has no accounts at all. Both stay on 503 because retrying
 //     after a backoff can plausibly succeed (or, in the empty-pool case, the
 //     operator may be in the middle of adding accounts).
 type noAccountErrorClassification struct {
-	Status        int
-	ErrType       string
-	Message       string
-	ModelNotFound bool // true when this is a 404 model_not_found classification
+	Status            int
+	ErrType           string
+	Message           string
+	RetryAfterSeconds int
+	ModelNotFound     bool // true when this is a 404 model_not_found classification
 }
 
 // Only a scheduler sentinel before any failed account was dispatched certifies
@@ -144,6 +148,9 @@ func classifyNoAccountError(
 			ModelNotFound: true,
 		}
 	}
+	if result.HasAccountsInPool && result.HasModelSupport && result.RetryAfterSeconds > 0 {
+		return noAccountErrorClassification{Status: http.StatusTooManyRequests, ErrType: "rate_limit_error", Message: "All available accounts are currently rate-limited. Please retry later.", RetryAfterSeconds: result.RetryAfterSeconds}
+	}
 	return fallback
 }
 
@@ -163,6 +170,9 @@ func classifyNoAccountErrorFromGin(
 		ctx = c.Request.Context()
 	}
 	classification := classifyNoAccountError(ctx, diag, apiKey, routingModel, displayModel, platform)
+	if c != nil && classification.RetryAfterSeconds > 0 {
+		c.Header("Retry-After", strconv.Itoa(classification.RetryAfterSeconds))
+	}
 	if classification.ModelNotFound {
 		service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalModelConfiguration)
 	}

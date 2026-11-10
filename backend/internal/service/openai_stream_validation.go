@@ -14,6 +14,15 @@ import (
 // exact validation message; broad words such as "argument" also occur in
 // transient errors and must not suppress account failover.
 func isOpenAIStreamInvalidArguments(payload []byte, message string) bool {
+	// Google-compatible relays retain the native numeric code and status enum.
+	// Require both fields rather than matching free-form "invalid argument" text.
+	for _, path := range []string{"response.error", "error"} {
+		native := gjson.GetBytes(payload, path)
+		code := native.Get("code")
+		if native.IsObject() && code.Type == gjson.Number && code.Num == 400 && native.Get("status").String() == "INVALID_ARGUMENT" {
+			return true
+		}
+	}
 	code := openAIStreamFailedEventErrorCode(payload)
 	return code == "invalid_argument" || code == "invalid_arguments" ||
 		strings.EqualFold(strings.TrimSpace(message), "Invalid arguments passed to the model.")
