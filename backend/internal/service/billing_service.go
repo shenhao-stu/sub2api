@@ -442,7 +442,7 @@ func (s *BillingService) initFallbackPricing() {
 		LongContextInputMultiplier:  5,
 		LongContextOutputMultiplier: 5,
 	}
-	// Claude Fable 5.x uses the same input/output and cache-write prices, while
+	// Claude Fable 5 and 5.1 use the same input/output and cache-write prices, while
 	// Fable 5.1 reduces cache reads from $1 to $0.25 per MTok.
 	s.fallbackPrices["claude-fable-5"] = &ModelPricing{
 		InputPricePerToken:         10e-6,
@@ -460,6 +460,15 @@ func (s *BillingService) initFallbackPricing() {
 		CacheCreation5mPrice:       12.5e-6,
 		CacheCreation1hPrice:       20e-6,
 		CacheReadPricePerToken:     0.25e-6,
+		SupportsCacheBreakdown:     true,
+	}
+	s.fallbackPrices["claude-fable-5-2"] = &ModelPricing{
+		InputPricePerToken:         8e-6,
+		OutputPricePerToken:        40e-6,
+		CacheCreationPricePerToken: 10e-6,
+		CacheCreation5mPrice:       10e-6,
+		CacheCreation1hPrice:       16e-6,
+		CacheReadPricePerToken:     0.2e-6,
 		SupportsCacheBreakdown:     true,
 	}
 
@@ -1053,6 +1062,9 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	}
 
 	// 按模型系列匹配
+	if claude.IsFable52(modelLower) {
+		return s.fallbackPrices["claude-fable-5-2"]
+	}
 	if isClaudeFable51Model(modelLower) {
 		return s.fallbackPrices["claude-fable-5-1"]
 	}
@@ -1947,15 +1959,15 @@ func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing
 	needsCacheCreationPolicy := usesCacheWritePremium && !pricing.CacheCreationPriceExplicit && (pricing.CacheCreationPricePerToken <= 0 ||
 		(pricing.InputPricePerTokenPriority > 0 && pricing.CacheCreationPricePerTokenPriority <= 0))
 	fastRatio := openAIModelFastPricingRatio(normalized)
-	needsOpus55FastMultiplier := claude.IsOpus55(model) && pricing.FastMultiplier == nil
-	if !needsCacheCreationPolicy && fastRatio <= 0 && !needsOpus55FastMultiplier {
+	needsClaudeFastMultiplier := (claude.IsOpus55(model) || claude.IsFable52(model)) && pricing.FastMultiplier == nil
+	if !needsCacheCreationPolicy && fastRatio <= 0 && !needsClaudeFastMultiplier {
 		return pricing
 	}
 	cloned := *pricing
 	if isOpenAIGPT6AstraModel(normalized) {
 		cloned.UltrafastMultiplier = 6
 	}
-	if needsOpus55FastMultiplier {
+	if needsClaudeFastMultiplier {
 		multiplier := 2.0
 		cloned.FastMultiplier = &multiplier
 	}
