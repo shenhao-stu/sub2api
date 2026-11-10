@@ -330,5 +330,6 @@ func TestClassifyNoAccountError_CooledPoolSurvivesEmptySchedulerSnapshot(t *test
 	require.Equal(t, http.StatusTooManyRequests, cls.Status)
 	require.Equal(t, "17", c.Writer.Header().Get("Retry-After"))
 	require.Equal(t, cls, classifySelectionFailureError(fmt.Errorf("no accounts (pool=0)"), cls))
+	require.Equal(t, cls, classifySelectionFailureError(fmt.Errorf("no accounts (model_rate_limited=1)"), cls))
 	require.Empty(t, noAccountSelectionErrorCode(service.ErrNoAvailableAccounts, cls))
 }

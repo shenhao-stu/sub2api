@@ -3,9 +3,11 @@
 package service
 
 import (
-	"github.com/stretchr/testify/require"
+	"context"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestModelPoolCooldown(t *testing.T) {
@@ -23,6 +25,37 @@ func TestModelPoolCooldown(t *testing.T) {
 		{"unrelated overload is not rate limit", []*Account{{OverloadUntil: &later}}, 0},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) { require.Equal(t, tc.want, modelPoolRetryAfter(tc.accounts, now)) })
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, modelPoolRetryAfter(context.Background(), tc.accounts, "", now))
+		})
+	}
+}
+
+func TestModelPoolCooldownScopes(t *testing.T) {
+	now := time.Unix(1800000000, 0)
+	later := now.Add(60 * time.Second)
+	cooled := func(scope string, seconds int) *Account {
+		a := &Account{Platform: PlatformOpenAI, Credentials: map[string]any{"model_mapping": map[string]any{"public": "mapped"}}}
+		setAccountModelRateLimitSnapshot(a, scope, now.Add(time.Duration(seconds)*time.Second), "upstream_model_cooldown", now)
+		return a
+	}
+	mixed := cooled("mapped", 30)
+	mixed.RateLimitResetAt = &later
+	for _, tc := range []struct {
+		name     string
+		accounts []*Account
+		want     int
+	}{
+		{"mapped", []*Account{cooled("mapped", 30)}, 30},
+		{"wrong model", []*Account{cooled("other", 30)}, 0},
+		{"expired", []*Account{cooled("mapped", -10)}, 0},
+		{"global and model use latest", []*Account{mixed}, 60},
+		{"earliest eligible account", []*Account{mixed, cooled("mapped", 20)}, 20},
+		{"healthy alternative", []*Account{mixed, {}}, 0},
+		{"unknown account", []*Account{mixed, nil}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, modelPoolRetryAfter(context.Background(), tc.accounts, "public", now))
+		})
 	}
 }

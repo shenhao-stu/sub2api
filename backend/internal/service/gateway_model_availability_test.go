@@ -10,6 +10,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestMappedCooldownDiagnosis(t *testing.T) {
+	a := Account{ID: 49, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true,
+		Credentials: map[string]any{"model_mapping": map[string]any{"gemini-4-argon": "gemini-4-argon-high", "gemini-3.8-flash": "gemini-3.8-flash-high"}}}
+	setAccountModelRateLimitSnapshot(&a, "gemini-4-argon-high", time.Now().Add(2*time.Minute), "upstream_model_cooldown", time.Now())
+	repo := &mockAccountRepoForPlatform{accounts: []Account{a}, accountsByID: map[int64]*Account{49: &a}}
+	services := []ModelAvailabilityDiagnoser{&GatewayService{accountRepo: repo, cfg: testConfig()}, &OpenAIGatewayService{accountRepo: repo, cfg: testConfig()}}
+	for _, svc := range services {
+		d := svc.DiagnoseModelAvailabilityForPlatform(context.Background(), nil, "gemini-4-argon", PlatformOpenAI)
+		require.True(t, d.HasModelSupport)
+		require.InDelta(t, 120, d.RetryAfterSeconds, 1)
+		d = svc.DiagnoseModelAvailabilityForPlatform(context.Background(), nil, "gemini-3.8-flash", PlatformOpenAI)
+		require.Zero(t, d.RetryAfterSeconds, "Argon cooling must not stop Flash")
+	}
+}
+
 func TestDiagnoseModelAvailabilityForPlatform_NoModel_AlwaysAvailable(t *testing.T) {
 	repo := &mockAccountRepoForPlatform{accounts: nil, accountsByID: map[int64]*Account{}}
 	svc := &GatewayService{accountRepo: repo, cfg: testConfig()}
