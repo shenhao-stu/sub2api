@@ -322,3 +322,13 @@ func TestGPT55RetirementEmptyListingDoesNotUseDefaults(t *testing.T) {
 	require.Empty(t, modelListingSource(service.PlatformOpenAI, []string{}, []string{"gpt-5.5"}))
 	require.Equal(t, []string{"gpt-5.5"}, modelListingSource(service.PlatformOpenAI, nil, []string{"gpt-5.5"}))
 }
+
+func TestClassifyNoAccountError_CooledPoolSurvivesEmptySchedulerSnapshot(t *testing.T) {
+	c := newTestGinContextWithRequest()
+	d := &fakeDiagnoser{resp: service.ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: true, RetryAfterSeconds: 17}}
+	cls := classifyNoAccountErrorFromGin(c, d, &service.APIKey{GroupID: ptrInt64(56)}, "gemini-4-argon", "gemini-4-argon", service.PlatformOpenAI)
+	require.Equal(t, http.StatusTooManyRequests, cls.Status)
+	require.Equal(t, "17", c.Writer.Header().Get("Retry-After"))
+	require.Equal(t, cls, classifySelectionFailureError(fmt.Errorf("no accounts (pool=0)"), cls))
+	require.Empty(t, noAccountSelectionErrorCode(service.ErrNoAvailableAccounts, cls))
+}

@@ -249,3 +249,24 @@ func TestDiagnoseModelAvailabilityForPlatform_WrongPlatformFiltersOut(t *testing
 	require.False(t, diag.HasAccountsInPool, "OpenAI route must not see Anthropic accounts in pool")
 	require.False(t, diag.HasModelSupport)
 }
+
+func TestDiagnoseModelAvailabilityForPlatform_GlobalCooldownWithFilteredSnapshot(t *testing.T) {
+	reset := time.Now().Add(time.Minute)
+	repo := &mockAccountRepoForPlatform{accounts: []Account{
+		{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, RateLimitResetAt: &reset, Credentials: map[string]any{"model_mapping": map[string]any{"gemini-4-argon": "ultra/gemini-4-argon-high"}}},
+		{ID: 2, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Credentials: map[string]any{"model_mapping": map[string]any{"other": "other"}}},
+	}, accountsByID: map[int64]*Account{}}
+	generic := &GatewayService{accountRepo: repo, cfg: testConfig()}
+	openai := &OpenAIGatewayService{accountRepo: repo, cfg: testConfig()}
+	for _, svc := range []ModelAvailabilityDiagnoser{generic, openai} {
+		d := svc.DiagnoseModelAvailabilityForPlatform(context.Background(), nil, "gemini-4-argon", PlatformOpenAI)
+		require.True(t, d.HasModelSupport)
+		require.InDelta(t, 60, d.RetryAfterSeconds, 1)
+	}
+	repo.accounts[1].Credentials = map[string]any{"model_mapping": map[string]any{"gemini-4-argon": "ultra/gemini-4-argon-high"}}
+	for _, svc := range []ModelAvailabilityDiagnoser{generic, openai} {
+		d := svc.DiagnoseModelAvailabilityForPlatform(context.Background(), nil, "gemini-4-argon", PlatformOpenAI)
+		require.True(t, d.HasModelSupport)
+		require.Zero(t, d.RetryAfterSeconds, "healthy alternative prevents global cooldown classification")
+	}
+}

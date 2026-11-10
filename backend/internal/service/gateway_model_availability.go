@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 )
@@ -24,6 +25,8 @@ type ModelAvailabilityDiagnosis struct {
 	// HasRetiredSubscriptionModel records a ChatGPT upstream blocked by model
 	// retirement, so an unsupported request can include migration guidance.
 	HasRetiredSubscriptionModel bool
+	// RetryAfterSeconds is positive only when every model-capable candidate has a known active global rate limit.
+	RetryAfterSeconds int
 }
 
 // ModelAvailabilityDiagnoser is implemented by gateway services that can
@@ -100,6 +103,7 @@ func (s *GatewayService) DiagnoseModelAvailabilityForPlatform(
 	}
 
 	diag := ModelAvailabilityDiagnosis{}
+	var supported []*Account
 	for i := range accounts {
 		if useMixed && accounts[i].Platform == PlatformAntigravity && !accounts[i].IsMixedSchedulingEnabled() {
 			continue
@@ -107,8 +111,9 @@ func (s *GatewayService) DiagnoseModelAvailabilityForPlatform(
 		diag.HasAccountsInPool = true
 		if s.isModelSupportedByAccountWithContext(ctx, &accounts[i], requestedModel) {
 			diag.HasModelSupport = true
-			return diag
+			supported = append(supported, &accounts[i])
 		}
 	}
+	diag.RetryAfterSeconds = modelPoolRetryAfter(supported, time.Now())
 	return diag
 }
