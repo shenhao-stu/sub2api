@@ -1859,7 +1859,7 @@ func TestSonnet55RejectsUnsupportedParametersBeforeMimicry(t *testing.T) {
 
 func TestSonnet55PreservesSignedHistoryAndAcceptsDefaultParameters(t *testing.T) {
 	body := []byte(`{"model":"claude-sonnet-5-5","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"signed"},{"type":"redacted_thinking","data":"encrypted"},{"type":"tool_use","id":"toolu_1","name":"lookup","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}],"thinking":{"type":"between_tools"},"output_config":{"effort":"high"},"tool_choice":{"type":"none"},"temperature":1,"top_p":0.99}`)
-	require.NoError(t, validateClaude55Request(body, "anthropic/claude-sonnet-5.5"))
+	require.NoError(t, validateAnthropicModelRequest(body, "anthropic/claude-sonnet-5.5"))
 	require.JSONEq(t, string(body), string(FilterThinkingBlocks(body, "claude-sonnet-5-5")))
 	withoutThinking, _ := deleteJSONPathBytes(body, "thinking")
 	require.JSONEq(t, string(withoutThinking), string(FilterThinkingBlocks(withoutThinking, "claude-sonnet-5-5")))
@@ -1905,7 +1905,7 @@ func TestSonnet55BedrockCCCompatTransformsBeforeValidation(t *testing.T) {
 			}
 			mapped, ok := ResolveBedrockModelID(account, "claude-sonnet-5-5")
 			require.True(t, ok)
-			err := validateClaude55Request(converted, mapped)
+			err := validateAnthropicModelRequest(converted, mapped)
 			if tc.wantErr {
 				require.ErrorContains(t, err, "only low, medium or high effort")
 				return

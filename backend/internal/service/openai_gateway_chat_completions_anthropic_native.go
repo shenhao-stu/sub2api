@@ -68,7 +68,7 @@ func (s *OpenAIGatewayService) forwardChatCompletionsViaNativeAnthropic(
 	if err := rejectDisabledModels(c, s.cfg, originalModel, billingModel, upstreamModel); err != nil {
 		return nil, err
 	}
-	if err := validateClaude55Request(body, upstreamModel); err != nil {
+	if err := validateAnthropicModelRequest(body, upstreamModel); err != nil {
 		writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, err
 	}

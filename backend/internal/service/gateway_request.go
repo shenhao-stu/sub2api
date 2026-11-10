@@ -655,9 +655,12 @@ func isClaude55SignedThinkingModel(model string) bool {
 	return claude.IsOpus55(model) || claude.IsSonnet55(model) || claude.IsHaiku55(model)
 }
 
-// validateClaude55Request rejects settings that the upstream cannot honor.
+// validateAnthropicModelRequest rejects settings that the upstream cannot honor.
 // Call before OAuth mimicry can remove tool_choice or alter thinking defaults.
-func validateClaude55Request(body []byte, model string) error {
+func validateAnthropicModelRequest(body []byte, model string) error {
+	if claude.IsFable52(model) && strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "speed").String()), "fast") {
+		return fmt.Errorf("claude-fable-5-2 does not support speed=fast; omit speed or use standard")
+	}
 	if !isClaude55SignedThinkingModel(model) {
 		return nil
 	}
