@@ -1,0 +1,14 @@
+{
+  "name": "Grok included Free usage exhausted",
+  "enabled": true,
+  "priority": 9,
+  "error_codes": [429],
+  "keywords": ["You've used all the included free usage for model grok-", "You have used all the included free usage for model grok-"],
+  "match_mode": "all",
+  "platforms": ["grok", "openai"],
+  "passthrough_code": true,
+  "passthrough_body": false,
+  "custom_message": "上游 Grok 账号的免费套餐用量已耗尽，按滚动 24 小时恢复。这不是您的 Getoken 余额不足；请避免连续重试，稍后再试或联系管理员。",
+  "skip_monitoring": false,
+  "description": "Confirmed provider 429 included-Free-usage exhaustion only; retain status and Ops, hide provider URLs. Native Grok and OpenAI-compatible handler platform names."
+}
