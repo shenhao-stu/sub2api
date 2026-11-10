@@ -1,0 +1,14 @@
+{
+  "name": "Grok model capacity exhausted",
+  "enabled": true,
+  "priority": 10,
+  "error_codes": [429],
+  "keywords": ["The model is currently at capacity"],
+  "match_mode": "all",
+  "platforms": ["grok", "openai"],
+  "passthrough_code": true,
+  "passthrough_body": false,
+  "custom_message": "上游 Grok 模型当前容量不足，已完成有限次数的安全切换。此错误不是您的 Getoken 余额不足；请暂停连续重试，稍后再试。",
+  "skip_monitoring": false,
+  "description": "Exact provider capacity phrase with semantic 429; keep Ops and status, redact provider URLs. Does not match account quota or content refusal."
+}

@@ -2263,7 +2263,7 @@ func TestOpenAIStreamingPreambleKeepaliveUsesDownstreamIdle(t *testing.T) {
 				MaxLineSize:             defaultMaxLineSize,
 			},
 		}}
-		rec := httptest.NewRecorder()
+		rec := newOpenAIResponseFlushRecorder()
 		c, _ := gin.CreateTestContext(rec)
 		c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
 
@@ -2290,11 +2290,13 @@ func TestOpenAIStreamingPreambleKeepaliveUsesDownstreamIdle(t *testing.T) {
 			require.NoError(t, writeErr)
 			synctest.Wait()
 		}
-		require.Empty(t, rec.Body.String(), "preamble stays buffered before semantic output")
+		body, _ := rec.snapshot()
+		require.Empty(t, body, "preamble stays buffered before semantic output")
 		time.Sleep(200 * time.Millisecond)
 		synctest.Wait()
-		require.Equal(t, ":\n\n", rec.Body.String(), "heartbeat must reach the client before upstream completion")
-		require.True(t, rec.Flushed)
+		body, flushes := rec.snapshot()
+		require.Equal(t, ":\n\n", body, "heartbeat must reach the client before upstream completion")
+		require.NotEmpty(t, flushes)
 
 		_, writeErr = io.WriteString(pw, "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n")
 		require.NoError(t, writeErr)
@@ -2304,7 +2306,8 @@ func TestOpenAIStreamingPreambleKeepaliveUsesDownstreamIdle(t *testing.T) {
 		require.NotNil(t, result)
 		require.Equal(t, 1, result.usage.InputTokens)
 		require.Equal(t, 2, result.usage.OutputTokens)
-		require.Contains(t, rec.Body.String(), "response.completed")
+		body, _ = rec.snapshot()
+		require.Contains(t, body, "response.completed")
 	})
 }
 

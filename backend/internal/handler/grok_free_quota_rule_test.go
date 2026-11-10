@@ -56,3 +56,34 @@ func TestGrokFreeQuotaOperatorRule(t *testing.T) {
 		require.NotContains(t, rec.Body.String(), `"usage"`)
 	}
 }
+
+func TestGrokCapacityOperatorRule(t *testing.T) {
+	data, err := os.ReadFile("../../../deploy/ops/grok_capacity_error_rule.json")
+	require.NoError(t, err)
+	var rule model.ErrorPassthroughRule
+	require.NoError(t, json.Unmarshal(data, &rule))
+	require.NoError(t, rule.Validate())
+	rules := service.NewErrorPassthroughService(&grokFreeRuleRepo{rule: &rule}, nil)
+	body := []byte(`{"error":{"code":"resource-exhausted","message":"The model is currently at capacity due to high demand. More: https://provider.invalid/private"}}`)
+	require.NotNil(t, rules.MatchRule(service.PlatformGrok, 429, body))
+	require.Nil(t, rules.MatchRule(service.PlatformGrok, 400, body))
+	require.Nil(t, rules.MatchRule(service.PlatformGrok, 429, []byte(`{"error":"monthly quota exhausted"}`)))
+	for _, committed := range []bool{false, true} {
+		c, rec := newGinContextForEndpoint(t, "/v1/chat/completions")
+		if committed {
+			c.Header("Content-Type", "text/event-stream")
+			_, err := c.Writer.WriteString(": ping\n\n")
+			require.NoError(t, err)
+			c.Writer.Flush()
+		}
+		(&OpenAIGatewayHandler{errorPassthroughService: rules}).handleFailoverExhausted(c, &service.UpstreamFailoverError{StatusCode: 429, ResponseBody: body}, committed)
+		expectedHTTP := 429
+		if committed {
+			expectedHTTP = 200
+		}
+		require.Equal(t, expectedHTTP, rec.Code)
+		require.Contains(t, rec.Body.String(), "上游 Grok 模型当前容量不足")
+		require.NotContains(t, rec.Body.String(), "provider.invalid")
+		require.NotContains(t, rec.Body.String(), `"usage"`)
+	}
+}

@@ -371,9 +371,27 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	gemini := newGeminiChatDelivery(originalModel, upstreamModel)
 	var geminiPending []string
 	geminiPendingBytes := 0
+	var grokPrefix *openAIChatSilentRefusalDetector
+	if account.IsGrok() {
+		// Role/event prefixes are not generated output. Hold them so a later
+		// explicit capacity/throttle rejection can use the existing bounded failover.
+		grokPrefix = newOpenAIChatSilentRefusalDetector(openAISilentRefusalMinRequestBodyBytes)
+	}
+	grokPrefixBytes := 0
+	var grokRejectionPayload []byte
+	grokOutputAfterFailure := false
+	grokSawMeter := false
+	grokUncertainPrefix := false
+	var grokReceiptBeforeFailure *chatReceiptCapture
 
 	writeLine := func(line string) {
 		if clientDisconnected {
+			return
+		}
+		grokPrefixOverflow := grokPrefix != nil && grokPrefixBytes+len(line)+1 > 64*1024
+		if !clientOutputStarted && grokPrefix != nil && !grokPrefix.ShouldReleaseClientOutput() && !grokPrefixOverflow {
+			pendingLines = append(pendingLines, line)
+			grokPrefixBytes += len(line) + 1
 			return
 		}
 		if gemini.empty() {
@@ -392,7 +410,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			pendingLines = append(pendingLines, geminiPending...)
 			geminiPending = nil
 		}
-		if !clientOutputStarted && !gemini.enabled && !refusalDetector.ShouldReleaseClientOutput() {
+		if !clientOutputStarted && !gemini.enabled && !grokPrefixOverflow && !refusalDetector.ShouldReleaseClientOutput() {
 			pendingLines = append(pendingLines, line)
 			return
 		}
@@ -423,9 +441,12 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	scanErr := scanOpenAIChatLines(scanner, keepaliveInterval, func(line string) {
 		refusalDetector.ObserveSSELine(line)
 		if payload, ok := extractOpenAISSEDataLine(line); ok {
+			if grokPrefix != nil {
+				meter := gjson.Get(payload, "usage")
+				grokSawMeter = grokSawMeter || (meter.Exists() && meter.Type != gjson.Null)
+			}
 			gemini.observe([]byte(payload))
 			trimmedPayload := strings.TrimSpace(payload)
-			terminal.ObserveDataLine(trimmedPayload)
 			if trimmedPayload != "[DONE]" {
 				observer.ObserveOpenAI([]byte(payload), strings.TrimSpace(gjson.Get(payload, "type").String()))
 				usageOnlyChunk := isOpenAIChatUsageOnlyStreamChunk(payload)
@@ -439,6 +460,31 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 					firstTokenMs = &elapsed
 				}
 			}
+			if failure := grokRawChatRejectionPayload(account, []byte(payload)); len(failure) > 0 && len(grokRejectionPayload) == 0 {
+				grokRejectionPayload = failure
+				if capture := chatReceiptFromContext(c.Request.Context()); capture != nil {
+					snapshot := *capture
+					grokReceiptBeforeFailure = &snapshot
+					capture.status = http.StatusTooManyRequests
+				}
+			}
+			if len(grokRejectionPayload) > 0 {
+				// Drain the stream for late usage without replaying or emitting a
+				// second synthetic EOF error. Unexpected later output also forbids replay.
+				grokOutputAfterFailure = grokOutputAfterFailure || len(gjson.Get(payload, "choices").Array()) > 0
+				observeRawChatReceipt(c, []byte(payload), true)
+				return
+			}
+			terminal.ObserveDataLine(trimmedPayload)
+			if grokPrefix != nil {
+				if trimmedPayload != "[DONE]" && (!gjson.Valid(payload) || !gjson.Get(payload, "choices").IsArray()) {
+					grokUncertainPrefix = true
+				}
+				grokPrefix.ObservePayload([]byte(payload))
+			}
+		}
+		if len(grokRejectionPayload) > 0 {
+			return
 		}
 		line = injectKimiCacheWriteSSE(c, line)
 		line = applyOllamaCloudRawChatCompletionsSSELine(account, line)
@@ -493,6 +539,21 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			Duration:                      time.Since(startTime),
 			FirstTokenMs:                  firstTokenMs,
 		}
+	}
+	if len(grokRejectionPayload) > 0 {
+		message := extractOpenAISSEErrorMessage(grokRejectionPayload)
+		if !clientOutputStarted && !clientDisconnected && !openAIUsageHasTokens(&usage) && !grokSawMeter && !grokOutputAfterFailure && !grokUncertainPrefix && !terminal.Terminated() && scanErr == nil && c.Request.Context().Err() == nil {
+			// The explicit rejection happened before generation. Its failed
+			// terminal must not contaminate the next attempt's durable receipt.
+			if capture := chatReceiptFromContext(c.Request.Context()); capture != nil && grokReceiptBeforeFailure != nil {
+				*capture = *grokReceiptBeforeFailure
+			}
+			return nil, s.newOpenAIStreamFailoverErrorWithModel(c, account, false, requestID, grokRejectionPayload, message, upstreamModel, resp.Header)
+		}
+		s.handleOpenAIStreamTerminalAccountSideEffects(c, account, grokRejectionPayload, message, resp.Header, upstreamModel)
+		s.recordOpenAIStreamUpstreamError(c, account, false, requestID, "stream_failed", grokRejectionPayload, message)
+		writeOpenAIErrorFields(c, boundedOpenAIClientError(grokRejectionPayload, http.StatusTooManyRequests), clientOutputStarted, &usage)
+		return resultWithUsage(), errors.New("grok upstream rejected chat stream")
 	}
 
 	if handleGrokFirstSemanticTimeout(c, account, scanErr, &usage) {
