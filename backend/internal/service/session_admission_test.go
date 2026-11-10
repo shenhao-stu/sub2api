@@ -35,9 +35,9 @@ func TestSessionAdmissionForwardIsTerminal(t *testing.T) {
 				var failover *UpstreamFailoverError
 				require.False(t, errors.As(err, &failover))
 				require.Equal(t, 1, up.callCount)
-				require.Equal(t, 429, c.Writer.Status())
+				require.Equal(t, 400, c.Writer.Status())
 				require.Contains(t, rec.Body.String(), `"code":"upstream_session_not_accepted"`)
-				require.Contains(t, rec.Body.String(), `"status_code":429`)
+				require.Contains(t, rec.Body.String(), `"status_code":400`)
 				require.NotContains(t, rec.Body.String(), "private.invalid")
 				require.NotContains(t, rec.Body.String(), "secret")
 				require.True(t, account.Schedulable)

@@ -22,9 +22,9 @@ func TestSessionAdmissionHandlersDoNotReplayAndSettleObservedUsageOnce(t *testin
 				body += "}"
 				run := runCompatStreamUsageHandler(t, endpoint, body, true, compatStreamUsageOptions{accountCount: 2, upstreamStatus: 429})
 				require.Equal(t, 1, run.upstream.calls)
-				require.Equal(t, 429, run.rec.Code)
+				require.Equal(t, 400, run.rec.Code)
 				require.Contains(t, run.rec.Body.String(), `"code":"upstream_session_not_accepted"`)
-				require.Contains(t, run.rec.Body.String(), `"status_code":429`)
+				require.Contains(t, run.rec.Body.String(), `"status_code":400`)
 				run.billingRepo.mu.Lock()
 				defer run.billingRepo.mu.Unlock()
 				if !metered {

@@ -22,9 +22,9 @@ func TestModelNotAllowedHandlersDoNotReplayAndSettleObservedUsageOnce(t *testing
 				body += "}"
 				run := runCompatStreamUsageHandler(t, endpoint, body, true, compatStreamUsageOptions{accountCount: 2, upstreamStatus: 429})
 				require.Equal(t, 1, run.upstream.calls)
-				require.Equal(t, 429, run.rec.Code)
+				require.Equal(t, 403, run.rec.Code)
 				require.Contains(t, run.rec.Body.String(), `"code":"model_not_allowed"`)
-				require.Contains(t, run.rec.Body.String(), `"status_code":429`)
+				require.Contains(t, run.rec.Body.String(), `"status_code":403`)
 				run.billingRepo.mu.Lock()
 				defer run.billingRepo.mu.Unlock()
 				if !metered {

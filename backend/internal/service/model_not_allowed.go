@@ -49,7 +49,7 @@ func isModelNotAllowedError(status int, body []byte) bool {
 }
 
 func modelNotAllowedFields() openAIClientErrorFields {
-	return openAIClientErrorFields{Type: "permission_error", Code: "model_not_allowed", Message: modelNotAllowedMessage, StatusCode: http.StatusTooManyRequests}
+	return openAIClientErrorFields{Type: "permission_error", Code: "model_not_allowed", Message: modelNotAllowedMessage, StatusCode: http.StatusForbidden}
 }
 
 func (s *GatewayService) handleModelNotAllowedResponse(c *gin.Context, account *Account, resp *http.Response, model, upstreamModel string, stream bool, start time.Time) (*ForwardResult, error, bool) {
