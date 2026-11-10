@@ -47,6 +47,10 @@ func IsOpus55(model string) bool {
 	return normalizeEffortModelID(model) == "claude-opus-5-5"
 }
 
+func IsFable52(model string) bool {
+	return normalizeEffortModelID(model) == "claude-fable-5-2"
+}
+
 // IsSonnet55 identifies the fixed Sonnet 5.5 ID after provider/local suffix normalization.
 func IsSonnet55(model string) bool {
 	return normalizeEffortModelID(model) == "claude-sonnet-5-5"
@@ -78,6 +82,9 @@ func normalizeEffortModelID(model string) string {
 	}
 	if id == "claude-haiku-5.5" {
 		id = "claude-haiku-5-5"
+	}
+	if id == "claude-fable-5.2" {
+		id = "claude-fable-5-2"
 	}
 	if mapped, ok := ModelIDReverseOverrides[id]; ok {
 		id = mapped

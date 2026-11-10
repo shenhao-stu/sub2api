@@ -44,6 +44,16 @@ func TestIsOpus55OpenRouterExactAlias(t *testing.T) {
 	}
 }
 
+func TestIsFable52(t *testing.T) {
+	t.Parallel()
+	for _, model := range []string{"claude-fable-5-2", "anthropic/claude-fable-5.2", "models/claude-fable-5-2", "us.anthropic.claude-fable-5-2", "claude-fable-5-2-20261109", "claude-fable-5-2-thinking"} {
+		require.True(t, IsFable52(model), model)
+	}
+	for _, model := range []string{"claude-fable-5", "claude-fable-5-1", "claude-fable-5-20", "claude-fable-5-2-preview", "claude-fable-5-2-fast", "custom-fable-5-2"} {
+		require.False(t, IsFable52(model), model)
+	}
+}
+
 func TestIsSonnet55(t *testing.T) {
 	t.Parallel()
 	for _, model := range []string{
