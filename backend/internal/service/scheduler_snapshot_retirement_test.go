@@ -201,12 +201,11 @@ func TestSchedulerRebuildRetireAfterDBLoadFencesPublish(t *testing.T) {
 		close(setEntered)
 		<-releaseSet
 	}
-	repo := &mockAccountRepoForPlatform{
-		listPlatformFunc: func(context.Context, string) ([]Account, error) {
-			close(dbReturned)
-			return []Account{{ID: 6201, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true}}, nil
-		},
-	}
+	repo := newBatchAccountQueryRepo()
+	repo.beforeRun = func(batchAccountQueryKey) { close(dbReturned) }
+	repo.results[batchAccountQueryKey{groupID: bucket.GroupID, platform: bucket.Platform}] = []batchAccountQueryResult{{
+		accounts: []Account{{ID: 6201, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true}},
+	}}
 	svc := NewSchedulerSnapshotService(cache, nil, repo, nil, &config.Config{
 		RunMode: config.RunModeStandard,
 		Gateway: config.GatewayConfig{Scheduling: config.GatewaySchedulingConfig{
@@ -242,9 +241,10 @@ func TestSchedulerFallbackReturnsDBAccountsWhenBucketRetired(t *testing.T) {
 	bucket := SchedulerBucket{GroupID: 63, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}
 	cache := newRetirementRaceCache()
 	require.NoError(t, cache.RetireBucket(context.Background(), bucket))
-	repo := &mockAccountRepoForPlatform{
+	repo := newBatchAccountQueryRepo()
+	repo.results[batchAccountQueryKey{groupID: bucket.GroupID, platform: bucket.Platform}] = []batchAccountQueryResult{{
 		accounts: []Account{{ID: 6301, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true}},
-	}
+	}}
 	svc := NewSchedulerSnapshotService(cache, nil, repo, nil, &config.Config{
 		RunMode: config.RunModeStandard,
 		Gateway: config.GatewayConfig{Scheduling: config.GatewaySchedulingConfig{

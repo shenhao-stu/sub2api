@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -153,5 +154,33 @@ func TestFable52FastForwardAndBilling(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestAnthropicFastBodyObeysBetaBlockWithoutHeader(t *testing.T) {
+	settings, err := json.Marshal(BetaPolicySettings{Rules: []BetaPolicyRule{{
+		BetaToken: claude.BetaFastMode, Action: BetaPolicyActionBlock, Scope: BetaPolicyScopeAll,
+	}}})
+	require.NoError(t, err)
+	for _, model := range []string{"claude-fable-5-2", "claude-opus-5-5"} {
+		t.Run(model, func(t *testing.T) {
+			account := newAnthropicAPIKeyAccountForTest()
+			account.Credentials["model_mapping"] = map[string]any{"public-alias": model}
+			upstream := &anthropicHTTPUpstreamRecorder{err: fmt.Errorf("unexpected dispatch")}
+			svc := newForwardPartialUsageServiceForTest(upstream)
+			svc.settingService = NewSettingService(&betaPolicySettingRepoStub{values: map[string]string{
+				SettingKeyBetaPolicySettings: string(settings),
+			}}, &config.Config{})
+			body := []byte(`{"model":"public-alias","speed":"fast","max_tokens":128,"messages":[{"role":"user","content":"synthetic"}]}`)
+			parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), PlatformAnthropic)
+			require.NoError(t, err)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			result, err := svc.Forward(context.Background(), c, account, parsed)
+			var blocked *BetaBlockedError
+			require.ErrorAs(t, err, &blocked)
+			require.Nil(t, result)
+			require.Nil(t, upstream.lastReq)
+		})
 	}
 }

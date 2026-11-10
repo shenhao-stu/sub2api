@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -226,7 +227,7 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 		if err != nil {
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache read failed: bucket=%s err=%v", bucket.String(), err)
 		} else if hit {
-			return derefAccounts(cached), useMixed, nil
+			return derefAccounts(cached, snapshotEligibilityTime(bucket)), useMixed, nil
 		}
 		token, err := s.cache.CaptureBucketWriteToken(ctx, bucket)
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -269,6 +270,11 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 		}
 	}
 
+	if now := snapshotEligibilityTime(bucket); !now.IsZero() {
+		accounts = slices.DeleteFunc(slices.Clone(accounts), func(account Account) bool {
+			return !account.isSchedulableAt(now)
+		})
+	}
 	return accounts, useMixed, nil
 }
 
@@ -1502,6 +1508,10 @@ func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucke
 	}
 
 	if groupID > 0 {
+		if bucket.Platform == PlatformOpenAI {
+			// Publish membership independently of cooldown so expiry needs no rebuild.
+			return s.accountRepo.ListModelAvailabilityCandidates(ctx, &groupID, []string{bucket.Platform}, false)
+		}
 		return s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, groupID, bucket.Platform)
 	}
 	if s.isRunModeSimple() {
@@ -1654,13 +1664,22 @@ func dedupeBuckets(in []SchedulerBucket) []SchedulerBucket {
 	return out
 }
 
-func derefAccounts(accounts []*Account) []Account {
+// Grouped OpenAI snapshots retain transiently unavailable members. Only the
+// read path checks their current eligibility before handing them to selectors.
+func snapshotEligibilityTime(bucket SchedulerBucket) time.Time {
+	if bucket.GroupID > 0 && bucket.Platform == PlatformOpenAI {
+		return time.Now()
+	}
+	return time.Time{}
+}
+
+func derefAccounts(accounts []*Account, schedulableAt time.Time) []Account {
 	if len(accounts) == 0 {
 		return []Account{}
 	}
 	out := make([]Account, 0, len(accounts))
 	for _, account := range accounts {
-		if account == nil {
+		if account == nil || (!schedulableAt.IsZero() && !account.isSchedulableAt(schedulableAt)) {
 			continue
 		}
 		out = append(out, *account)
