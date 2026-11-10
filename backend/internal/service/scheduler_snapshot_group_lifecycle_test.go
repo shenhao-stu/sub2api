@@ -308,6 +308,10 @@ func (r *groupLifecycleTestAccountRepo) ListSchedulableByGroupIDAndPlatforms(ctx
 	return r.load(ctx, platform)
 }
 
+func (r *groupLifecycleTestAccountRepo) ListModelAvailabilityCandidates(ctx context.Context, _ *int64, platforms []string, _ bool) ([]Account, error) {
+	return r.load(ctx, platforms[0])
+}
+
 func (r *groupLifecycleTestAccountRepo) callCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()

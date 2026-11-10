@@ -192,10 +192,13 @@ func (a *Account) EffectiveLoadFactor() int {
 }
 
 func (a *Account) IsSchedulable() bool {
+	return a.isSchedulableAt(time.Now())
+}
+
+func (a *Account) isSchedulableAt(now time.Time) bool {
 	if !a.IsActive() || !a.Schedulable {
 		return false
 	}
-	now := time.Now()
 	if a.AutoPauseOnExpired && a.ExpiresAt != nil && !now.Before(*a.ExpiresAt) {
 		return false
 	}
