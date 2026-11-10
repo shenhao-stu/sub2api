@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const grokChatCapacityFrame = `data: {"error":{"code":"resource-exhausted","type":"server_error","message":"The model is currently at capacity due to high demand. Please try again in a few minutes, or use a higher service tier: https://provider.invalid/private"}}` + "\n\n"
+const grokChatCapacityFrame = `data: {"error":{"code":"resource-exhausted","type":"server_error","message":"The model is currently at capacity due to high demand. Please try again in a few minutes, or use a higher service tier for priority processing: https://provider.invalid/developers/advanced-api-usage/priority-processing"}}` + "\n\n"
 
 func runGrokChatCapacity(t *testing.T, prefix, suffix string, accountID int64) (*OpenAIForwardResult, error, *gin.Context, *httptest.ResponseRecorder) {
 	t.Helper()

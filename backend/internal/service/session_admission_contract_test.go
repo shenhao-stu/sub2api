@@ -120,7 +120,7 @@ func TestSessionAdmissionCommittedStreamPreservesStatusAndObservedBuckets(t *tes
 			require.Equal(t, 2, result.Usage.CacheCreation5mTokens)
 			require.Equal(t, 3, result.Usage.CacheCreation1hTokens)
 			require.Equal(t, 200, rec.Code)
-			require.Contains(t, rec.Body.String(), `"status_code":429`)
+			require.Contains(t, rec.Body.String(), `"status_code":400`)
 			require.Equal(t, 1, strings.Count(rec.Body.String(), `"code":"upstream_session_not_accepted"`))
 			require.NotContains(t, rec.Body.String(), "private.invalid")
 			require.NotContains(t, rec.Body.String(), "secret")

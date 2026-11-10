@@ -61,7 +61,7 @@ func TestModelNotAllowedForwardStopsWithoutLosingUsage(t *testing.T) {
 					} else {
 						require.Nil(t, result)
 					}
-					want := 429
+					want := 403
 					if committed {
 						want = 200
 						require.Equal(t, 1, strings.Count(rec.Body.String(), "event: error"))
@@ -69,7 +69,7 @@ func TestModelNotAllowedForwardStopsWithoutLosingUsage(t *testing.T) {
 					require.Equal(t, want, rec.Code)
 					require.Contains(t, rec.Body.String(), `"code":"model_not_allowed"`)
 					require.Contains(t, rec.Body.String(), `"type":"permission_error"`)
-					require.Contains(t, rec.Body.String(), `"status_code":429`)
+					require.Contains(t, rec.Body.String(), `"status_code":403`)
 					require.Contains(t, rec.Body.String(), "This model is prohibited from being used.")
 					require.NotContains(t, rec.Body.String(), "private-provider-id")
 					require.NotContains(t, rec.Body.String(), "private.example")
@@ -79,6 +79,7 @@ func TestModelNotAllowedForwardStopsWithoutLosingUsage(t *testing.T) {
 					events := raw.([]*OpsUpstreamErrorEvent)
 					require.Len(t, events, 1)
 					require.Equal(t, "request_rejection", events[0].Kind)
+					require.Equal(t, 429, events[0].UpstreamStatusCode)
 					require.Equal(t, "private-provider-id", events[0].UpstreamRequestID)
 				})
 			}
@@ -186,7 +187,7 @@ func TestModelNotAllowedCompatPreservesMeteredError(t *testing.T) {
 			require.Equal(t, 5, result.Usage.CacheReadInputTokens)
 			require.Equal(t, 2, result.Usage.CacheCreation5mTokens)
 			require.Equal(t, 3, result.Usage.CacheCreation1hTokens)
-			require.Equal(t, 429, rec.Code)
+			require.Equal(t, 403, rec.Code)
 			require.Contains(t, rec.Body.String(), `"code":"model_not_allowed"`)
 			require.NotContains(t, rec.Body.String(), "upstream.invalid")
 			require.NotContains(t, rec.Body.String(), "secret")
@@ -243,6 +244,6 @@ func TestModelNotAllowedAfterSignatureRectificationIsTerminal(t *testing.T) {
 	var failover *UpstreamFailoverError
 	require.NotErrorAs(t, err, &failover)
 	require.Equal(t, 2, up.callCount)
-	require.Equal(t, 429, rec.Code)
+	require.Equal(t, 403, rec.Code)
 	require.Contains(t, rec.Body.String(), `"code":"model_not_allowed"`)
 }

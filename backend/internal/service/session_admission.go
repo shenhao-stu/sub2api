@@ -65,7 +65,7 @@ func (s *GatewayService) handleSessionAdmissionResponse(c *gin.Context, account 
 		return nil, nil, false
 	}
 	defer resp.Body.Close()
-	fields := openAIClientErrorFields{Type: "invalid_request_error", Code: "upstream_session_not_accepted", Message: "This session is not accepted by the upstream group. Please start a new session.", StatusCode: http.StatusTooManyRequests}
+	fields := openAIClientErrorFields{Type: "invalid_request_error", Code: "upstream_session_not_accepted", Message: "This session is not accepted by the upstream group. Please start a new session.", StatusCode: http.StatusBadRequest}
 	result, err := s.handleRequestRejectionBody(c, account, resp, body, parseClaudeUsageFromResponseBody(body), model, upstreamModel, stream, start, fields)
 	return result, err, true
 }

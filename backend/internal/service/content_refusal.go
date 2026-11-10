@@ -91,10 +91,10 @@ func (s *GatewayService) handleRequestRejectionBody(c *gin.Context, account *Acc
 			upstreamRequestID = envelope.Error.RequestID
 		}
 	}
-	setOpsUpstreamError(c, status, fields.Message, detail)
+	setOpsUpstreamError(c, resp.StatusCode, fields.Message, detail)
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		AccountID: account.ID, Platform: account.Platform,
-		UpstreamStatusCode: status, UpstreamRequestID: upstreamRequestID,
+		UpstreamStatusCode: resp.StatusCode, UpstreamRequestID: upstreamRequestID,
 		Kind: "request_rejection", Message: fields.Message, Detail: detail,
 	})
 	MarkResponseCommitted(c)

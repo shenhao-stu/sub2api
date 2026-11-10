@@ -220,7 +220,9 @@ func grokUpstreamErrorCorpus(statusCode int, responseBody []byte) (text, code, l
 		}
 	}
 	code = codeFromJSON
-	low = strings.ToLower(strings.TrimSpace(text))
+	// Documentation links do not describe the request outcome. In particular,
+	// /advanced-api-usage/ can turn resource-exhausted into a false usage limit.
+	low = strings.ToLower(strings.TrimSpace(upstreamErrorURL.ReplaceAllString(text, "")))
 	if code != "" && !strings.Contains(low, strings.ToLower(code)) {
 		low = strings.ToLower(code) + " " + low
 	}

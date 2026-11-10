@@ -10,12 +10,12 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-var imageErrorURL = regexp.MustCompile(`(?i)\b(?:https?|socks5h?)://[^\s<>"']+`)
+var upstreamErrorURL = regexp.MustCompile(`(?i)\b(?:https?|socks5h?)://[^\s<>"']+`)
 var imageErrorBearer = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/-]+=*`)
 
 func sanitizeImageErrorMessage(message string) string {
 	message = logredact.RedactText(message, "api_key", "apikey", "authorization", "cookie")
-	message = imageErrorURL.ReplaceAllString(message, "<upstream>")
+	message = upstreamErrorURL.ReplaceAllString(message, "<upstream>")
 	message = imageErrorBearer.ReplaceAllString(message, "Bearer ***")
 	return truncateString(strings.TrimSpace(message), 2048)
 }
