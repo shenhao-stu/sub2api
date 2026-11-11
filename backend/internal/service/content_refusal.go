@@ -91,10 +91,15 @@ func (s *GatewayService) handleRequestRejectionBody(c *gin.Context, account *Acc
 			upstreamRequestID = envelope.Error.RequestID
 		}
 	}
-	setOpsUpstreamError(c, resp.StatusCode, fields.Message, detail)
+	// An SSE refusal can arrive inside a successful HTTP response.
+	upstreamStatus := resp.StatusCode
+	if upstreamStatus < http.StatusBadRequest {
+		upstreamStatus = status
+	}
+	setOpsUpstreamError(c, upstreamStatus, fields.Message, detail)
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		AccountID: account.ID, Platform: account.Platform,
-		UpstreamStatusCode: resp.StatusCode, UpstreamRequestID: upstreamRequestID,
+		UpstreamStatusCode: upstreamStatus, UpstreamRequestID: upstreamRequestID,
 		Kind: "request_rejection", Message: fields.Message, Detail: detail,
 	})
 	MarkResponseCommitted(c)
