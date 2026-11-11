@@ -76,10 +76,10 @@ func TestStructuredModelCooldownDoesNotChangeOtherStatusesOrOAuth(t *testing.T) 
 	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	account := &Account{ID: 11, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 	for _, status := range []int{200, 400, 401, 403, 500, 503} {
-		require.False(t, svc.persistUpstreamModelCooldown(context.Background(), account, status, body, "ultra/argon"))
+		require.False(t, svc.persistUpstreamModelCooldown(context.Background(), account, status, nil, body, "ultra/argon"))
 	}
 	account.Type = AccountTypeOAuth
-	require.False(t, svc.persistUpstreamModelCooldown(context.Background(), account, 429, body, "ultra/argon"))
+	require.False(t, svc.persistUpstreamModelCooldown(context.Background(), account, 429, nil, body, "ultra/argon"))
 	require.Zero(t, repo.modelRateLimitCalls)
 }
 
@@ -99,4 +99,56 @@ func TestStructuredModelCooldownFailoverUsesCanonicalModelOnce(t *testing.T) {
 	require.False(t, gateway.isOpenAIAccountRuntimeBlocked(account))
 	require.Zero(t, repo.rateLimitCalls)
 	require.Zero(t, repo.tempUnschedCalls)
+}
+
+func TestCPAResourceExhaustionDoesNotCoolOtherModels(t *testing.T) {
+	const model = "ultra/gemini-3.8-flash"
+	const exhausted = `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"Resource has been exhausted (e.g. check quota)."}}`
+	for _, tc := range []struct {
+		name, header, mappedModel, body string
+		modelScoped                     bool
+	}{
+		{"CPA Ultra Flash", "x-cpa-request-id", model, exhausted, true},
+		{"other provider", "X-Request-ID", model, exhausted, false},
+		{"other CPA namespace", "X-CPA-Request-ID", "gemini-3.8-flash", exhausted, false},
+		{"quota details", "X-CPA-Request-ID", model, `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"Resource has been exhausted (e.g. check quota).","details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure"}]}}`, false},
+		{"account quota message", "X-CPA-Request-ID", model, `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"Account quota exhausted"}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &modelCooldownRepo{}
+			svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+			account := &Account{ID: 11, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+				Extra:       map[string]any{AccountExtraUpstreamRequestIDHeader: tc.header},
+				Credentials: map[string]any{"model_mapping": map[string]any{"flash": tc.mappedModel}}}
+			before := time.Now()
+			require.Equal(t, tc.modelScoped, svc.HandleUpstreamError(context.Background(), account, 429, nil, []byte(tc.body), "flash"))
+			if !tc.modelScoped {
+				require.Equal(t, 1, repo.rateLimitCalls)
+				require.Zero(t, repo.modelRateLimitCalls)
+				return
+			}
+			require.Equal(t, 1, repo.modelRateLimitCalls)
+			require.Equal(t, model, repo.lastModelRateLimitScope)
+			require.WithinDuration(t, before.Add(5*time.Second), repo.lastModelRateLimitReset, time.Second)
+			require.Zero(t, repo.rateLimitCalls)
+			require.Zero(t, repo.tempUnschedCalls)
+		})
+	}
+}
+
+func TestCPAResourceExhaustionPreservesRetryAfterOnFastpath(t *testing.T) {
+	repo := &modelCooldownRepo{}
+	rateLimits := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	gateway := &OpenAIGatewayService{rateLimitService: rateLimits}
+	rateLimits.SetAccountRuntimeBlocker(gateway)
+	account := &Account{ID: 11, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Extra: map[string]any{AccountExtraUpstreamRequestIDHeader: "X-CPA-Request-ID"}}
+	response := &http.Response{StatusCode: 429, Header: http.Header{"Retry-After": []string{"30"}}}
+	body := []byte(`{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"Resource has been exhausted (e.g. check quota)."}}`)
+	now := time.Now()
+	require.True(t, gateway.handleFailoverSideEffects(context.Background(), response, account, body, "ultra/gemini-3.8-flash"))
+	require.Equal(t, "ultra/gemini-3.8-flash", repo.lastModelRateLimitScope)
+	require.WithinDuration(t, now.Add(30*time.Second), repo.lastModelRateLimitReset, time.Second)
+	require.False(t, gateway.isOpenAIAccountRuntimeBlocked(account))
+	require.Zero(t, repo.rateLimitCalls)
 }

@@ -343,7 +343,7 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 	// 同请求内与 fastpath 调用点的重复触发由方法内去重吸收。
 	s.maybeHandleOpenAITeamLinkedError(ctx, account, statusCode, responseBody)
 	customErrorCodesEnabled := account.IsCustomErrorCodesEnabled()
-	if s.persistUpstreamModelCooldown(ctx, account, statusCode, responseBody,
+	if s.persistUpstreamModelCooldown(ctx, account, statusCode, headers, responseBody,
 		modelRateLimitKeyForUpstreamModelNotFound(ctx, account, firstRequestedModel(requestedModel))) {
 		return true
 	}
