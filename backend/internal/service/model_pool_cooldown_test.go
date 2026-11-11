@@ -22,6 +22,10 @@ func TestModelPoolCooldown(t *testing.T) {
 		{"all limited rounds up earliest", []*Account{{RateLimitResetAt: &later}, {RateLimitResetAt: &sooner}}, 2},
 		{"healthy alternative", []*Account{{RateLimitResetAt: &later}, {}}, 0},
 		{"expired alternative", []*Account{{RateLimitResetAt: &later}, {RateLimitResetAt: &past}}, 0},
+		{"Command Code weekly quota", []*Account{{Platform: PlatformCommandCode, TempUnschedulableUntil: &later, TempUnschedulableReason: commandCodeUsageLimitReason + ": weekly usage limit"}}, 60},
+		{"Command Code elapsed quota", []*Account{{Platform: PlatformCommandCode, TempUnschedulableUntil: &past, TempUnschedulableReason: commandCodeUsageLimitReason}}, 0},
+		{"Command Code other stop", []*Account{{Platform: PlatformCommandCode, TempUnschedulableUntil: &later, TempUnschedulableReason: "manual stop"}}, 0},
+		{"another provider's stop", []*Account{{Platform: PlatformOpenAI, TempUnschedulableUntil: &later, TempUnschedulableReason: commandCodeUsageLimitReason}}, 0},
 		{"unrelated overload is not rate limit", []*Account{{OverloadUntil: &later}}, 0},
 	}
 	for _, tc := range cases {

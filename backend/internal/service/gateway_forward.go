@@ -1033,7 +1033,7 @@ func anthropicSpeedServiceTier(account *Account, speed, model string) *string {
 }
 
 func modelSupportsAnthropicFastMode(model string) bool {
-	if claude.IsFable52(model) {
+	if claude.IsFable52(model) || claude.IsMythos52(model) {
 		return true
 	}
 	modelLower := strings.ToLower(strings.TrimSpace(model))

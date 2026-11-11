@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -19,6 +20,10 @@ func modelPoolRetryAfter(ctx context.Context, accounts []*Account, model string,
 		reset := now
 		if account.RateLimitResetAt != nil && account.RateLimitResetAt.After(reset) {
 			reset = *account.RateLimitResetAt
+		}
+		if until := account.TempUnschedulableUntil; account.Platform == PlatformCommandCode && until != nil && until.After(reset) &&
+			(account.TempUnschedulableReason == commandCodeUsageLimitReason || strings.HasPrefix(account.TempUnschedulableReason, commandCodeUsageLimitReason+": ")) {
+			reset = *until
 		}
 		for _, key := range account.modelRateLimitKeysForRequest(ctx, model) {
 			if at := account.modelRateLimitResetAt(key); at != nil && at.After(reset) {

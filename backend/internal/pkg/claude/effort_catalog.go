@@ -47,10 +47,6 @@ func IsOpus55(model string) bool {
 	return normalizeEffortModelID(model) == "claude-opus-5-5"
 }
 
-func IsFable52(model string) bool {
-	return normalizeEffortModelID(model) == "claude-fable-5-2"
-}
-
 // IsSonnet55 identifies the fixed Sonnet 5.5 ID after provider/local suffix normalization.
 func IsSonnet55(model string) bool {
 	return normalizeEffortModelID(model) == "claude-sonnet-5-5"
@@ -59,6 +55,16 @@ func IsSonnet55(model string) bool {
 // IsHaiku55 identifies the fixed Haiku 5.5 ID after provider/local suffix normalization.
 func IsHaiku55(model string) bool {
 	return normalizeEffortModelID(model) == "claude-haiku-5-5"
+}
+
+// IsFable52 identifies Fable 5.2 after provider/local suffix normalization.
+func IsFable52(model string) bool {
+	return normalizeEffortModelID(model) == "claude-fable-5-2"
+}
+
+// IsMythos52 identifies Mythos 5.2 after provider/local suffix normalization.
+func IsMythos52(model string) bool {
+	return normalizeEffortModelID(model) == "claude-mythos-5-2"
 }
 
 func normalizeEffortModelID(model string) string {
