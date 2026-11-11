@@ -56,3 +56,58 @@ func TestSessionAdmissionForwardIsTerminal(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionPolicyBlockStopsAiroamRetry(t *testing.T) {
+	const body = `{"type":"error","error":{"type":"upstream_error","message":"当前会话因内容审核违规已被拉黑，请使用 /new 开启新会话，或联系管理员解除。","help":"https://private.invalid/"}}`
+	for _, tc := range []struct {
+		name        string
+		passthrough bool
+		committed   bool
+		metered     bool
+	}{
+		{name: "http with no usage"},
+		{name: "sse with observed usage", passthrough: true, committed: true, metered: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest("POST", "/v1/messages", nil)
+			if tc.committed {
+				c.Header("Content-Type", "text/event-stream")
+				_, _ = c.Writer.WriteString(": ping\n\n")
+				c.Writer.Flush()
+			}
+			payload := body
+			if tc.metered {
+				payload = strings.TrimSuffix(payload, "}") + `,"usage":{"input_tokens":12,"output_tokens":7}}`
+			}
+			up := &queuedHTTPUpstreamStub{responses: []*http.Response{{StatusCode: 429, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(payload))}}}
+			s := newForwardPartialUsageServiceForTest(nil)
+			s.httpUpstream = up
+			account := newAnthropicAPIKeyAccountForTest()
+			account.Credentials["pool_mode"] = true
+			account.Extra["anthropic_passthrough"] = tc.passthrough
+			parsed, err := ParseGatewayRequest(NewRequestBodyRef([]byte(fmt.Sprintf(`{"model":"claude-opus-5-5","stream":%t,"messages":[{"role":"user","content":"synthetic"}]}`, tc.committed))), PlatformAnthropic)
+			require.NoError(t, err)
+			result, err := s.Forward(context.Background(), c, account, parsed)
+			require.Error(t, err)
+			var failover *UpstreamFailoverError
+			require.False(t, errors.As(err, &failover))
+			require.Equal(t, 1, up.callCount)
+			if tc.metered {
+				require.NotNil(t, result)
+				require.Equal(t, 12, result.Usage.InputTokens)
+				require.Equal(t, 7, result.Usage.OutputTokens)
+				require.Equal(t, 1, strings.Count(rec.Body.String(), "event: error"))
+			} else {
+				require.Nil(t, result)
+				require.Equal(t, 403, rec.Code)
+			}
+			require.Contains(t, rec.Body.String(), `"code":"upstream_session_policy_blocked"`)
+			require.Contains(t, rec.Body.String(), `"status_code":403`)
+			require.NotContains(t, rec.Body.String(), "private.invalid")
+			events, _ := c.Get(OpsUpstreamErrorsKey)
+			require.Equal(t, 429, events.([]*OpsUpstreamErrorEvent)[0].UpstreamStatusCode)
+		})
+	}
+}

@@ -21,9 +21,9 @@ func sessionAdmissionBody(metered bool) string {
 
 func TestSessionAdmissionRequiresExact429Contract(t *testing.T) {
 	body := sessionAdmissionBody(false)
-	require.True(t, isSessionAdmissionRejection(429, []byte(body)))
+	require.NotEmpty(t, sessionAdmissionRejectionMessage(429, []byte(body)))
 	for _, status := range []int{200, 400, 401, 402, 403, 500, 503} {
-		require.False(t, isSessionAdmissionRejection(status, []byte(body)))
+		require.Empty(t, sessionAdmissionRejectionMessage(status, []byte(body)))
 	}
 	for _, mutate := range []func(map[string]any){
 		func(v map[string]any) { v["status"] = 503 },
@@ -50,13 +50,13 @@ func TestSessionAdmissionRequiresExact429Contract(t *testing.T) {
 		mutate(v)
 		raw, err := json.Marshal(v)
 		require.NoError(t, err)
-		require.False(t, isSessionAdmissionRejection(429, raw), string(raw))
+		require.Empty(t, sessionAdmissionRejectionMessage(429, raw), string(raw))
 	}
 	for _, body := range []string{
 		strings.Replace(body, `"error":`, `"status":429,"status_code":429,"error":`, 1),
 		strings.Replace(body, `"help":`, `"status":429,"status_code":429,"code":"","help":`, 1),
 	} {
-		require.True(t, isSessionAdmissionRejection(429, []byte(body)))
+		require.NotEmpty(t, sessionAdmissionRejectionMessage(429, []byte(body)))
 	}
 	for _, bad := range []string{
 		body + " trailing", body[:len(body)-1], "[" + body + "]",
@@ -66,7 +66,7 @@ func TestSessionAdmissionRequiresExact429Contract(t *testing.T) {
 		strings.Replace(body, `"help":`, `"status_code":429,"status_code":429,"help":`, 1),
 		strings.Replace(body, `"help":`, `"padding":"`+strings.Repeat("x", sessionAdmissionBodyLimit)+`","help":`, 1),
 	} {
-		require.False(t, isSessionAdmissionRejection(429, []byte(bad)))
+		require.Empty(t, sessionAdmissionRejectionMessage(429, []byte(bad)))
 	}
 }
 
