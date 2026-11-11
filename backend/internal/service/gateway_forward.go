@@ -997,6 +997,8 @@ func anthropicStreamErrorStatus(body []byte) int {
 		return http.StatusRequestEntityTooLarge
 	case "rate_limit_error":
 		return http.StatusTooManyRequests
+	case "timeout_error":
+		return http.StatusGatewayTimeout
 	case "api_error":
 		return http.StatusInternalServerError
 	case "overloaded_error":

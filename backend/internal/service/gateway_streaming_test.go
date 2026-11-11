@@ -5,10 +5,12 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -531,4 +533,55 @@ func TestHandleStreamingResponse_SSEErrorEvent_NonJSONDataLine(t *testing.T) {
 		_ = ExtractUpstreamErrorMessage([]byte(sseErr.RawData))
 	})
 	require.Equal(t, "", ExtractUpstreamErrorMessage([]byte(sseErr.RawData)))
+}
+
+func TestHandleStreamingResponse_PreservesTransportFailureAfterCommit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name   string
+		frame  string
+		code   string
+		status int
+		tokens int
+	}{
+		{
+			name:   "worker idle timeout with observed usage",
+			frame:  `{"type":"error","error":{"type":"timeout_error","code":"upstream_timeout","message":"slot worker idle timeout on http://127.0.0.1:9000"}}`,
+			code:   "upstream_timeout",
+			status: http.StatusGatewayTimeout,
+			tokens: 5,
+		},
+		{
+			name:   "upstream connection failure before first token",
+			frame:  `{"type":"error","error":{"type":"upstream_error","code":"upstream_network_error","message":"Connection error at http://127.0.0.1:9000"}}`,
+			code:   "upstream_network_error",
+			status: http.StatusBadGateway,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newMinimalGatewayService()
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			data := fmt.Sprintf(`data: {"type":"message_start","message":{"usage":{"input_tokens":%d}}}`+"\n\nevent: error\ndata: %s\n\n", tc.tokens, tc.frame)
+			resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(data))}
+
+			result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false)
+			var sseErr *sseStreamErrorEventError
+			require.ErrorAs(t, err, &sseErr)
+			require.Equal(t, tc.frame, sseErr.RawData)
+			require.Equal(t, tc.status, anthropicStreamErrorStatus([]byte(tc.frame)))
+			require.NotNil(t, result)
+			require.Equal(t, tc.tokens, result.usage.InputTokens)
+			require.Equal(t, 1, strings.Count(rec.Body.String(), "event: error"))
+			require.Contains(t, rec.Body.String(), `"code":"`+tc.code+`"`)
+			require.Contains(t, rec.Body.String(), fmt.Sprintf(`"status_code":%d`, tc.status))
+			require.NotContains(t, rec.Body.String(), "127.0.0.1")
+			require.NotContains(t, rec.Body.String(), "message_stop")
+			require.True(t, IsResponseCommitted(c))
+			ops, ok := GetOpsStreamError(c)
+			require.True(t, ok)
+			require.Equal(t, tc.status, ops.IntendedStatus)
+		})
+	}
 }
