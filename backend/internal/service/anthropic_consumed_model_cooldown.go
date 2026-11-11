@@ -6,7 +6,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -67,14 +69,12 @@ func (s *RateLimitService) persistAnthropicConsumedModelCooldown(ctx context.Con
 		canonicalModel == "" || len(canonicalModel) > 128 || details.Get("model").Type != gjson.String || details.Get("model").String() != canonicalModel {
 		return
 	}
-	for _, c := range canonicalModel {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
-			return
-		}
+	if !validNativeCooldownModel(canonicalModel) {
+		return
 	}
-	switch details.Get("rate_limit_type").String() {
-	case "five_hour", "seven_day":
-	default:
+	window := details.Get("rate_limit_type").String()
+	fable := window == "seven_day_overage_included" && strings.HasPrefix(canonicalModel, "claude-fable-")
+	if window != "five_hour" && window != "seven_day" && !fable {
 		return
 	}
 	reset, err := strconv.ParseInt(details.Get("reset_at").Raw, 10, 64)
@@ -82,13 +82,55 @@ func (s *RateLimitService) persistAnthropicConsumedModelCooldown(ctx context.Con
 	if err != nil || reset <= now.Unix() || reset > now.Add(7*24*time.Hour).Unix() {
 		return
 	}
+	stateCtx, cancel := openAIAccountStateContext(ctx)
+	defer cancel()
+	until := time.Unix(reset, 0).UTC()
+	weekly := details.Get("weekly_utilization")
+	if window == "seven_day" && details.Get("quota_scope").String() == "account" &&
+		details.Get("api_error").String() == "usage_limit_reached" && weekly.Type == gjson.Number &&
+		weekly.Float() >= 1 && weekly.Float() <= 1000000 {
+		if repo, ok := s.accountRepo.(accountRateLimitExtender); ok {
+			if err := repo.SetRateLimitedIfLater(stateCtx, account.ID, until); err != nil {
+				slog.Warn("native_weekly_account_rate_limit_failed", "account_id", account.ID, "error", err)
+			}
+		}
+		return
+	}
 	repo, ok := s.accountRepo.(accountModelRateLimitExtender)
 	if !ok {
 		return
 	}
-	stateCtx, cancel := openAIAccountStateContext(ctx)
-	defer cancel()
-	if err := repo.SetModelRateLimitIfLater(stateCtx, account.ID, canonicalModel, time.Unix(reset, 0).UTC(), "native_consumed_model_rate_limit"); err != nil {
-		slog.Warn("native_consumed_model_rate_limit_failed", "account_id", account.ID, "model", canonicalModel, "error", err)
+	models := map[string]bool{canonicalModel: true}
+	if fable {
+		// One Fable credits window covers its configured versions, not Opus/Sonnet.
+		mapping, _ := account.Credentials["model_mapping"].(map[string]any)
+		for _, value := range mapping {
+			model, ok := value.(string)
+			if ok && strings.HasPrefix(model, "claude-fable-") && validNativeCooldownModel(model) {
+				models[model] = true
+			}
+		}
 	}
+	ordered := make([]string, 0, len(models))
+	for model := range models {
+		ordered = append(ordered, model)
+	}
+	sort.Strings(ordered)
+	for _, model := range ordered {
+		if err := repo.SetModelRateLimitIfLater(stateCtx, account.ID, model, until, "native_consumed_model_rate_limit"); err != nil {
+			slog.Warn("native_consumed_model_rate_limit_failed", "account_id", account.ID, "model", model, "error", err)
+		}
+	}
+}
+
+func validNativeCooldownModel(model string) bool {
+	if model == "" || len(model) > 128 {
+		return false
+	}
+	for _, c := range model {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+			return false
+		}
+	}
+	return true
 }
