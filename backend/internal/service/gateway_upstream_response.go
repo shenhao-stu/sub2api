@@ -722,6 +722,24 @@ func partialStreamUsageResult(c *gin.Context, resp *http.Response, streamResult 
 	}
 }
 
+func anthropicPublicTransportError(data string) (int, gin.H) {
+	kind := gjson.Get(data, "error.type").String()
+	code := gjson.Get(data, "error.code").String()
+	var message string
+	switch {
+	case kind == "timeout_error" && code == "upstream_timeout":
+		message = "The upstream stopped sending data before the stream finished."
+	case kind == "upstream_error" && code == "upstream_network_error":
+		message = "The upstream connection closed before the stream finished."
+	default:
+		return 0, nil
+	}
+	return anthropicStreamErrorStatus([]byte(data)), gin.H{
+		"type":  "error",
+		"error": gin.H{"type": kind, "code": code, "message": message},
+	}
+}
+
 func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string, mimicClaudeCode bool) (*streamingResult, error) {
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
@@ -746,6 +764,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 	}
 
 	w := c.Writer
+	initialClientOutputSize := AnthropicKeepaliveAdjustedWrittenSize(c)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return nil, errors.New("streaming not supported")
@@ -1098,9 +1117,15 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 					if isContentRefusal(anthropicStreamErrorStatus([]byte(data)), []byte(data)) {
 						return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, err
 					}
-					if usage.hasObservedTokens() {
+					transportStatus, transportError := anthropicPublicTransportError(data)
+					outputWritten := AnthropicKeepaliveAdjustedWrittenSize(c) > initialClientOutputSize
+					if usage.hasObservedTokens() || (transportStatus != 0 && outputWritten) {
 						if !clientDisconnected {
-							sendErrorEvent("upstream_error", sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage([]byte(data))))
+							if transportStatus != 0 {
+								WriteAnthropicErrorResponse(c, transportStatus, transportError)
+							} else {
+								sendErrorEvent("upstream_error", sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage([]byte(data))))
+							}
 							MarkResponseCommitted(c)
 						}
 						return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, err
