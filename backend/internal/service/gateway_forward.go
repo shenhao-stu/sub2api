@@ -984,6 +984,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 }
 
 func anthropicStreamErrorStatus(body []byte) int {
+	if isOfficialAnthropicSessionRefusal(body) {
+		return http.StatusBadRequest
+	}
 	switch gjson.GetBytes(body, "error.type").String() {
 	case "invalid_request_error":
 		return http.StatusBadRequest

@@ -556,6 +556,23 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 	var pingState anthropicPingState
 	refusal := s.trustedAnthropicRefusal(c, account)
 	reportedUnnamedPing := false
+	var upstreamError *sseStreamErrorEventError
+	finishUpstreamError := func() (*streamingResult, error) {
+		body := []byte(upstreamError.RawData)
+		s.mergeSSEErrorUsageJSON(usage, upstreamError.RawData)
+		status := anthropicStreamErrorStatus(body)
+		message := sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage(body))
+		setOpsUpstreamError(c, status, message, "")
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			AccountID: account.ID, Platform: account.Platform,
+			UpstreamStatusCode: status, UpstreamRequestID: resp.Header.Get("x-request-id"),
+			Kind: "stream_error", Message: message, Passthrough: true,
+		})
+		if !clientDisconnected {
+			MarkResponseCommitted(c)
+		}
+		return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, upstreamError
+	}
 
 	for {
 		select {
@@ -564,6 +581,13 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 				queueBudget.release(len(ev.line))
 			}
 			if !ok {
+				if upstreamError != nil {
+					if !clientDisconnected {
+						_, _ = io.WriteString(w, "\n")
+						flusher.Flush()
+					}
+					return finishUpstreamError()
+				}
 				if !clientDisconnected {
 					// 兜底补刷，确保最后一个未以空行结尾的事件也能及时送达客户端。
 					flusher.Flush()
@@ -611,6 +635,9 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 					firstTokenMs = &ms
 				}
 				parseSSEUsagePassthrough(data, usage)
+				if gjson.Valid(trimmed) && gjson.Get(trimmed, "type").String() == "error" && gjson.Get(trimmed, "error").IsObject() {
+					upstreamError = &sseStreamErrorEventError{RawData: trimmed}
+				}
 			} else {
 				trimmed := strings.TrimSpace(line)
 				if strings.HasPrefix(trimmed, "event:") && anthropicStreamEventIsTerminal(strings.TrimSpace(strings.TrimPrefix(trimmed, "event:")), "") {
@@ -642,6 +669,10 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 				} else {
 					inPartialEvent = true
 				}
+			}
+
+			if line == "" && upstreamError != nil {
+				return finishUpstreamError()
 			}
 
 		case <-intervalCh:
