@@ -998,15 +998,6 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
 		streamInterval = time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
 	}
-	var intervalTicker *time.Ticker
-	if streamInterval > 0 {
-		intervalTicker = time.NewTicker(streamInterval)
-		defer intervalTicker.Stop()
-	}
-	var intervalCh <-chan time.Time
-	if intervalTicker != nil {
-		intervalCh = intervalTicker.C
-	}
 
 	resultWithUsage := func() *OpenAIForwardResult {
 		out := &OpenAIForwardResult{
@@ -1029,8 +1020,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		return out
 	}
 
+	idleErrorWritten := false
 	defer func() {
-		if forwardErr == nil || terminalEventType != "" || clientDisconnected || !openAIUsageHasTokens(&usage) {
+		if idleErrorWritten || forwardErr == nil || terminalEventType != "" || clientDisconnected || !openAIUsageHasTokens(&usage) {
 			return
 		}
 		const message = "Upstream stream ended before completion"
@@ -1426,8 +1418,15 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	}
 	events := make(chan scanEvent, 16)
 	done := make(chan struct{})
-	var lastReadAt int64
-	atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
+	scanStartedAt := time.Now()
+	var lastReadOffset atomic.Int64
+	var intervalTimer *time.Timer
+	var intervalCh <-chan time.Time
+	if streamInterval > 0 {
+		intervalTimer = time.NewTimer(streamInterval)
+		defer intervalTimer.Stop()
+		intervalCh = intervalTimer.C
+	}
 	queueBudget := newSSEQueueBudget(s.cfg)
 	sendEvent := func(ev scanEvent) bool {
 		if !queueBudget.acquire(len(ev.line), done) {
@@ -1444,7 +1443,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	go func() {
 		defer close(events)
 		for scanner.Scan() {
-			atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
+			lastReadOffset.Store(int64(time.Since(scanStartedAt)))
 			if !sendEvent(scanEvent{line: scanner.Text()}) {
 				return
 			}
@@ -1506,8 +1505,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			}
 
 		case <-intervalCh:
-			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
-			if time.Since(lastRead) < streamInterval {
+			idle := time.Since(scanStartedAt) - time.Duration(lastReadOffset.Load())
+			if remaining := streamInterval - idle; remaining > 0 {
+				intervalTimer.Reset(remaining)
 				continue
 			}
 			if clientDisconnected {
@@ -1518,6 +1518,12 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				zap.String("model", originalModel),
 				zap.Duration("interval", streamInterval),
 			)
+			idleErrorWritten = writeOpenAIErrorFields(c, openAIClientErrorFields{
+				Type:       "upstream_error",
+				Code:       "upstream_stream_idle_timeout",
+				Message:    "Upstream stopped sending stream data before completion",
+				StatusCode: http.StatusGatewayTimeout,
+			}, transportKeepaliveCommitted, &usage)
 			return resultWithUsage(), fmt.Errorf("stream data interval timeout")
 
 		case <-keepaliveCh:

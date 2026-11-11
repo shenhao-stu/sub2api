@@ -11,6 +11,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -199,4 +201,45 @@ func TestGeminiChatActivityWriteFailureKeepsLateUsage(t *testing.T) {
 			require.Equal(t, 7, result.Usage.OutputTokens)
 		})
 	}
+}
+
+func TestGeminiChatIdleTimeoutIsMeasuredFromLastUpstreamFrame(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cfg := structuredInputRetryTestConfig()
+		cfg.Gateway.StreamDataIntervalTimeout = 180
+		cfg.Gateway.StreamKeepaliveInterval = 5
+		reader, writer := io.Pipe()
+		defer reader.Close()
+		finished := make(chan struct{})
+		defer close(finished)
+		go func() {
+			_, _ = io.WriteString(writer, activityCreated)
+			time.Sleep(12 * time.Second)
+			_, _ = io.WriteString(writer, activitySourceComment)
+			defer writer.Close()
+			<-finished
+		}()
+		upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: reader}}
+		svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+		body := []byte(`{"model":"gemini-4-carbon","stream":true,"messages":[{"role":"user","content":"synthetic"}]}`)
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(string(body)))
+		start := time.Now()
+		result, err := svc.ForwardAsChatCompletions(context.Background(), c, structuredInputRetryTestAccount(), body, "", "")
+		require.ErrorContains(t, err, "stream data interval timeout")
+		require.Equal(t, 192*time.Second, time.Since(start))
+		var failover *UpstreamFailoverError
+		require.NotErrorAs(t, err, &failover)
+		require.Len(t, upstream.requests, 1)
+		require.NotNil(t, result)
+		require.Zero(t, result.Usage.InputTokens)
+		require.Zero(t, result.Usage.OutputTokens)
+		require.Equal(t, 200, rec.Code)
+		require.Contains(t, rec.Body.String(), activityPublicComment)
+		require.Contains(t, rec.Body.String(), `"status_code":504`)
+		require.Equal(t, 1, strings.Count(rec.Body.String(), `"code":"upstream_stream_idle_timeout"`))
+		require.NotContains(t, rec.Body.String(), "[DONE]")
+		require.NotContains(t, rec.Body.String(), `"usage"`)
+	})
 }
