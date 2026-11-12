@@ -1053,6 +1053,8 @@ const (
 
 // GatewayConfig API网关相关配置
 type GatewayConfig struct {
+	// Opt in only groups whose upstreams require the native Claude tool result contract.
+	AnthropicNativeToolPreflightGroupIDs []int64 `mapstructure:"anthropic_native_tool_preflight_group_ids"`
 	// Opt-in shared transit keys and verified upstream accounts for Claude session refusal protection.
 	AnthropicRefusalRelayKeyIDs      []int64 `mapstructure:"anthropic_refusal_relay_key_ids"`
 	AnthropicRefusalSourceAccountIDs []int64 `mapstructure:"anthropic_refusal_source_account_ids"`
@@ -2639,6 +2641,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_proxy_stream_circuit.ttl_seconds", 600)
 	// Grok free-tier local soft gate (scheduler-only; admin QueryQuota does not use this).
 	// Enabled by default because free detection requires an explicit free tier marker.
+	viper.SetDefault("gateway.anthropic_native_tool_preflight_group_ids", []int64{})
 	viper.SetDefault("gateway.anthropic_refusal_relay_key_ids", []int64{})
 	viper.SetDefault("gateway.anthropic_refusal_source_account_ids", []int64{})
 	viper.SetDefault("gateway.anthropic_refusal_journal_dir", "")
