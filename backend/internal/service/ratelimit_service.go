@@ -2086,13 +2086,14 @@ func persistOpenAI429PlanType(ctx context.Context, repo AccountRepository, accou
 	slog.Info("openai_429_plan_type_synced", "account_id", account.ID, "previous_plan_type", current, "plan_type", planType)
 }
 
-// Local queue pressure can fail over this request without cooling the entire upstream pool.
+// The upstream pool owns seat availability; a local capacity error must not add
+// a ten-minute account-wide penalty. This decision never changes request retries.
 func isLocalAnthropicPoolPressure(body []byte) bool {
 	if !gjson.ValidBytes(body) {
 		return false
 	}
 	response := gjson.ParseBytes(body)
-	if response.Get("type").String() != "error" {
+	if kind := response.Get("type"); kind.Exists() && kind.String() != "error" {
 		return false
 	}
 	upstream := response.Get("error")
@@ -2100,6 +2101,12 @@ func isLocalAnthropicPoolPressure(body []byte) bool {
 		return false
 	}
 	details := upstream.Get("details")
+	// vm2api's public mapper emits only error.type/code/message, including when
+	// its own capacity circuit is cooling. Leave that circuit authoritative.
+	// If details are present, require the more specific pre-dispatch proof below.
+	if !details.Exists() {
+		return true
+	}
 	attempts := details.Get("attempt_count")
 	switch details.Get("reason").String() {
 	case "session_queue_timeout":
