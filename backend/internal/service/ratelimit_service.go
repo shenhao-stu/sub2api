@@ -374,6 +374,9 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			s.handleCustomErrorCode(ctx, account, statusCode, extractUpstreamErrorMessage(responseBody))
 			return true
 		}
+		if account.Platform == PlatformAnthropic && account.Type == AccountTypeAPIKey && isLocalAnthropicPoolPressure(responseBody) {
+			return false
+		}
 		s.handle529(ctx, account)
 		return false
 	}
@@ -2081,6 +2084,32 @@ func persistOpenAI429PlanType(ctx context.Context, repo AccountRepository, accou
 	}
 	account.Credentials["plan_type"] = planType
 	slog.Info("openai_429_plan_type_synced", "account_id", account.ID, "previous_plan_type", current, "plan_type", planType)
+}
+
+// Local queue pressure can fail over this request without cooling the entire upstream pool.
+func isLocalAnthropicPoolPressure(body []byte) bool {
+	if !gjson.ValidBytes(body) {
+		return false
+	}
+	response := gjson.ParseBytes(body)
+	if response.Get("type").String() != "error" {
+		return false
+	}
+	upstream := response.Get("error")
+	if upstream.Get("type").String() != "overloaded_error" || upstream.Get("code").String() != "pool_overloaded" {
+		return false
+	}
+	details := upstream.Get("details")
+	attempts := details.Get("attempt_count")
+	switch details.Get("reason").String() {
+	case "session_queue_timeout":
+		// The session queue is entered before the request acquires a pool seat.
+		return !attempts.Exists() || attempts.Type == gjson.Number && attempts.Raw == "0"
+	case "all_accounts_busy", "pool_wait_queue_full", "pool_queue_timeout", "pool_deadline_exceeded":
+		return attempts.Type == gjson.Number && attempts.Raw == "0"
+	default:
+		return false
+	}
 }
 
 // handle529 处理529过载错误
