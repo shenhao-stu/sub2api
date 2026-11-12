@@ -13,9 +13,10 @@ import (
 const sessionAdmissionBodyLimit = 64 << 10
 const sessionAdmissionRejection = "This group only accepts sessions first seen here."
 const sessionPolicyBlockRejection = "当前会话因内容审核违规已被拉黑，请使用 /new 开启新会话，或联系管理员解除。"
+const nativeSessionBusy = "session_busy"
+const nativeIngressBusy = "Relay capacity is busy; retry later."
 
-// A session admission policy is not transient capacity. Match its complete
-// contract; ordinary 429 responses retain their existing retry behavior.
+// Match request admission errors separately from provider-wide 429 responses.
 func sessionAdmissionRejectionMessage(status int, body []byte) string {
 	if status != http.StatusTooManyRequests || len(body) >= sessionAdmissionBodyLimit {
 		return ""
@@ -44,17 +45,22 @@ func sessionAdmissionRejectionMessage(status int, body []byte) string {
 			}
 		}
 	}
+	var code string
 	if raw, exists := fields["code"]; exists {
-		var code string
-		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &code) != nil || code != "" {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &code) != nil {
 			return ""
 		}
 	}
 	var kind, message string
-	if json.Unmarshal(fields["type"], &kind) != nil || kind != "upstream_error" || json.Unmarshal(fields["message"], &message) != nil {
+	if json.Unmarshal(fields["type"], &kind) != nil || json.Unmarshal(fields["message"], &message) != nil {
 		return ""
 	}
-	if message == sessionAdmissionRejection || message == sessionPolicyBlockRejection {
+	switch {
+	case kind == "upstream_error" && code == "" && (message == sessionAdmissionRejection || message == sessionPolicyBlockRejection):
+		return message
+	case kind == "rate_limit_error" && code == "upstream_rate_limit" && message == nativeSessionBusy:
+		return message
+	case kind == "overloaded_error" && code == "native_ingress_busy" && message == nativeIngressBusy && envelope["type"] != nil:
 		return message
 	}
 	return ""
@@ -73,8 +79,16 @@ func (s *GatewayService) handleSessionAdmissionResponse(c *gin.Context, account 
 	}
 	defer resp.Body.Close()
 	fields := openAIClientErrorFields{Type: "invalid_request_error", Code: "upstream_session_not_accepted", Message: "This session is not accepted by the upstream group. Please start a new session.", StatusCode: http.StatusBadRequest}
-	if message == sessionPolicyBlockRejection {
+	switch message {
+	case sessionPolicyBlockRejection:
 		fields = openAIClientErrorFields{Type: "permission_error", Code: "upstream_session_policy_blocked", Message: "The upstream blocked this conversation under its Usage Policy. In Claude Code, use /new to start a new conversation. Contact support if you believe this was a mistake.", StatusCode: http.StatusForbidden}
+	case nativeSessionBusy:
+		fields = openAIClientErrorFields{Type: "rate_limit_error", Code: "conversation_rate_limited", Message: "This conversation already has a request in progress. Wait for it to finish before retrying.", StatusCode: http.StatusTooManyRequests}
+	case nativeIngressBusy:
+		fields = openAIClientErrorFields{Type: "overloaded_error", Code: "native_ingress_busy", Message: "The model relay is temporarily at capacity. Please retry shortly.", StatusCode: http.StatusTooManyRequests}
+	}
+	if fields.StatusCode == http.StatusTooManyRequests && !c.Writer.Written() && resp.Header.Get("Retry-After") == "1" {
+		c.Header("Retry-After", "1")
 	}
 	result, err := s.handleRequestRejectionBody(c, account, resp, body, parseClaudeUsageFromResponseBody(body), model, upstreamModel, stream, start, fields)
 	return result, err, true
