@@ -172,6 +172,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return
 	}
+	if h.rejectInvalidNativeToolResult(c, apiKey, parsedReq) {
+		return
+	}
 	body = parsedReq.Body.Bytes()
 	reqModel := parsedReq.Model
 	reqStream := parsedReq.Stream
@@ -2245,6 +2248,9 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		}
 		logRequestBodyParseFailure(reqLog, body, err)
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+		return
+	}
+	if h.rejectInvalidNativeToolResult(c, apiKey, parsedReq) {
 		return
 	}
 	body = parsedReq.Body.Bytes()
