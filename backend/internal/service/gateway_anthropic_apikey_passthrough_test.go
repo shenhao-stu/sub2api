@@ -1917,3 +1917,34 @@ func TestSonnet55BedrockCCCompatTransformsBeforeValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestGatewayService_CPAAnthropicPoolCooldownDoesNotRetrySamePool(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	const model = "ultra/claude-opus-5-5-high"
+	upstream := &anthropicHTTPUpstreamRecorder{
+		resp: &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{
+			"Retry-After": {"3600"},
+		}, Body: io.NopCloser(strings.NewReader(`{"type":"error","error":{"type":"rate_limit_error","message":"All credentials for model ultra/claude-opus-5-5-high are cooling down (reset after 1h0m0s)"}}`))},
+	}
+	upstream.resp.Header.Set("X-CPA-Request-ID", "01a00000-0000-7000-8000-000000000001")
+	cfg := &config.Config{}
+	repo := &modelCooldownRepo{}
+	svc := &GatewayService{cfg: cfg, httpUpstream: upstream, rateLimitService: NewRateLimitService(repo, nil, cfg, nil, nil)}
+	account := newAnthropicAPIKeyAccountForTest()
+	account.Credentials["pool_mode"] = true
+	account.Extra[AccountExtraUpstreamRequestIDHeader] = "X-CPA-Request-ID"
+	req := []byte(`{"model":"ultra/claude-opus-5-5-high","max_tokens":64,"messages":[{"role":"user","content":"synthetic"}]}`)
+	result, err := svc.forwardAnthropicAPIKeyPassthrough(t.Context(), c, account, req, model, "claude-opus-5-5", false, time.Now())
+	var failover *UpstreamFailoverError
+	require.ErrorAs(t, err, &failover)
+	require.Nil(t, result)
+	require.True(t, failover.ExcludeFromRetry)
+	require.False(t, failover.RetryableOnSameAccount)
+	require.True(t, failover.ShouldRetryNextAccount())
+	require.Equal(t, 3600, failover.AnthropicPoolRetryAfter())
+	require.Equal(t, model, repo.lastModelRateLimitScope)
+	require.Zero(t, repo.rateLimitCalls)
+	require.False(t, c.Writer.Written())
+}

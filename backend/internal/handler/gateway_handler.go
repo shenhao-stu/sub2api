@@ -2004,6 +2004,15 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 		return
 	}
 
+	if seconds := failoverErr.AnthropicPoolRetryAfter(); seconds > 0 {
+		if !c.Writer.Written() {
+			c.Header("Retry-After", strconv.Itoa(seconds))
+		}
+		h.handleStreamingAwareErrorWithCode(c, http.StatusTooManyRequests, "rate_limit_error", "",
+			"All available accounts are currently rate-limited. Please retry later.", streamStarted)
+		return
+	}
+
 	// 使用默认的错误映射
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
 	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
