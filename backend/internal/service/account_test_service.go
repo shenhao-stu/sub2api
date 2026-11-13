@@ -578,6 +578,11 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create test payload")
 	}
+	nativeRelay := usesAnthropicRelayPrincipal(account)
+	if nativeRelay {
+		delete(payload, "temperature")
+		payload["max_tokens"] = 64
+	}
 	payloadBytes, _ := json.Marshal(payload)
 
 	// Send test_start event
@@ -610,6 +615,9 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 
 	// 账号级请求头覆写：测试请求与真实转发保持一致的最终头
 	account.ApplyHeaderOverrides(req.Header)
+	if nativeRelay {
+		setAnthropicRelayProbePrincipal(req.Header)
+	}
 
 	// Get proxy URL
 	proxyURL := ""
