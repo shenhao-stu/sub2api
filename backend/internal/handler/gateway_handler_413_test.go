@@ -44,3 +44,21 @@ func TestGatewayFailoverExhaustedHTTP413PreservesStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestGatewayFailoverExhaustedPreservesPoolCooldown(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	h := &GatewayHandler{}
+	h.handleFailoverExhausted(c, &service.UpstreamFailoverError{
+		StatusCode:      http.StatusTooManyRequests,
+		Reason:          service.AnthropicPoolModelCooldownReason,
+		ResponseHeaders: http.Header{"Retry-After": {"7200"}},
+		ResponseBody:    []byte(`{"error":{"message":"PRIVATE_ORIGIN"}}`),
+	}, service.PlatformAnthropic, false)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+	require.Equal(t, "7200", rec.Header().Get("Retry-After"))
+	require.Equal(t, "All available accounts are currently rate-limited. Please retry later.", gjson.Get(rec.Body.String(), "error.message").String())
+	require.NotContains(t, rec.Body.String(), "PRIVATE_ORIGIN")
+}

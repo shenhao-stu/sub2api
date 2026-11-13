@@ -140,6 +140,28 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			})
 		}
 
+		if resp.StatusCode == http.StatusTooManyRequests && account.IsPoolMode() &&
+			strings.EqualFold(UpstreamRequestIDHeaderName(account), "X-CPA-Request-ID") {
+			body, readErr := s.readUpstreamErrorBody(resp, c)
+			_ = resp.Body.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			if readErr == nil && cpaAnthropicModelCooldown(account, input.RequestModel, resp.Header, body, time.Now()) > 0 {
+				if s.rateLimitService != nil {
+					s.rateLimitService.persistUpstreamModelCooldown(ctx, account, resp.StatusCode, resp.Header, body, input.RequestModel)
+				}
+				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,
+					UpstreamStatusCode: resp.StatusCode, UpstreamRequestID: UpstreamRequestIDFromHeaders(account, resp.Header),
+					Passthrough: true, Kind: string(AnthropicPoolModelCooldownReason),
+					Message: extractUpstreamErrorMessage(body),
+				})
+				return nil, &UpstreamFailoverError{
+					StatusCode: resp.StatusCode, ResponseBody: body, ResponseHeaders: resp.Header.Clone(),
+					Reason: AnthropicPoolModelCooldownReason, ExcludeFromRetry: true,
+				}
+			}
+		}
+
 		if s.isAnthropicConsumedResponse(c, account, resp) {
 			defer resp.Body.Close()
 			return s.handleErrorResponse(ctx, resp, c, account, input.RequestModel)
