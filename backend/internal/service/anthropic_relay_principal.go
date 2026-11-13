@@ -33,6 +33,12 @@ func applyAnthropicRelayPrincipal(ctx context.Context, c *gin.Context, account *
 	if key == nil {
 		return errors.New("native relay requires an authenticated API key owner")
 	}
+	// A shared transit key without a verified tenant would collapse every
+	// downstream customer into one conversation namespace.
+	requireTag, _ := account.Extra["anthropic_relay_require_affinity"].(bool)
+	if requireTag && len(AccountAffinityTagsFromContext(ctx)) != 1 {
+		return errors.New("native relay requires verified transit identity")
+	}
 	principal := openAIRelayPrincipal(ctx, key.UserID, key.ID)
 	if principal == "" {
 		return errors.New("native relay requires an authenticated API key owner")

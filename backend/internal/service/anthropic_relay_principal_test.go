@@ -64,3 +64,17 @@ func TestAnthropicRelayPrincipalRequiresOwnerOnlyWhenEnabled(t *testing.T) {
 	require.NoError(t, applyAnthropicRelayPrincipal(context.Background(), nil, a, h))
 	require.Empty(t, h)
 }
+func TestAnthropicRelaySharedKeyRequiresVerifiedTag(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/v1/messages", nil)
+	c.Request.Header.Set(AccountAffinityHeader, "101")
+	c.Set("api_key", &APIKey{ID: 8, UserID: 9})
+	a := &Account{Platform: PlatformAnthropic, Type: AccountTypeAPIKey,
+		Extra: map[string]any{"anthropic_relay_session_scope": true, "anthropic_relay_require_affinity": true}}
+	h := make(http.Header)
+	require.ErrorContains(t, applyAnthropicRelayPrincipal(context.Background(), c, a, h), "verified transit identity")
+	require.Empty(t, h)
+	ctx := WithAccountAffinityTags(context.Background(), []string{"getoken:101"})
+	require.NoError(t, applyAnthropicRelayPrincipal(ctx, c, a, h))
+	require.Equal(t, openAIRelayPrincipal(ctx, 9, 8), h.Get("X-Native-Relay-Principal"))
+}
