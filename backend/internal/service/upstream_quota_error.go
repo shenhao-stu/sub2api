@@ -42,7 +42,10 @@ func IsAnthropicQuotaGuardRejection(status int, body []byte) bool {
 		return false
 	}
 	root, ok := receiptObject(body)
-	if !ok || string(root["type"]) != `"error"` {
+	if !ok {
+		return false
+	}
+	if kind, exists := root["type"]; exists && string(kind) != `"error"` {
 		return false
 	}
 	failure, ok := receiptObject(root["error"])
