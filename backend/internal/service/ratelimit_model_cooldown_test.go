@@ -152,3 +152,39 @@ func TestCPAResourceExhaustionPreservesRetryAfterOnFastpath(t *testing.T) {
 	require.False(t, gateway.isOpenAIAccountRuntimeBlocked(account))
 	require.Zero(t, repo.rateLimitCalls)
 }
+
+func TestCPAAnthropicPoolCooldownKeepsSiblingModelsSchedulable(t *testing.T) {
+	const model = "ultra/claude-opus-5-5-high"
+	const body = `{"type":"error","error":{"type":"rate_limit_error","message":"All credentials for model ultra/claude-opus-5-5-high are cooling down (last error: upstream quota) (reset after 2h3m46s)"}}`
+	for _, tc := range []struct {
+		name, expectedID, retryAfter, mapped string
+		want                                 bool
+	}{
+		{"matching model", "X-CPA-Request-ID", "7426", model, true},
+		{"other upstream", "X-Request-ID", "7426", model, false},
+		{"different model", "X-CPA-Request-ID", "7426", "ultra/claude-sonnet-5-5-high", false},
+		{"missing deadline", "X-CPA-Request-ID", "", model, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &modelCooldownRepo{}
+			limits := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+			account := &Account{ID: 11, Type: AccountTypeAPIKey, Platform: PlatformAnthropic,
+				Credentials: map[string]any{"pool_mode": true},
+				Extra:       map[string]any{AccountExtraUpstreamRequestIDHeader: tc.expectedID}}
+			headers := http.Header{}
+			headers.Set("X-CPA-Request-ID", "01a00000-0000-7000-8000-000000000001")
+			if tc.retryAfter != "" {
+				headers.Set("Retry-After", tc.retryAfter)
+			}
+			require.Equal(t, tc.want, limits.HandleUpstreamError(context.Background(), account, 429, headers, []byte(body), tc.mapped))
+			require.Zero(t, repo.rateLimitCalls)
+			require.Zero(t, repo.tempUnschedCalls)
+			if tc.want {
+				require.Equal(t, model, repo.lastModelRateLimitScope)
+				require.WithinDuration(t, time.Now().Add(7426*time.Second), repo.lastModelRateLimitReset, time.Second)
+			} else {
+				require.Zero(t, repo.modelRateLimitCalls)
+			}
+		})
+	}
+}

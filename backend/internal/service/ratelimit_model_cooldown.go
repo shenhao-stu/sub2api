@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"math"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -52,6 +54,47 @@ func isCPAUltraResourceExhausted(account *Account, model string, body []byte) bo
 		len(response.Error.Details) == 0
 }
 
+var cpaRequestID = regexp.MustCompile(`^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$`)
+
+const AnthropicPoolModelCooldownReason GatewayFailureReason = "anthropic_pool_model_cooldown"
+
+func cpaAnthropicModelCooldown(account *Account, model string, headers http.Header, body []byte, now time.Time) time.Duration {
+	if account == nil || account.Platform != PlatformAnthropic || !account.IsPoolMode() ||
+		!strings.EqualFold(UpstreamRequestIDHeaderName(account), "X-CPA-Request-ID") ||
+		!cpaRequestID.MatchString(UpstreamRequestIDFromHeaders(account, headers)) || model == "" {
+		return 0
+	}
+	var envelope struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	prefix := "All credentials for model " + model + " are cooling down"
+	if json.Unmarshal(body, &envelope) != nil || envelope.Type != "error" ||
+		envelope.Error.Type != "rate_limit_error" ||
+		!(envelope.Error.Message == prefix || strings.HasPrefix(envelope.Error.Message, prefix+" ")) {
+		return 0
+	}
+	delay, ok := parseRetryAfterDelay(now, headers)
+	if !ok || delay <= 0 {
+		return 0
+	}
+	return delay
+}
+
+func (e *UpstreamFailoverError) AnthropicPoolRetryAfter() int {
+	if e == nil || e.StatusCode != http.StatusTooManyRequests || e.Reason != AnthropicPoolModelCooldownReason {
+		return 0
+	}
+	delay, ok := parseRetryAfterDelay(time.Now(), e.ResponseHeaders)
+	if !ok || delay <= 0 {
+		return 0
+	}
+	return int(math.Ceil(delay.Seconds()))
+}
+
 // canonicalModel has already been mapped once at the dispatch boundary.
 func (s *RateLimitService) persistUpstreamModelCooldown(ctx context.Context, account *Account, status int, headers http.Header, body []byte, canonicalModel string) bool {
 	if status != http.StatusTooManyRequests || account == nil || account.Type != AccountTypeAPIKey ||
@@ -60,6 +103,9 @@ func (s *RateLimitService) persistUpstreamModelCooldown(ctx context.Context, acc
 	}
 	model := strings.TrimSpace(canonicalModel)
 	delay := upstreamModelCooldown(body, model)
+	if delay == 0 {
+		delay = cpaAnthropicModelCooldown(account, model, headers, body, time.Now())
+	}
 	if delay == 0 && isCPAUltraResourceExhausted(account, model, body) {
 		delay, _ = s.get429FallbackCooldown(ctx, account)
 		if retryAfter, ok := parseRetryAfterDelay(time.Now(), headers); ok && retryAfter > delay {
