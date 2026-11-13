@@ -1,12 +1,33 @@
 package service
 
 import (
+	"bytes"
 	"net/http"
 	"strconv"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/tidwall/gjson"
 )
+
+func geminiChatNativeUnavailable(payload []byte) bool {
+	event, ok := openAIGenerationFailureObject(payload)
+	if !ok || !bytes.Equal(event["type"], []byte(`"error"`)) || event["response"] != nil {
+		return false
+	}
+	detail, ok := openAIGenerationFailureObject(event["error"])
+	if !ok || !bytes.Equal(detail["code"], []byte(`503`)) || !bytes.Equal(detail["status"], []byte(`"UNAVAILABLE"`)) {
+		return false
+	}
+	if kind := detail["type"]; kind != nil && !bytes.Equal(kind, []byte(`"server_error"`)) && !bytes.Equal(kind, []byte(`"upstream_error"`)) {
+		return false
+	}
+	for _, raw := range []gjson.Result{gjson.GetBytes(payload, "status"), gjson.GetBytes(payload, "status_code"), gjson.GetBytes(payload, "error.status_code")} {
+		if raw.Exists() && (raw.Type != gjson.Number || raw.Raw != "503") {
+			return false
+		}
+	}
+	return true
+}
 
 // A created lifecycle alone is not progress. Later known events may release
 // transport headers without releasing the buffered semantic prefix.

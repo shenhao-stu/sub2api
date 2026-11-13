@@ -1123,6 +1123,22 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				streamNonFailoverErr = errOpenAICyberPolicyForwarded
 				return true
 			}
+			if geminiResponseStarted && geminiChatNativeUnavailable(payloadBytes) {
+				const upstreamStatus = http.StatusServiceUnavailable
+				message = s.recordOpenAIStreamUpstreamErrorWithStatus(c, account, false, requestID, "http_error", payloadBytes, message, upstreamStatus)
+				status, errType, errMsg, _ := applyErrorPassthroughRule(c, account.Platform, upstreamStatus,
+					openAIStreamFailedEventPassthroughBody(payloadBytes, message), upstreamStatus, "upstream_error", message)
+				body, _ := json.Marshal(gin.H{"error": gin.H{"type": errType, "code": "upstream_service_unavailable", "message": errMsg}})
+				fields := boundedOpenAIClientError(body, status)
+				if capture := chatReceiptFromContext(c.Request.Context()); capture != nil {
+					capture.status = status
+				}
+				if !clientDisconnected {
+					writeOpenAIErrorFields(c, fields, clientOutputStarted || transportKeepaliveCommitted, &usage)
+				}
+				streamNonFailoverErr = fmt.Errorf("upstream response failed: %s", fields.Message)
+				return true
+			}
 			shouldFailover := openAIStreamFailedEventShouldFailover(payloadBytes, message)
 			if strings.TrimSpace(event.Type) == "error" {
 				shouldFailover = openAIStreamErrorEventShouldFailover(payloadBytes, message)
