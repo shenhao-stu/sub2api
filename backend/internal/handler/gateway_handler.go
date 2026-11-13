@@ -1972,6 +1972,8 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 		return
 	}
 
+	quotaGuard := platform == service.PlatformAnthropic && service.IsAnthropicQuotaGuardRejection(statusCode, responseBody)
+
 	// 先检查透传规则
 	if h.errorPassthroughService != nil && len(responseBody) > 0 {
 		if rule := h.errorPassthroughService.MatchRule(platform, statusCode, responseBody); rule != nil {
@@ -1991,6 +1993,10 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 				c.Set(service.OpsSkipPassthroughKey, true)
 			}
 
+			if quotaGuard && respCode == http.StatusTooManyRequests {
+				h.handleStreamingAwareErrorWithCode(c, respCode, "rate_limit_error", service.AnthropicQuotaGuardCode, msg, streamStarted)
+				return
+			}
 			h.handleStreamingAwareError(c, respCode, "upstream_error", msg, streamStarted)
 			return
 		}
@@ -2001,6 +2007,12 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 	service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
 	if service.IsUpstreamQuotaExhausted(statusCode, responseBody) || service.IsUpstreamWalletExhausted(statusCode, responseBody) {
 		h.handleStreamingAwareErrorWithCode(c, http.StatusTooManyRequests, "rate_limit_error", "insufficient_quota", service.UpstreamQuotaExhaustedMessage, streamStarted)
+		return
+	}
+
+	if quotaGuard {
+		const message = "The request exceeds the upstream pool's available quota budget. Reduce the uncached context or wait for quota to reset."
+		h.handleStreamingAwareErrorWithCode(c, statusCode, "rate_limit_error", service.AnthropicQuotaGuardCode, message, streamStarted)
 		return
 	}
 
