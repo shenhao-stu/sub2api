@@ -580,6 +580,7 @@ func trimGrokInvalidEncryptedContentRetryBody(body []byte) ([]byte, bool, error)
 		return body, false, nil
 	}
 
+	dropEmptyGrokReplayReasoning(requestBody)
 	retryBody, err := marshalOpenAIUpstreamJSON(requestBody)
 	if err != nil {
 		return nil, false, err
