@@ -34,6 +34,30 @@ func IsUpstreamQuotaExhausted(statusCode int, body []byte) bool {
 		strings.TrimSpace(payload.Error.Type) == "insufficient_quota"
 }
 
+const AnthropicQuotaGuardCode = "quota_guard_request_too_large"
+
+// IsAnthropicQuotaGuardRejection recognizes the pool's pre-dispatch refusal.
+func IsAnthropicQuotaGuardRejection(status int, body []byte) bool {
+	if status != http.StatusTooManyRequests || len(body) >= 8192 {
+		return false
+	}
+	root, ok := receiptObject(body)
+	if !ok || string(root["type"]) != `"error"` {
+		return false
+	}
+	failure, ok := receiptObject(root["error"])
+	if !ok || string(failure["type"]) != `"rate_limit_error"` || string(failure["code"]) != `"`+AnthropicQuotaGuardCode+`"` {
+		return false
+	}
+	for _, object := range []map[string]json.RawMessage{root, failure} {
+		if raw, exists := object["status_code"]; exists && string(raw) != "429" {
+			return false
+		}
+	}
+	details, ok := receiptObject(failure["details"])
+	return ok && string(details["reason"]) == `"`+AnthropicQuotaGuardCode+`"` && string(details["attempt_count"]) == "0"
+}
+
 // parseRetryAfterDelay 解析标准 Retry-After 头（秒数或 HTTP 日期）。
 // 返回 ok=false 表示头缺失/无法解析/超过 upstreamQuotaRetryAfterMax 上限（视为不可信）。
 // 已过去的 HTTP 日期返回 (<=0, true)，由调用方决定是否忽略。
