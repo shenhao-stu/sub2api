@@ -9,6 +9,28 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestPatchGrokResponsesReasoningInputSummary(t *testing.T) {
+	body := []byte(`{"reasoning":{"effort":"high","summary":"auto"},"input":[
+		{"type":"reasoning","id":"rs_1","encrypted_content":"opaque"},
+		{"type":"reasoning","id":"rs_2","summary":null,"encrypted_content":"second"},
+		{"type":"reasoning","id":"rs_3","summary":[{"type":"summary_text","text":"kept"}]},
+		{"type":"message","role":"user","content":"continue"}
+	]}`)
+	patched, err := patchGrokResponsesBody(body, "grok-4.7")
+	require.NoError(t, err)
+	items := gjson.GetBytes(patched, "input").Array()
+	require.Len(t, items, 4)
+	require.JSONEq(t, `{"type":"reasoning","id":"rs_1","encrypted_content":"opaque","summary":[]}`, items[0].Raw)
+	require.JSONEq(t, `{"type":"reasoning","id":"rs_2","encrypted_content":"second","summary":[]}`, items[1].Raw)
+	original := gjson.GetBytes(body, "input").Array()
+	require.JSONEq(t, original[2].Raw, items[2].Raw)
+	require.JSONEq(t, original[3].Raw, items[3].Raw)
+	require.Equal(t, "auto", gjson.GetBytes(patched, "reasoning.summary").String())
+	again, err := patchGrokResponsesBody(patched, "grok-4.7")
+	require.NoError(t, err)
+	require.Equal(t, patched, again)
+}
+
 func TestSanitizeGrokResponsesModelInputAgentMessage(t *testing.T) {
 	tests := []struct {
 		name    string

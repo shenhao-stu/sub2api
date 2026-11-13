@@ -2042,6 +2042,37 @@ func TestForwardGrokResponsesStreamingDefaultsEmptyModelTo45AndSnapshots(t *test
 	require.NotNil(t, repo.updates[52][grokQuotaSnapshotExtraKey])
 }
 
+func TestForwardGrokResponsesReasoningSummaryBeforeFirstDispatch(t *testing.T) {
+	body := []byte(`{"model":"grok-4.7","stream":true,"input":[
+		{"role":"user","content":"Earlier turn"},
+		{"type":"reasoning","id":"rs_fixture","encrypted_content":"opaque"},
+		{"role":"user","content":"Continue"}
+	]}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	account := &Account{ID: 53, Platform: PlatformGrok, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "fixture", "base_url": "https://api.x.ai/v1"}}
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fixture\",\"usage\":{\"input_tokens\":7,\"output_tokens\":1}}}\n\n",
+		)),
+	}}
+	service := &OpenAIGatewayService{httpUpstream: upstream}
+	result, err := service.forwardGrokResponses(context.Background(), c, account, body, "grok-4.7", true, time.Now())
+	require.NoError(t, err)
+	require.Len(t, upstream.bodies, 1)
+	require.JSONEq(t, `{"type":"reasoning","id":"rs_fixture","encrypted_content":"opaque","summary":[]}`,
+		gjson.GetBytes(upstream.bodies[0], "input.1").Raw)
+	require.Equal(t, "resp_fixture", result.ResponseID)
+	require.Equal(t, 7, result.Usage.InputTokens)
+	require.Equal(t, 1, result.Usage.OutputTokens)
+	require.Contains(t, recorder.Body.String(), "response.completed")
+}
+
 func TestForwardGrokResponsesAgentMessage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, stream := range []bool{false, true} {

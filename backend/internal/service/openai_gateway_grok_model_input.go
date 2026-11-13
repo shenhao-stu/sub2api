@@ -124,6 +124,10 @@ func sanitizeGrokResponsesModelInput(body []byte) ([]byte, error) {
 			if content, exists := item["content"]; exists && content == nil {
 				delete(item, "content")
 			}
+			// xAI requires a summary array even when the item only carries ciphertext.
+			if item["summary"] == nil {
+				item["summary"] = []any{}
+			}
 		} else if itemType == "function_call" {
 			name := strings.TrimSpace(grokStringValue(item["name"]))
 			arguments := item["arguments"]
