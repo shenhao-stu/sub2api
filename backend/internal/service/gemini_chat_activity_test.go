@@ -161,6 +161,69 @@ func TestGeminiChatActivityCommittedErrorRetainsStatusAndUsage(t *testing.T) {
 	}
 }
 
+func TestGeminiChatToolStreamPreservesNativeUnavailable(t *testing.T) {
+	const tool = `data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_synthetic","type":"function_call","call_id":"call_synthetic","name":"read_counter","arguments":""}}` + "\n\n"
+	const args = `data: {"type":"response.function_call_arguments.delta","item_id":"fc_synthetic","output_index":0,"delta":"{}"}` + "\n\n"
+	const unavailable = `data: {"type":"error","error":{"code":503,"message":"The service is currently unavailable.","status":"UNAVAILABLE"}}` + "\n\n"
+	for _, async := range []bool{false, true} {
+		t.Run(fmt.Sprintf("async_%t", async), func(t *testing.T) {
+			cfg := structuredInputRetryTestConfig()
+			if async {
+				cfg.Gateway.StreamDataIntervalTimeout = 1
+			}
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(activityCreated + tool + args + unavailable)),
+			}}
+			svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+			body := []byte(`{"model":"gemini-4-argon","stream":true,"messages":[{"role":"user","content":"synthetic"}]}`)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			capture := &chatReceiptCapture{claim: &ChatUsageReceiptClaim{
+				APIKeyID: 1, RequestID: "gemini-unavailable-fixture", Model: "gemini-4-argon", Endpoint: ChatReceiptEndpoint,
+			}}
+			ctx := context.WithValue(context.Background(), chatReceiptContextKey{}, capture)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+			result, err := svc.ForwardAsChatCompletions(ctx, c, structuredInputRetryTestAccount(), body, "", "")
+			require.Error(t, err)
+			var failover *UpstreamFailoverError
+			require.NotErrorAs(t, err, &failover)
+			require.Len(t, upstream.requests, 1)
+			require.NotNil(t, result)
+			require.Zero(t, result.Usage.InputTokens)
+			require.Zero(t, result.Usage.OutputTokens)
+			require.Equal(t, http.StatusOK, rec.Code)
+			wire := rec.Body.String()
+			require.Contains(t, wire, `"tool_calls"`)
+			require.Contains(t, wire, `"status_code":503`)
+			require.Equal(t, 1, strings.Count(wire, `"code":"upstream_service_unavailable"`))
+			require.NotContains(t, wire, `"usage"`)
+			require.NotContains(t, wire, "[DONE]")
+			require.Equal(t, http.StatusServiceUnavailable, capture.status)
+			require.Nil(t, capture.meter)
+			require.False(t, capture.ledgerTerminal)
+			ops, ok := GetOpsStreamError(c)
+			require.True(t, ok)
+			require.Equal(t, http.StatusServiceUnavailable, ops.IntendedStatus)
+			require.Equal(t, http.StatusServiceUnavailable, ops.UpstreamStatus)
+		})
+	}
+}
+
+func TestGeminiChatNativeUnavailableRejectsConflictingStatus(t *testing.T) {
+	for _, payload := range []string{
+		`{"type":"error","error":{"code":503,"status":"RESOURCE_EXHAUSTED"}}`,
+		`{"type":"error","error":{"code":"503","status":"UNAVAILABLE"}}`,
+		`{"type":"error","error":{"code":503,"status":"UNAVAILABLE","status_code":429}}`,
+		`{"type":"error","error":{"code":503,"status":"UNAVAILABLE","type":"authentication_error"}}`,
+		`{"type":"error","status_code":429,"error":{"code":503,"status":"UNAVAILABLE"}}`,
+		`{"type":"error","error":{"code":503,"code":429,"status":"UNAVAILABLE"}}`,
+	} {
+		require.False(t, geminiChatNativeUnavailable([]byte(payload)), payload)
+	}
+}
+
 type activityFailWriter struct {
 	gin.ResponseWriter
 	cancel context.CancelFunc

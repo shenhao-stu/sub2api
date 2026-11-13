@@ -1783,11 +1783,23 @@ func (s *OpenAIGatewayService) recordOpenAIStreamUpstreamError(
 	payload []byte,
 	message string,
 ) string {
+	return s.recordOpenAIStreamUpstreamErrorWithStatus(c, account, passthrough, upstreamRequestID, kind, payload, message, openAIStreamFailureStatus(payload, message))
+}
+
+func (s *OpenAIGatewayService) recordOpenAIStreamUpstreamErrorWithStatus(
+	c *gin.Context,
+	account *Account,
+	passthrough bool,
+	upstreamRequestID string,
+	kind string,
+	payload []byte,
+	message string,
+	statusCode int,
+) string {
 	message = sanitizeUpstreamErrorMessage(strings.TrimSpace(message))
 	if message == "" {
 		message = "OpenAI upstream response failed"
 	}
-	statusCode := openAIStreamFailureStatus(payload, message)
 	detail := ""
 	if len(payload) > 0 && s != nil && s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 		maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
