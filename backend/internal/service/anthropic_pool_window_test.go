@@ -53,11 +53,29 @@ func TestAnthropicPoolWindowEnvelopeIsNarrow(t *testing.T) {
 		strings.Replace(poolWindowFixture, "upstream_rate_limit", "different_rate_limit", 1),
 		strings.Replace(poolWindowFixture, `"error":`, `"usage":{"input_tokens":2},"error":`, 1),
 		strings.Replace(poolWindowFixture, `"message":`, `"status_code":503,"message":`, 1),
+		strings.Replace(poolWindowFixture, `"message":`, `"usage_receipt":{"input_tokens":2},"message":`, 1),
 		strings.Replace(poolWindowFixture, `"message":`, `"code":"upstream_rate_limit","message":`, 1),
 		poolWindowFixture + "{}",
 	} {
 		require.False(t, isAnthropicPoolWindowRejection([]byte(body)), "%s", body)
 	}
+}
+
+func TestAnthropicPoolWindowPreservesMatchingAdminCooldown(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	a := newAnthropicAPIKeyAccountForTest()
+	a.Credentials["pool_mode"] = true
+	a.Credentials["temp_unschedulable_enabled"] = true
+	a.Credentials["temp_unschedulable_rules"] = []any{map[string]any{
+		"error_code": 429, "duration_minutes": 5, "keywords": []any{"upstream_rate_limit"},
+	}}
+	resp := &http.Response{StatusCode: http.StatusTooManyRequests, Body: io.NopCloser(strings.NewReader(poolWindowFixture))}
+	require.Nil(t, (&GatewayService{}).anthropicPoolWindowRejection(c, a, resp))
+	got, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, poolWindowFixture, string(got))
+	require.NoError(t, resp.Body.Close())
 }
 
 func TestAnthropicPoolWindowProbePreservesNonmatchingBody(t *testing.T) {

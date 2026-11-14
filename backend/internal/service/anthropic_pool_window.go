@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -17,14 +18,14 @@ const anthropicPoolWindowMessage = "号池账号均被上游限流，稍后再�
 // Metered or otherwise extended errors stay on the ordinary forwarding path.
 func isAnthropicPoolWindowRejection(body []byte) bool {
 	root, ok := receiptObject(body)
-	if !ok || root["usage"] != nil || root["message"] != nil {
+	if !ok || !onlyPoolWindowFields(root, "type", "error", "status_code", "status") {
 		return false
 	}
 	if kind, present := root["type"]; present && string(kind) != `"error"` {
 		return false
 	}
 	failure, ok := receiptObject(root["error"])
-	if !ok || failure["usage"] != nil || failure["details"] != nil {
+	if !ok || !onlyPoolWindowFields(failure, "type", "code", "message", "status_code", "status") {
 		return false
 	}
 	for _, status := range []string{string(root["status_code"]), string(failure["status_code"]), string(root["status"]), string(failure["status"])} {
@@ -35,6 +36,22 @@ func isAnthropicPoolWindowRejection(body []byte) bool {
 	return string(failure["type"]) == `"rate_limit_error"` &&
 		string(failure["code"]) == `"upstream_rate_limit"` &&
 		string(failure["message"]) == `"`+anthropicPoolWindowMessage+`"`
+}
+
+func onlyPoolWindowFields(object map[string]json.RawMessage, allowed ...string) bool {
+	for field := range object {
+		found := false
+		for _, name := range allowed {
+			if field == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *GatewayService) anthropicPoolWindowRejection(c *gin.Context, account *Account, resp *http.Response) *UpstreamFailoverError {
@@ -48,7 +65,8 @@ func (s *GatewayService) anthropicPoolWindowRejection(c *gin.Context, account *A
 		return io.ReadAll(io.LimitReader(source, maxBody))
 	})
 	resp.Body = &anthropicErrorPrefixBody{prefix: bytes.NewReader(body), source: source, readErr: err}
-	if err != nil || len(body) >= maxBody || !isAnthropicPoolWindowRejection(body) {
+	if err != nil || len(body) >= maxBody || !isAnthropicPoolWindowRejection(body) ||
+		len(matchTempUnschedulableRules(account, resp.StatusCode, body)) > 0 {
 		return nil
 	}
 	_ = resp.Body.Close()
