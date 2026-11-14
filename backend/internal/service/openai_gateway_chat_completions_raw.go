@@ -143,6 +143,28 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletionsWithStartTime(
 		upstreamBody = strippedBody
 	}
 
+	targetURL, err := s.rawChatCompletionsURL(account)
+	if err != nil {
+		return nil, err
+	}
+	officialGrok := account.IsGrok() && xai.IsOfficialBaseURL(targetURL)
+	if account.IsGrok() {
+		upstreamBody, err = normalizeGrokChatReasoningEffort(upstreamBody, upstreamModel)
+		if err != nil {
+			return nil, fmt.Errorf("normalize Grok chat reasoning effort: %w", err)
+		}
+		if officialGrok && !isGrokCLIProxyTarget(targetURL) &&
+			xai.ResolveGrokTextResponsesModelID(upstreamModel) == "grok-4.6" &&
+			gjson.GetBytes(upstreamBody, "reasoning_effort").String() == "none" {
+			const message = "Grok 4.6 does not support reasoning_effort=none on Chat Completions. Omit reasoning_effort to use the model default."
+			writeOpenAIErrorFields(c, openAIClientErrorFields{
+				Type: "invalid_request_error", Code: "unsupported_value",
+				Param: "reasoning_effort", Message: message, StatusCode: http.StatusBadRequest,
+			}, false)
+			return nil, errors.New(message)
+		}
+	}
+
 	// Grok Composer does not accept image_url parts directly, but Grok Build
 	// can describe the images first. Bridge only this exact failure mode.
 	token, tokenKind, err := s.getRequestCredential(ctx, c, account)
@@ -181,10 +203,6 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletionsWithStartTime(
 		if err != nil {
 			return nil, fmt.Errorf("remove Responses-only Grok prompt cache key: %w", err)
 		}
-		upstreamBody, err = normalizeGrokChatReasoningEffort(upstreamBody, upstreamModel)
-		if err != nil {
-			return nil, fmt.Errorf("normalize Grok chat reasoning effort: %w", err)
-		}
 		upstreamBody, err = sanitizeGrokUnsupportedFields(upstreamBody)
 		if err != nil {
 			return nil, fmt.Errorf("sanitize Grok unsupported fields: %w", err)
@@ -202,18 +220,13 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletionsWithStartTime(
 	)
 
 	// 5. Build and send upstream request via the shared CC pipeline
-	targetURL, err := s.rawChatCompletionsURL(account)
-	if err != nil {
-		return nil, err
-	}
 	if account.IsGrok() {
-		official := xai.IsOfficialBaseURL(targetURL)
-		stopUnsupported := official && xai.ResolveGrokTextResponsesModelID(upstreamModel) == "grok-4.7"
+		stopUnsupported := officialGrok && xai.ResolveGrokTextResponsesModelID(upstreamModel) == "grok-4.7"
 		upstreamBody, err = normalizeGrokChatStop(upstreamBody, stopUnsupported)
 		if err != nil {
 			return nil, fmt.Errorf("normalize Grok chat stop: %w", err)
 		}
-		if official {
+		if officialGrok {
 			upstreamBody, err = normalizeGrokChatMessageNames(upstreamBody)
 			if err != nil {
 				return nil, fmt.Errorf("normalize Grok chat message names: %w", err)

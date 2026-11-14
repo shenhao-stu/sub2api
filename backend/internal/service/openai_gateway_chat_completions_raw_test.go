@@ -53,6 +53,49 @@ func TestBuildOpenAIChatCompletionsURL(t *testing.T) {
 	}
 }
 
+func TestForwardAsRawChatCompletions_Grok46UnsupportedNoneRejectedBeforeDispatch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tt := range []struct {
+		name, model, baseURL, effortField string
+		stream, reject                    bool
+	}{
+		{"official stream", "grok-4.6", "https://api.x.ai", `,"reasoning_effort":"none"`, true, true},
+		{"official alias", "grok-4.6-latest", "https://api.x.ai", `,"reasoningEffort":" NONE "`, false, true},
+		{"official other effort", "grok-4.6", "https://api.x.ai", `,"reasoning_effort":"high"`, false, false},
+		{"official omitted", "grok-4.6", "https://api.x.ai", "", true, false},
+		{"other model", "grok-4.7", "https://api.x.ai", `,"reasoning_effort":"none"`, false, false},
+		{"official CLI upstream", "grok-4.6", "https://cli-chat-proxy.grok.com", `,"reasoning_effort":"none"`, false, false},
+		{"compatible upstream", "grok-4.6", "https://grok.example", `,"reasoning_effort":"none"`, false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"fixture"}],"stream":%t%s}`,
+				tt.model, tt.stream, tt.effortField))
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+			upstream := &httpUpstreamRecorder{err: errors.New("stop after capture")}
+			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+			account := rawChatCompletionsTestAccount()
+			account.Platform = PlatformGrok
+			account.Credentials["base_url"] = tt.baseURL
+
+			result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+			require.Error(t, err)
+			require.Nil(t, result)
+			if tt.reject {
+				require.Empty(t, upstream.lastBody)
+				require.Equal(t, http.StatusBadRequest, rec.Code)
+				require.Equal(t, "unsupported_value", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+				require.Equal(t, "reasoning_effort", gjson.GetBytes(rec.Body.Bytes(), "error.param").String())
+				require.False(t, gjson.GetBytes(rec.Body.Bytes(), "usage").Exists())
+				return
+			}
+			require.NotEmpty(t, upstream.lastBody)
+			require.Equal(t, strings.Contains(tt.effortField, "reasoning_effort"), gjson.GetBytes(upstream.lastBody, "reasoning_effort").Exists())
+		})
+	}
+}
+
 // TestBuildOpenAIResponsesURL_ProbeURL 锁定 probe/测试端点使用的 URL 构建逻辑，
 // 确保 buildOpenAIResponsesURL 对标准 OpenAI base_url 格式均拼出 `/v1/responses`。
 func TestBuildOpenAIResponsesURL_ProbeURL(t *testing.T) {
