@@ -53,7 +53,7 @@ func TestBuildOpenAIChatCompletionsURL(t *testing.T) {
 	}
 }
 
-func TestForwardAsRawChatCompletions_Grok46UnsupportedNoneRejectedBeforeDispatch(t *testing.T) {
+func TestForwardAsRawChatCompletions_GrokUnsupportedNoneRejectedBeforeDispatch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, tt := range []struct {
 		name, model, baseURL, effortField string
@@ -63,7 +63,13 @@ func TestForwardAsRawChatCompletions_Grok46UnsupportedNoneRejectedBeforeDispatch
 		{"official alias", "grok-4.6-latest", "https://api.x.ai", `,"reasoningEffort":" NONE "`, false, true},
 		{"official other effort", "grok-4.6", "https://api.x.ai", `,"reasoning_effort":"high"`, false, false},
 		{"official omitted", "grok-4.6", "https://api.x.ai", "", true, false},
-		{"other model", "grok-4.7", "https://api.x.ai", `,"reasoning_effort":"none"`, false, false},
+		{"4.7 official stream", "grok-4.7", "https://api.x.ai", `,"reasoning_effort":"none"`, true, true},
+		{"4.7 official alias", "xai/grok-4.7-latest", "https://api.x.ai", `,"reasoningEffort":" NONE "`, false, true},
+		{"4.7 omitted", "grok-4.7", "https://api.x.ai", "", true, false},
+		{"4.7 high", "grok-4.7", "https://api.x.ai", `,"reasoning_effort":"high"`, false, false},
+		{"4.7 build fast", "grok-4.7-build-fast", "https://api.x.ai", `,"reasoning_effort":"none"`, false, false},
+		{"4.7 CLI upstream", "grok-4.7", "https://cli-chat-proxy.grok.com", `,"reasoning_effort":"none"`, false, false},
+		{"4.7 compatible upstream", "grok-4.7", "https://grok.example", `,"reasoning_effort":"none"`, false, false},
 		{"official CLI upstream", "grok-4.6", "https://cli-chat-proxy.grok.com", `,"reasoning_effort":"none"`, false, false},
 		{"compatible upstream", "grok-4.6", "https://grok.example", `,"reasoning_effort":"none"`, false, false},
 	} {
@@ -88,6 +94,7 @@ func TestForwardAsRawChatCompletions_Grok46UnsupportedNoneRejectedBeforeDispatch
 				require.Equal(t, "unsupported_value", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
 				require.Equal(t, "reasoning_effort", gjson.GetBytes(rec.Body.Bytes(), "error.param").String())
 				require.False(t, gjson.GetBytes(rec.Body.Bytes(), "usage").Exists())
+				require.Contains(t, gjson.GetBytes(rec.Body.Bytes(), "error.message").String(), "Omit reasoning_effort")
 				return
 			}
 			require.NotEmpty(t, upstream.lastBody)
