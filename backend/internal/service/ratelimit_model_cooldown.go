@@ -85,7 +85,8 @@ func cpaAnthropicModelCooldown(account *Account, model string, headers http.Head
 }
 
 func (e *UpstreamFailoverError) AnthropicPoolRetryAfter() int {
-	if e == nil || e.StatusCode != http.StatusTooManyRequests || e.Reason != AnthropicPoolModelCooldownReason {
+	if e == nil || e.StatusCode != http.StatusTooManyRequests ||
+		(e.Reason != AnthropicPoolModelCooldownReason && e.Reason != AnthropicPoolWindowCooldownReason) {
 		return 0
 	}
 	delay, ok := parseRetryAfterDelay(time.Now(), e.ResponseHeaders)
