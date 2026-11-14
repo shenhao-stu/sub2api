@@ -162,6 +162,10 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			}
 		}
 
+		if failover := s.anthropicPoolWindowRejection(c, account, resp); failover != nil {
+			return nil, failover
+		}
+
 		if s.isAnthropicConsumedResponse(c, account, resp) {
 			defer resp.Body.Close()
 			return s.handleErrorResponse(ctx, resp, c, account, input.RequestModel)

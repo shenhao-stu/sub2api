@@ -2016,8 +2016,9 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 		return
 	}
 
-	if seconds := failoverErr.AnthropicPoolRetryAfter(); seconds > 0 {
-		if !c.Writer.Written() {
+	seconds := failoverErr.AnthropicPoolRetryAfter()
+	if seconds > 0 || failoverErr.Reason == service.AnthropicPoolWindowCooldownReason {
+		if seconds > 0 && !c.Writer.Written() {
 			c.Header("Retry-After", strconv.Itoa(seconds))
 		}
 		h.handleStreamingAwareErrorWithCode(c, http.StatusTooManyRequests, "rate_limit_error", "",
