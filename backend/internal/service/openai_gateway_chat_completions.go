@@ -1046,8 +1046,20 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			searchCount += countGrokNativeSearchCallsInSSEDataDedup([]byte(payload), streamSearchSeen)
 		}
 
+		payloadBytes := []byte(payload)
+		eventType := gjson.GetBytes(payloadBytes, "type").String()
+		nativeUnavailable := geminiResponseStarted && (eventType == "error" || eventType == "response.failed") && geminiChatNativeUnavailable(payloadBytes)
+		eventJSON := payloadBytes
+		if nativeUnavailable && eventType == "response.failed" {
+			// The typed Responses error expects a string. Keep the validated
+			// native number on the original envelope for status and metering.
+			if normalized, err := sjson.SetBytes(payloadBytes, "response.error.code", "upstream_service_unavailable"); err == nil {
+				eventJSON = normalized
+			}
+		}
+
 		var event apicompat.ResponsesStreamEvent
-		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		if err := json.Unmarshal(eventJSON, &event); err != nil {
 			logger.L().Warn("openai chat_completions stream: failed to parse event",
 				zap.Error(err),
 				zap.String("request_id", requestID),
@@ -1088,7 +1100,6 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			c.Set("openai_responses_usage_state", event.TerminalMeteringState())
 		}
 		if strings.TrimSpace(event.Type) == "response.failed" || strings.TrimSpace(event.Type) == "error" {
-			payloadBytes := []byte(payload)
 			message := extractOpenAISSEErrorMessage(payloadBytes)
 			if hit, code, msg := detectOpenAICyberPolicy(payloadBytes); hit {
 				// cyber_policy 致命且不可重试：不 failover。下发标准 error chunk +
@@ -1123,7 +1134,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				streamNonFailoverErr = errOpenAICyberPolicyForwarded
 				return true
 			}
-			if geminiResponseStarted && geminiChatNativeUnavailable(payloadBytes) {
+			if nativeUnavailable {
 				const upstreamStatus = http.StatusServiceUnavailable
 				message = s.recordOpenAIStreamUpstreamErrorWithStatus(c, account, false, requestID, "http_error", payloadBytes, message, upstreamStatus)
 				status, errType, errMsg, _ := applyErrorPassthroughRule(c, account.Platform, upstreamStatus,
