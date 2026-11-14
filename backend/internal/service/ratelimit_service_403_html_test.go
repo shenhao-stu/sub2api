@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -260,6 +261,38 @@ func TestIsHTMLResponse(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			require.Equal(t, tc.want, isHTMLResponse([]byte(tc.body)))
+		})
+	}
+}
+
+func TestOpenAIAPIKeyAntigravityChildSuspensionDoesNotPenalizePool(t *testing.T) {
+	const suspension = `{"error":{"code":403,"status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","domain":"cloudcode-pa.googleapis.com","reason":"TOS_VIOLATION"}]}}`
+	for _, statusBody := range []struct {
+		name        string
+		accountType string
+		body        string
+		wantPenalty bool
+	}{
+		{"credential behind compatible relay", AccountTypeAPIKey, suspension, false},
+		{"direct OpenAI credential", AccountTypeOAuth, suspension, true},
+		{"different Google service", AccountTypeAPIKey, strings.ReplaceAll(suspension, "cloudcode-pa.googleapis.com", "example.googleapis.com"), true},
+		{"generic permission failure", AccountTypeAPIKey, strings.ReplaceAll(suspension, "TOS_VIOLATION", "SERVICE_DISABLED"), true},
+		{"plain text label", AccountTypeAPIKey, "TOS_VIOLATION", true},
+		{"string status code", AccountTypeAPIKey, strings.ReplaceAll(suspension, `"code":403`, `"code":"403"`), true},
+	} {
+		t.Run(statusBody.name, func(t *testing.T) {
+			h := newOpenAI403TestHarness(t, 601, 1)
+			h.account.Type = statusBody.accountType
+			gateway := &OpenAIGatewayService{rateLimitService: h.svc}
+			blocked := gateway.handleOpenAIAccountUpstreamError(context.Background(), h.account,
+				http.StatusForbidden, http.Header{}, []byte(statusBody.body), "ultra/gemini-4-argon-high")
+			require.Equal(t, statusBody.wantPenalty, blocked)
+			if statusBody.wantPenalty {
+				require.Equal(t, 1, h.counter.increments)
+				require.Equal(t, 1, h.repo.tempCalls)
+			} else {
+				h.requireNoAccountPenalty(t)
+			}
 		})
 	}
 }
