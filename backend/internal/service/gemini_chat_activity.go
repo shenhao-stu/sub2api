@@ -11,18 +11,35 @@ import (
 
 func geminiChatNativeUnavailable(payload []byte) bool {
 	event, ok := openAIGenerationFailureObject(payload)
-	if !ok || !bytes.Equal(event["type"], []byte(`"error"`)) || event["response"] != nil {
+	if !ok {
 		return false
 	}
-	detail, ok := openAIGenerationFailureObject(event["error"])
+	owner := event
+	switch string(event["type"]) {
+	case `"error"`:
+		if event["response"] != nil {
+			return false
+		}
+	case `"response.failed"`:
+		if event["error"] != nil {
+			return false
+		}
+		owner, ok = openAIGenerationFailureObject(event["response"])
+		if !ok || !bytes.Equal(owner["status"], []byte(`"failed"`)) {
+			return false
+		}
+	default:
+		return false
+	}
+	detail, ok := openAIGenerationFailureObject(owner["error"])
 	if !ok || !bytes.Equal(detail["code"], []byte(`503`)) || !bytes.Equal(detail["status"], []byte(`"UNAVAILABLE"`)) {
 		return false
 	}
 	if kind := detail["type"]; kind != nil && !bytes.Equal(kind, []byte(`"server_error"`)) && !bytes.Equal(kind, []byte(`"upstream_error"`)) {
 		return false
 	}
-	for _, raw := range []gjson.Result{gjson.GetBytes(payload, "status"), gjson.GetBytes(payload, "status_code"), gjson.GetBytes(payload, "error.status_code")} {
-		if raw.Exists() && (raw.Type != gjson.Number || raw.Raw != "503") {
+	for _, path := range []string{"status", "status_code", "error.status_code", "response.status_code", "response.error.status_code"} {
+		if raw := gjson.GetBytes(payload, path); raw.Exists() && (raw.Type != gjson.Number || raw.Raw != "503") {
 			return false
 		}
 	}
