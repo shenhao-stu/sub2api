@@ -1077,6 +1077,11 @@ func (s *RateLimitService) handle403(ctx context.Context, account *Account, upst
 }
 
 func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account, upstreamMsg string, responseBody []byte) (shouldDisable bool) {
+	// A relay owns the suspended Google credential. Its own API key remains
+	// usable for other credentials and models.
+	if account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey && isAntigravityCredentialSuspension(responseBody) {
+		return false
+	}
 	// 上游代理 / CDN 在请求到达 OpenAI API 之前就拦下时，回的是 HTML 403 页面而不是
 	// {"error":{...}} 结构化错误。这类响应描述的是「这条链路 / 这个端点被挡了」，
 	// 不构成账号凭据或权限失效的证据——例如无效的 /v1/responses 子路径（#5334）。
@@ -1140,6 +1145,30 @@ func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account
 		"threshold", openAI403DisableThreshold,
 	)
 	return true
+}
+
+func isAntigravityCredentialSuspension(body []byte) bool {
+	if !gjson.ValidBytes(body) {
+		return false
+	}
+	upstreamError := gjson.GetBytes(body, "error")
+	code := upstreamError.Get("code")
+	if code.Type != gjson.Number || code.Num != http.StatusForbidden ||
+		upstreamError.Get("status").String() != "PERMISSION_DENIED" {
+		return false
+	}
+	details := upstreamError.Get("details")
+	if !details.IsArray() {
+		return false
+	}
+	for _, detail := range details.Array() {
+		if detail.Get("@type").String() == "type.googleapis.com/google.rpc.ErrorInfo" &&
+			detail.Get("domain").String() == "cloudcode-pa.googleapis.com" &&
+			detail.Get("reason").String() == "TOS_VIOLATION" {
+			return true
+		}
+	}
+	return false
 }
 
 // isCloudflareBotBlockResponse reports Cloudflare's WAF bot-signature response
