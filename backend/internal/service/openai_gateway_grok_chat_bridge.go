@@ -612,6 +612,9 @@ func (s *OpenAIGatewayService) forwardGrokChatCompletionsViaResponses(
 	if err != nil {
 		return nil, fmt.Errorf("build grok responses bridge request: %w", err)
 	}
+	if err := validatePublicGrokChatReasoningEffort(c, upstreamReq.URL.String(), upstreamModel, gjson.GetBytes(responsesBody, "reasoning.effort").String()); err != nil {
+		return nil, err
+	}
 	SetActualOpenAIUpstreamEndpoint(c, grokChatResponsesEndpoint)
 
 	proxyURL := ""

@@ -153,16 +153,8 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletionsWithStartTime(
 		if err != nil {
 			return nil, fmt.Errorf("normalize Grok chat reasoning effort: %w", err)
 		}
-		publicModel := xai.ResolveGrokTextResponsesModelID(upstreamModel)
-		if officialGrok && !isGrokCLIProxyTarget(targetURL) &&
-			(publicModel == "grok-4.6" || publicModel == "grok-4.7") &&
-			gjson.GetBytes(upstreamBody, "reasoning_effort").String() == "none" {
-			message := fmt.Sprintf("%s does not support reasoning_effort=none on Chat Completions. Omit reasoning_effort to use the model default.", publicModel)
-			writeOpenAIErrorFields(c, openAIClientErrorFields{
-				Type: "invalid_request_error", Code: "unsupported_value",
-				Param: "reasoning_effort", Message: message, StatusCode: http.StatusBadRequest,
-			}, false)
-			return nil, errors.New(message)
+		if err := validatePublicGrokChatReasoningEffort(c, targetURL, upstreamModel, gjson.GetBytes(upstreamBody, "reasoning_effort").String()); err != nil {
+			return nil, err
 		}
 	}
 

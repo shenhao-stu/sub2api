@@ -784,6 +784,23 @@ func normalizeGrokChatStop(body []byte, unsupported bool) ([]byte, error) {
 	return sjson.SetRawBytes(body, "stop", []byte("["+stop.Raw+"]"))
 }
 
+// validatePublicGrokChatReasoningEffort also applies when Chat is bridged to Responses.
+func validatePublicGrokChatReasoningEffort(c *gin.Context, targetURL, upstreamModel, effort string) error {
+	if effort != "none" || !xai.IsOfficialBaseURL(targetURL) || isGrokCLIProxyTarget(targetURL) {
+		return nil
+	}
+	model := xai.ResolveGrokTextResponsesModelID(upstreamModel)
+	if model != "grok-4.6" && model != "grok-4.7" {
+		return nil
+	}
+	message := fmt.Sprintf("%s does not support reasoning_effort=none on Chat Completions. Omit reasoning_effort to use the model default.", model)
+	writeOpenAIErrorFields(c, openAIClientErrorFields{
+		Type: "invalid_request_error", Code: "unsupported_value",
+		Param: "reasoning_effort", Message: message, StatusCode: http.StatusBadRequest,
+	}, false)
+	return errors.New(message)
+}
+
 func normalizeGrokChatReasoningEffort(body []byte, upstreamModel string) ([]byte, error) {
 	raw := strings.TrimSpace(gjson.GetBytes(body, "reasoning_effort").String())
 	if raw == "" {

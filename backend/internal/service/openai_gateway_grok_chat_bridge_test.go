@@ -231,6 +231,52 @@ func TestGrokChatResponsesRuntimeEligibility(t *testing.T) {
 	require.False(t, grokChatResponsesRuntimeEligible("grok-4.6", ""))
 }
 
+func TestForwardGrokChatViaResponsesPublicUnsupportedNone(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tt := range []struct {
+		name, model, baseURL, effort string
+		reject                       bool
+	}{
+		{"public 4.7", "grok-4.7", xai.DefaultBaseURL, `,"reasoning_effort":"none"`, true},
+		{"public 4.7 alias", "grok-4.7-latest", xai.DefaultBaseURL, `,"reasoning_effort":" NONE "`, true},
+		{"public 4.6", "grok-4.6", xai.DefaultBaseURL, `,"reasoning_effort":"none"`, true},
+		{"public omitted", "grok-4.7", xai.DefaultBaseURL, "", false},
+		{"public high", "grok-4.7", xai.DefaultBaseURL, `,"reasoning_effort":"high"`, false},
+		{"CLI", "grok-4.7", xai.DefaultCLIBaseURL, `,"reasoning_effort":"none"`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"model":"` + tt.model + `","messages":[{"role":"user","content":"hi"}],"stream":true,"prompt_cache_key":"synthetic-test"` + tt.effort + `}`)
+			require.True(t, grokChatResponsesRuntimeEligible(tt.model, "test"))
+			eligible, reason := grokChatResponsesBridgeEligibility(body)
+			require.True(t, eligible, reason)
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, grokChatRawEndpoint, bytes.NewReader(body))
+			c.Set("api_key", &APIKey{ID: 7101})
+			account := grokChatBridgeTestAccount(71)
+			account.Credentials["base_url"] = tt.baseURL
+			account.Credentials["model_mapping"] = nil
+			repo := &grokQuotaAccountRepo{mockAccountRepoForPlatform: &mockAccountRepoForPlatform{accountsByID: map[int64]*Account{account.ID: account}}}
+			upstream := &httpUpstreamRecorder{resp: grokChatBridgeCompletedResponse("resp_grok_chat_effort", 12)}
+			svc := &OpenAIGatewayService{billingService: newLocalFixtureBilling(), httpUpstream: upstream, grokTokenProvider: NewGrokTokenProvider(repo, nil), accountRepo: repo}
+			result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+			if tt.reject {
+				require.Nil(t, upstream.lastReq, "unsupported effort reached the provider")
+				require.Error(t, err)
+				require.Nil(t, result)
+				require.Equal(t, http.StatusBadRequest, recorder.Code)
+				require.Equal(t, "unsupported_value", gjson.GetBytes(recorder.Body.Bytes(), "error.code").String())
+				require.Equal(t, "reasoning_effort", gjson.GetBytes(recorder.Body.Bytes(), "error.param").String())
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.NotNil(t, upstream.lastReq)
+			require.Equal(t, "/v1/responses", upstream.lastReq.URL.Path)
+		})
+	}
+}
+
 func TestForwardGrokChatViaResponsesNonStreamingCachesAndReturnsChat(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
