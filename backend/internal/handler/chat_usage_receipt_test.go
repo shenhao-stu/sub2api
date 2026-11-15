@@ -66,7 +66,7 @@ func (r *chatHandlerReceiptRepo) GetUsageReceipt(_ context.Context, key int64, i
 
 func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, mode := range []string{"normal", "queue_headers_committed", "no_account", "invalid_id", "kimi_unsupported", "grok_rejected_effort", "grok45_rejected_effort", "journal_capacity"} {
+	for _, mode := range []string{"normal", "queue_headers_committed", "no_account", "invalid_id", "kimi_unsupported", "grok_rejected_effort", "grok45_rejected_effort", "gemini_duplicate_arguments", "gemini_duplicate_no_receipt", "gemini_duplicate_responses", "gemini_duplicate_queued", "journal_capacity"} {
 		t.Run(mode, func(t *testing.T) {
 			grokModel := ""
 			switch mode {
@@ -100,6 +100,9 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 			cache := service.NewBillingCacheService(nil, users, nil, nil, nil, nil, cfg, nil)
 			t.Cleanup(cache.Stop)
 			upstream := &grokMediaSlotUpstream{call: func(req *http.Request, _ int64) (*http.Response, error) {
+				if strings.HasPrefix(mode, "gemini_duplicate_") {
+					return &http.Response{StatusCode: 400, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"message":"Repeated map key in function_call.args"}}`))}, nil
+				}
 				return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader("data: {\"type\":\"response.output_text.delta\",\"delta\":\"synthetic\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"output_tokens\":7,\"input_tokens_details\":{\"cached_tokens\":90}}}}\n\n"))}, nil
 			}}
 			gateway := service.NewOpenAIGatewayService(accountRepo, repo, billing, users, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), nil, cache, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
@@ -122,7 +125,7 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 				c.Next()
 			})
 			router.POST(service.ChatReceiptEndpoint, func(c *gin.Context) {
-				if mode == "queue_headers_committed" {
+				if mode == "queue_headers_committed" || mode == "gemini_duplicate_queued" {
 					// Real queues run only after the request body has already been read.
 					body, _ := io.ReadAll(c.Request.Body)
 					c.Request.Body = io.NopCloser(strings.NewReader(string(body)))
@@ -142,6 +145,12 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 			var lastBody string
 			send := func() *http.Response {
 				body := `{"model":"gemini-4-argon","messages":[{"role":"user","content":"synthetic"}],"stream":true}`
+				if strings.HasPrefix(mode, "gemini_duplicate_") {
+					body = `{"model":"gemini-4-argon","messages":[{"role":"assistant","tool_calls":[{"id":"synthetic-call","type":"function","function":{"name":"synthetic_echo","arguments":"{\"items\":[{\"x\":1,\"x\":2}]}"}}]},{"role":"tool","tool_call_id":"synthetic-call","content":"synthetic result"}],"stream":true}`
+				}
+				if mode == "gemini_duplicate_responses" {
+					body = `{"model":"gemini-4-argon","input":[{"type":"function_call","call_id":"synthetic-call","name":"echo","arguments":"{\"x\":1,\"x\":2}"},{"type":"function_call_output","call_id":"synthetic-call","output":"synthetic result"}],"stream":true}`
+				}
 				if mode == "kimi_unsupported" {
 					body = strings.Replace(body, "gemini-4-argon", "kimi-k3", 1)
 				}
@@ -150,8 +159,10 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 				}
 				req, err := http.NewRequest("POST", server.URL+service.ChatReceiptEndpoint, strings.NewReader(body))
 				require.NoError(t, err)
-				req.Header.Set(service.ChatReceiptVersionHeader, "v2")
-				req.Header.Set(service.ChatReceiptIDHeader, id)
+				if mode != "gemini_duplicate_no_receipt" && mode != "gemini_duplicate_responses" {
+					req.Header.Set(service.ChatReceiptVersionHeader, "v2")
+					req.Header.Set(service.ChatReceiptIDHeader, id)
+				}
 				resp, err := server.Client().Do(req)
 				require.NoError(t, err)
 				data, _ := io.ReadAll(resp.Body)
@@ -162,6 +173,23 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 			resp := send()
 			if mode == "journal_capacity" {
 				require.Equal(t, 503, resp.StatusCode)
+				require.Empty(t, resp.Header.Get(service.ChatReceiptVersionHeader))
+				require.Empty(t, resp.Header.Get(service.ChatReceiptIDHeader))
+				require.Nil(t, repo.claim)
+				require.Nil(t, repo.receipt)
+				require.Zero(t, upstream.calls)
+				require.Zero(t, len(billing.commands))
+				require.Zero(t, len(repo.created))
+				return
+			}
+			if strings.HasPrefix(mode, "gemini_duplicate_") {
+				if mode == "gemini_duplicate_queued" {
+					require.Equal(t, 200, resp.StatusCode)
+					require.Contains(t, lastBody, `"status_code":400`)
+				} else {
+					require.Equal(t, 400, resp.StatusCode)
+				}
+				require.Contains(t, lastBody, "duplicate_tool_argument")
 				require.Empty(t, resp.Header.Get(service.ChatReceiptVersionHeader))
 				require.Empty(t, resp.Header.Get(service.ChatReceiptIDHeader))
 				require.Nil(t, repo.claim)

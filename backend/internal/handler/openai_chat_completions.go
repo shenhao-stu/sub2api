@@ -278,6 +278,12 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			}
 			return
 		}
+		if err := h.gatewayService.ValidateGeminiChatToolArguments(c, account, forwardBody); err != nil {
+			if accountReleaseFunc != nil {
+				accountReleaseFunc()
+			}
+			return
+		}
 		if receiptRequested && !h.gatewayService.SupportsChatUsageReceipt(c.Request.Context(), account, forwardBody) {
 			if accountReleaseFunc != nil {
 				accountReleaseFunc()
