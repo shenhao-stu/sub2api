@@ -814,7 +814,7 @@ func validatePublicGrokChatReasoningEffort(c *gin.Context, targetURL, upstreamMo
 		return nil
 	}
 	model := xai.ResolveGrokTextResponsesModelID(upstreamModel)
-	if model != "grok-4.6" && model != "grok-4.7" {
+	if model != "grok-4.5" && model != "grok-4.6" && model != "grok-4.7" {
 		return nil
 	}
 	message := fmt.Sprintf("%s does not support reasoning_effort=none on Chat Completions. Omit reasoning_effort to use the model default.", model)

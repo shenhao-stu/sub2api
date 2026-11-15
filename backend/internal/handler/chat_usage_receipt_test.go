@@ -66,14 +66,21 @@ func (r *chatHandlerReceiptRepo) GetUsageReceipt(_ context.Context, key int64, i
 
 func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, mode := range []string{"normal", "queue_headers_committed", "no_account", "invalid_id", "kimi_unsupported", "grok_rejected_effort", "journal_capacity"} {
+	for _, mode := range []string{"normal", "queue_headers_committed", "no_account", "invalid_id", "kimi_unsupported", "grok_rejected_effort", "grok45_rejected_effort", "journal_capacity"} {
 		t.Run(mode, func(t *testing.T) {
+			grokModel := ""
+			switch mode {
+			case "grok_rejected_effort":
+				grokModel = "grok-4.7"
+			case "grok45_rejected_effort":
+				grokModel = "grok-4.5"
+			}
 			accounts := []service.Account{{ID: 19930, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"api_key": "synthetic"}, Extra: map[string]any{"openai_responses_supported": true}}}
 			if mode == "kimi_unsupported" {
 				accounts[0].Platform = service.PlatformKimi
 				accounts[0].Credentials["api_protocol"] = "chat_completions"
 			}
-			if mode == "grok_rejected_effort" {
+			if grokModel != "" {
 				accounts[0].Platform = service.PlatformGrok
 				accounts[0].Credentials["base_url"] = "https://api.x.ai"
 			}
@@ -108,7 +115,7 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 					key, _ := c.Get(string(middleware.ContextKeyAPIKey))
 					key.(*service.APIKey).Group.Platform = service.PlatformKimi
 				}
-				if mode == "grok_rejected_effort" {
+				if grokModel != "" {
 					key, _ := c.Get(string(middleware.ContextKeyAPIKey))
 					key.(*service.APIKey).Group.Platform = service.PlatformGrok
 				}
@@ -138,8 +145,8 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 				if mode == "kimi_unsupported" {
 					body = strings.Replace(body, "gemini-4-argon", "kimi-k3", 1)
 				}
-				if mode == "grok_rejected_effort" {
-					body = `{"model":"grok-4.7","messages":[{"role":"user","content":"synthetic"}],"reasoning_effort":"none","stream":true}`
+				if grokModel != "" {
+					body = `{"model":"` + grokModel + `","messages":[{"role":"user","content":"synthetic"}],"reasoning_effort":"none","stream":true}`
 				}
 				req, err := http.NewRequest("POST", server.URL+service.ChatReceiptEndpoint, strings.NewReader(body))
 				require.NoError(t, err)
@@ -164,7 +171,7 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 				require.Zero(t, len(repo.created))
 				return
 			}
-			if mode == "grok_rejected_effort" {
+			if grokModel != "" {
 				require.Equal(t, 400, resp.StatusCode)
 				require.Contains(t, lastBody, "unsupported_value")
 				require.Contains(t, lastBody, "reasoning_effort")
