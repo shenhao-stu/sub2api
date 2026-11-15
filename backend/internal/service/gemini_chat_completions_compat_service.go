@@ -956,7 +956,7 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 								}
 
 								delta := seenToolJSON.next(argsJSONText)
-								toolBoundary.observe(fc, seenToolJSON.seen.String())
+								toolBoundary.observe(fc)
 								if delta != "" {
 									if emitAnthropicEvent(&apicompat.AnthropicStreamEvent{
 										Type: "content_block_delta",
