@@ -759,7 +759,7 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 	var seenThought geminiTextDelta
 	openToolIndex := -1
 	openToolName := ""
-	openToolUpstreamID := ""
+	var toolBoundary geminiToolCallBoundary
 	var seenToolJSON geminiTextDelta
 
 	closeOpenBlock := func() bool {
@@ -778,6 +778,7 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 		disconnected := emitAnthropicEvent(&apicompat.AnthropicStreamEvent{Type: "content_block_stop"})
 		openToolIndex = -1
 		seenToolJSON.reset()
+		toolBoundary = geminiToolCallBoundary{}
 		return disconnected
 	}
 
@@ -924,7 +925,8 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 								if closeOpenBlock() {
 									return streamResult(), nil
 								}
-								if openToolIndex >= 0 && geminiToolCallStartsNewBlock(openToolUpstreamID, openToolName, seenToolJSON.seen.String(), fc) {
+								argsJSONText := geminiToolCallArgsJSON(fc["args"])
+								if openToolIndex >= 0 && toolBoundary.startsNewBlock(openToolName, seenToolJSON.seen.String(), argsJSONText, fc) {
 									if closeOpenTool() {
 										return streamResult(), nil
 									}
@@ -934,7 +936,6 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 									nextBlockIndex++
 									openToolIndex = idx
 									openToolName = name
-									openToolUpstreamID, _ = fc["id"].(string)
 									sawToolUse = true
 									callID := "toolu_" + randomHex(8)
 									if signature, _ := part["thoughtSignature"].(string); signature != "" {
@@ -954,19 +955,8 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 									}
 								}
 
-								argsJSONText := "{}"
-								switch v := fc["args"].(type) {
-								case nil:
-								case string:
-									if strings.TrimSpace(v) != "" {
-										argsJSONText = v
-									}
-								default:
-									if b, err := json.Marshal(v); err == nil && len(b) > 0 {
-										argsJSONText = string(b)
-									}
-								}
 								delta := seenToolJSON.next(argsJSONText)
+								toolBoundary.observe(fc, seenToolJSON.seen.String())
 								if delta != "" {
 									if emitAnthropicEvent(&apicompat.AnthropicStreamEvent{
 										Type: "content_block_delta",
