@@ -784,6 +784,30 @@ func normalizeGrokChatStop(body []byte, unsupported bool) ([]byte, error) {
 	return sjson.SetRawBytes(body, "stop", []byte("["+stop.Raw+"]"))
 }
 
+// ValidateGrokChatReceiptAdmission checks a known local rejection before the
+// relay acknowledges a durable claim. The raw and bridged forwarders still
+// guard their actual target for callers outside the Chat receipt handler.
+func (s *OpenAIGatewayService) ValidateGrokChatReceiptAdmission(c *gin.Context, account *Account, body []byte) error {
+	if !account.IsGrok() {
+		return nil
+	}
+	raw := strings.TrimSpace(gjson.GetBytes(body, "reasoning_effort").String())
+	if raw == "" {
+		raw = gjson.GetBytes(body, "reasoningEffort").String()
+	}
+	billingModel := resolveOpenAIForwardModel(account, gjson.GetBytes(body, "model").String(), "")
+	model := normalizeOpenAIModelForUpstream(account, billingModel)
+	effort, _ := normalizeGrokReasoningEffortValue(raw, model)
+	if effort != "none" {
+		return nil
+	}
+	target, err := buildGrokChatCompletionsURL(account, s.cfg, s.settingService)
+	if err != nil {
+		return nil // Let the selected forwarder report its own URL error.
+	}
+	return validatePublicGrokChatReasoningEffort(c, target, model, effort)
+}
+
 // validatePublicGrokChatReasoningEffort also applies when Chat is bridged to Responses.
 func validatePublicGrokChatReasoningEffort(c *gin.Context, targetURL, upstreamModel, effort string) error {
 	if effort != "none" || !xai.IsOfficialBaseURL(targetURL) || isGrokCLIProxyTarget(targetURL) {
