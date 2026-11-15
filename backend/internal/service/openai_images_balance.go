@@ -28,6 +28,22 @@ func isOpenAIImagesInsufficientBalance(body []byte) bool {
 	return hasOpenAIImagesInsufficientBalance(value, 0)
 }
 
+// New API compatible image providers expose their own account quota through
+// this pre-generation rejection. Require the HTTP status and typed envelope
+// so a normal 403 or an ambiguous server error keeps its original behavior.
+func isOpenAIImagesProviderQuotaRejection(status int, body []byte) bool {
+	if status != http.StatusForbidden {
+		return false
+	}
+	root, ok := receiptObject(body)
+	if !ok {
+		return false
+	}
+	upstreamError, ok := receiptObject(root["error"])
+	return ok && string(upstreamError["type"]) == `"new_api_error"` &&
+		string(upstreamError["code"]) == `"insufficient_user_quota"`
+}
+
 func hasOpenAIImagesInsufficientBalance(value any, depth int) bool {
 	if depth > 6 {
 		return false
@@ -68,14 +84,31 @@ func isOpenAIImagesErrorContainer(key string) bool {
 	}
 }
 
-func (s *OpenAIGatewayService) coolOpenAIImagesInsufficientBalance(ctx context.Context, account *Account) {
+func openAIImagesInsufficientBalanceScope(status int, upstreamModel string, body []byte) string {
+	if isOpenAIImagesProviderQuotaRejection(status, body) {
+		return upstreamModel
+	}
+	if isOpenAIImagesInsufficientBalance(body) {
+		return openAIImageGenerationRateLimitKey
+	}
+	return ""
+}
+
+func (s *OpenAIGatewayService) coolOpenAIImagesInsufficientBalance(ctx context.Context, account *Account, scope string) {
 	if s == nil || s.accountRepo == nil || account == nil {
 		return
 	}
 	now := time.Now()
 	resetAt := now.Add(openAIImagesBalanceCooldown)
-	setAccountModelRateLimitSnapshot(account, openAIImageGenerationRateLimitKey, resetAt, openAIImagesBalanceRateLimitReason, now)
-	if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, openAIImageGenerationRateLimitKey, resetAt, openAIImagesBalanceRateLimitReason); err != nil {
+	if existing := account.modelRateLimitResetAt(scope); existing != nil && !resetAt.After(*existing) {
+		return
+	}
+	setAccountModelRateLimitSnapshot(account, scope, resetAt, openAIImagesBalanceRateLimitReason, now)
+	persist := s.accountRepo.SetModelRateLimit
+	if repo, ok := s.accountRepo.(accountModelRateLimitExtender); ok {
+		persist = repo.SetModelRateLimitIfLater
+	}
+	if err := persist(ctx, account.ID, scope, resetAt, openAIImagesBalanceRateLimitReason); err != nil {
 		slog.Warn("openai_images_balance_cooldown_failed", "account_id", account.ID, "error", err)
 	}
 }

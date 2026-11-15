@@ -801,8 +801,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{Platform: account.Platform, AccountID: account.ID, UpstreamStatusCode: resp.StatusCode, Kind: "failover", Message: "Private image peer confirmed refusal before provider dispatch"})
 			return nil, ErrPersonalNanoCapacity
 		}
-		if nano == nil && isOpenAIImagesInsufficientBalance(respBody) && imageRejectionHasNoGenerationEvidence(respBody) {
-			s.coolOpenAIImagesInsufficientBalance(upstreamCtx, account)
+		balanceScope := openAIImagesInsufficientBalanceScope(resp.StatusCode, upstreamModel, respBody)
+		if nano == nil && balanceScope != "" && imageRejectionHasNoGenerationEvidence(respBody) {
+			s.coolOpenAIImagesInsufficientBalance(upstreamCtx, account, balanceScope)
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,
 				ProxyID: opsUpstreamProxyID(account), ProxyName: opsUpstreamProxyName(account),
