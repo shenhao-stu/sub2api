@@ -183,6 +183,10 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			return result, err
 		}
 
+		if s.handleAnthropicIncompleteMessage(c, account, resp) {
+			return nil, errors.New(anthropicIncompleteMessageCode)
+		}
+
 		// 透传分支禁止 400 请求体降级重试（该重试会改写请求体）
 		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
 			if attempt < maxRetryAttempts {
