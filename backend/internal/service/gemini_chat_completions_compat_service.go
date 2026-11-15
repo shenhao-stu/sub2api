@@ -758,6 +758,8 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 	var seenText geminiTextDelta
 	var seenThought geminiTextDelta
 	openToolIndex := -1
+	openToolName := ""
+	openToolUpstreamID := ""
 	var seenToolJSON geminiTextDelta
 
 	closeOpenBlock := func() bool {
@@ -922,7 +924,7 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 								if closeOpenBlock() {
 									return streamResult(), nil
 								}
-								if openToolIndex >= 0 {
+								if openToolIndex >= 0 && geminiToolCallStartsNewBlock(openToolUpstreamID, openToolName, seenToolJSON.seen.String(), fc) {
 									if closeOpenTool() {
 										return streamResult(), nil
 									}
@@ -931,6 +933,8 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 									idx := nextBlockIndex
 									nextBlockIndex++
 									openToolIndex = idx
+									openToolName = name
+									openToolUpstreamID, _ = fc["id"].(string)
 									sawToolUse = true
 									callID := "toolu_" + randomHex(8)
 									if signature, _ := part["thoughtSignature"].(string); signature != "" {
