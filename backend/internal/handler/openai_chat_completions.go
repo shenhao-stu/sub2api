@@ -290,6 +290,12 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			return
 		}
 		if receiptRequested && !receiptClaimed {
+			if err := h.gatewayService.ValidateGrokChatReceiptAdmission(c, account, forwardBody); err != nil {
+				if accountReleaseFunc != nil {
+					accountReleaseFunc()
+				}
+				return
+			}
 			receiptCtx, receiptErr := h.gatewayService.BeginChatUsageReceipt(c.Request.Context(), apiKey.ID, c.GetHeader(service.ChatReceiptIDHeader), reqModel, body)
 			if receiptErr != nil {
 				if accountReleaseFunc != nil {
