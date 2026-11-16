@@ -80,3 +80,13 @@ func TestAffinityWaitBeforeSharedPreservesEligibilityAndSticky(t *testing.T) {
 		})
 	}
 }
+
+func TestAffinityWaitRejectedDedicatedFallsBackToShared(t *testing.T) {
+	f := newAffinityScheduleFixture(map[string]int64{"s": 1})
+	f.repo.accounts[0].Extra[AffinityWaitBeforeSharedExtraKey] = true
+	ctx := WithAccountAffinityTags(context.Background(), []string{"getoken:1"})
+	got, err := f.svc.SelectAccountWithLoadAwareness(ctx, nil, "s", affinityTestModel, map[int64]struct{}{1: {}}, "", 0)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), got.Account.ID)
+	require.True(t, got.Acquired)
+}

@@ -56,7 +56,7 @@ func onlyPoolWindowFields(object map[string]json.RawMessage, allowed ...string) 
 
 func (s *GatewayService) anthropicPoolWindowRejection(c *gin.Context, account *Account, resp *http.Response) *UpstreamFailoverError {
 	if account == nil || resp == nil || account.Platform != PlatformAnthropic || account.Type != AccountTypeAPIKey ||
-		!account.IsPoolMode() || account.IsCustomErrorCodesEnabled() || resp.StatusCode != http.StatusTooManyRequests || resp.Body == nil {
+		account.IsCustomErrorCodesEnabled() || resp.StatusCode != http.StatusTooManyRequests || resp.Body == nil {
 		return nil
 	}
 	source := resp.Body
@@ -65,18 +65,26 @@ func (s *GatewayService) anthropicPoolWindowRejection(c *gin.Context, account *A
 		return io.ReadAll(io.LimitReader(source, maxBody))
 	})
 	resp.Body = &anthropicErrorPrefixBody{prefix: bytes.NewReader(body), source: source, readErr: err}
-	if err != nil || len(body) >= maxBody || !isAnthropicPoolWindowRejection(body) ||
+	quotaGuard := IsAnthropicQuotaGuardRejection(resp.StatusCode, body)
+	poolWindow := account.IsPoolMode() && isAnthropicPoolWindowRejection(body)
+	if err != nil || len(body) >= maxBody || (!quotaGuard && !poolWindow) ||
 		len(matchTempUnschedulableRules(account, resp.StatusCode, body)) > 0 {
 		return nil
 	}
 	_ = resp.Body.Close()
+	reason := AnthropicPoolWindowCooldownReason
+	message := anthropicPoolWindowMessage
+	if quotaGuard {
+		reason = GatewayFailureReason(AnthropicQuotaGuardCode)
+		message = "Request exceeds this account's remaining quota budget; no model dispatch"
+	}
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,
 		UpstreamStatusCode: resp.StatusCode, UpstreamRequestID: firstNonEmpty(UpstreamRequestIDFromHeaders(account, resp.Header), strings.TrimSpace(resp.Header.Get("X-Request-Id"))),
-		Passthrough: true, Kind: string(AnthropicPoolWindowCooldownReason), Message: anthropicPoolWindowMessage,
+		Passthrough: true, Kind: string(reason), Message: message,
 	})
 	return &UpstreamFailoverError{
 		StatusCode: resp.StatusCode, ResponseBody: body, ResponseHeaders: resp.Header.Clone(),
-		Reason: AnthropicPoolWindowCooldownReason, ExcludeFromRetry: true,
+		Reason: reason, ExcludeFromRetry: true,
 	}
 }

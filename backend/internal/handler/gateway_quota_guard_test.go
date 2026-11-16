@@ -29,6 +29,7 @@ func TestAnthropicQuotaGuardKeepsCodeThroughPassthroughRule(t *testing.T) {
 		{"predispatch", upstream, true},
 		{"vm2api envelope without outer type", strings.Replace(upstream, `"type":"error",`, "", 1), true},
 		{"conflicting envelope", strings.Replace(upstream, `"type":"error",`, `"type":"message",`, 1), false},
+		{"metered response", strings.Replace(upstream, `"details":`, `"usage":{"input_tokens":1},"details":`, 1), false},
 		{"already dispatched", `{"type":"error","error":{"type":"rate_limit_error","code":"quota_guard_request_too_large","details":{"reason":"quota_guard_request_too_large","attempt_count":1}}}`, false},
 		{"missing dispatch evidence", `{"type":"error","error":{"type":"rate_limit_error","code":"quota_guard_request_too_large"}}`, false},
 		{"duplicate evidence", `{"type":"error","error":{"type":"rate_limit_error","code":"quota_guard_request_too_large","details":{"reason":"quota_guard_request_too_large","attempt_count":1,"attempt_count":0}}}`, false},

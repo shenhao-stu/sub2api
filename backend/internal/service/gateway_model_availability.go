@@ -102,6 +102,7 @@ func (s *GatewayService) DiagnoseModelAvailabilityForPlatform(
 		return ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: true}
 	}
 
+	accounts = filterAccountsByAffinityVisibility(ctx, accounts)
 	diag := ModelAvailabilityDiagnosis{}
 	var supported []*Account
 	for i := range accounts {

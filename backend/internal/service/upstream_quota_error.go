@@ -42,14 +42,14 @@ func IsAnthropicQuotaGuardRejection(status int, body []byte) bool {
 		return false
 	}
 	root, ok := receiptObject(body)
-	if !ok {
+	if !ok || !onlyPoolWindowFields(root, "type", "error", "status_code") {
 		return false
 	}
 	if kind, exists := root["type"]; exists && string(kind) != `"error"` {
 		return false
 	}
 	failure, ok := receiptObject(root["error"])
-	if !ok || string(failure["type"]) != `"rate_limit_error"` || string(failure["code"]) != `"`+AnthropicQuotaGuardCode+`"` {
+	if !ok || !onlyPoolWindowFields(failure, "type", "code", "message", "details", "status_code") || string(failure["type"]) != `"rate_limit_error"` || string(failure["code"]) != `"`+AnthropicQuotaGuardCode+`"` {
 		return false
 	}
 	for _, object := range []map[string]json.RawMessage{root, failure} {
@@ -58,7 +58,7 @@ func IsAnthropicQuotaGuardRejection(status int, body []byte) bool {
 		}
 	}
 	details, ok := receiptObject(failure["details"])
-	return ok && string(details["reason"]) == `"`+AnthropicQuotaGuardCode+`"` && string(details["attempt_count"]) == "0"
+	return ok && onlyPoolWindowFields(details, "reason", "attempt_count", "available", "eligible", "excluded_accounts", "last_reason", "last_status", "message_en", "retry_after_ms", "soonest_available_ms", "sticky_cleared", "wait_ms", "wait_reasons") && string(details["reason"]) == `"`+AnthropicQuotaGuardCode+`"` && string(details["attempt_count"]) == "0"
 }
 
 // parseRetryAfterDelay 解析标准 Retry-After 头（秒数或 HTTP 日期）。
