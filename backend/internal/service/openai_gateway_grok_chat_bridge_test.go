@@ -245,7 +245,7 @@ func TestForwardGrokChatViaResponsesPublicUnsupportedNone(t *testing.T) {
 		{"CLI 4.5", "grok-4.5", xai.DefaultCLIBaseURL, `,"reasoning_effort":"none"`, false},
 		{"public omitted", "grok-4.7", xai.DefaultBaseURL, "", false},
 		{"public high", "grok-4.7", xai.DefaultBaseURL, `,"reasoning_effort":"high"`, false},
-		{"CLI", "grok-4.7", xai.DefaultCLIBaseURL, `,"reasoning_effort":"none"`, false},
+		{"CLI", "grok-4.7", xai.DefaultCLIBaseURL, `,"reasoning_effort":"none"`, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			body := []byte(`{"model":"` + tt.model + `","messages":[{"role":"user","content":"hi"}],"stream":true,"prompt_cache_key":"synthetic-test"` + tt.effort + `}`)

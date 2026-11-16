@@ -68,7 +68,7 @@ func TestForwardAsRawChatCompletions_GrokUnsupportedNoneRejectedBeforeDispatch(t
 		{"4.7 omitted", "grok-4.7", "https://api.x.ai", "", true, false},
 		{"4.7 high", "grok-4.7", "https://api.x.ai", `,"reasoning_effort":"high"`, false, false},
 		{"4.7 build fast", "grok-4.7-build-fast", "https://api.x.ai", `,"reasoning_effort":"none"`, false, false},
-		{"4.7 CLI upstream", "grok-4.7", "https://cli-chat-proxy.grok.com", `,"reasoning_effort":"none"`, false, false},
+		{"4.7 CLI upstream", "grok-4.7", "https://cli-chat-proxy.grok.com", `,"reasoning_effort":"none"`, false, true},
 		{"4.7 compatible upstream", "grok-4.7", "https://grok.example", `,"reasoning_effort":"none"`, false, false},
 		{"official CLI upstream", "grok-4.6", "https://cli-chat-proxy.grok.com", `,"reasoning_effort":"none"`, false, false},
 		{"compatible upstream", "grok-4.6", "https://grok.example", `,"reasoning_effort":"none"`, false, false},

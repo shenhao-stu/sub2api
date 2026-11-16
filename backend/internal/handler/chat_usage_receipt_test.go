@@ -66,11 +66,11 @@ func (r *chatHandlerReceiptRepo) GetUsageReceipt(_ context.Context, key int64, i
 
 func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, mode := range []string{"normal", "queue_headers_committed", "no_account", "invalid_id", "kimi_unsupported", "grok_rejected_effort", "grok45_rejected_effort", "gemini_duplicate_arguments", "gemini_duplicate_no_receipt", "gemini_duplicate_responses", "gemini_duplicate_queued", "journal_capacity"} {
+	for _, mode := range []string{"normal", "queue_headers_committed", "no_account", "invalid_id", "kimi_unsupported", "grok_rejected_effort", "grok_cli_rejected_effort", "grok45_rejected_effort", "gemini_duplicate_arguments", "gemini_duplicate_no_receipt", "gemini_duplicate_responses", "gemini_duplicate_queued", "journal_capacity", "astra_none", "astra_none_no_receipt", "astra_none_queued", "astra_none_responses", "astra_high"} {
 		t.Run(mode, func(t *testing.T) {
 			grokModel := ""
 			switch mode {
-			case "grok_rejected_effort":
+			case "grok_rejected_effort", "grok_cli_rejected_effort":
 				grokModel = "grok-4.7"
 			case "grok45_rejected_effort":
 				grokModel = "grok-4.5"
@@ -83,6 +83,10 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 			if grokModel != "" {
 				accounts[0].Platform = service.PlatformGrok
 				accounts[0].Credentials["base_url"] = "https://api.x.ai"
+			}
+			if mode == "grok_cli_rejected_effort" {
+				accounts[0].Type = service.AccountTypeOAuth
+				accounts[0].Credentials["base_url"] = "https://cli-chat-proxy.grok.com"
 			}
 			if mode == "no_account" {
 				accounts = nil
@@ -100,6 +104,9 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 			cache := service.NewBillingCacheService(nil, users, nil, nil, nil, nil, cfg, nil)
 			t.Cleanup(cache.Stop)
 			upstream := &grokMediaSlotUpstream{call: func(req *http.Request, _ int64) (*http.Response, error) {
+				if strings.HasPrefix(mode, "astra_none") {
+					return &http.Response{StatusCode: 400, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"unsupported_value","param":"reasoning.effort","type":"invalid_request_error","message":"Unsupported effort none"}}`))}, nil
+				}
 				if strings.HasPrefix(mode, "gemini_duplicate_") {
 					return &http.Response{StatusCode: 400, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"message":"Repeated map key in function_call.args"}}`))}, nil
 				}
@@ -125,7 +132,7 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 				c.Next()
 			})
 			router.POST(service.ChatReceiptEndpoint, func(c *gin.Context) {
-				if mode == "queue_headers_committed" || mode == "gemini_duplicate_queued" {
+				if mode == "queue_headers_committed" || mode == "gemini_duplicate_queued" || mode == "astra_none_queued" {
 					// Real queues run only after the request body has already been read.
 					body, _ := io.ReadAll(c.Request.Body)
 					c.Request.Body = io.NopCloser(strings.NewReader(string(body)))
@@ -151,6 +158,15 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 				if mode == "gemini_duplicate_responses" {
 					body = `{"model":"gemini-4-argon","input":[{"type":"function_call","call_id":"synthetic-call","name":"echo","arguments":"{\"x\":1,\"x\":2}"},{"type":"function_call_output","call_id":"synthetic-call","output":"synthetic result"}],"stream":true}`
 				}
+				if strings.HasPrefix(mode, "astra_none") {
+					body = `{"model":"gpt-6-astra","messages":[{"role":"user","content":"synthetic"}],"reasoning_effort":"none","stream":true}`
+				}
+				if mode == "astra_high" {
+					body = `{"model":"gpt-6-astra","messages":[{"role":"user","content":"synthetic"}],"reasoning_effort":"high","stream":true}`
+				}
+				if mode == "astra_none_responses" {
+					body = `{"model":"gpt-6-astra","input":"synthetic","reasoning":{"effort":"none"},"stream":true}`
+				}
 				if mode == "kimi_unsupported" {
 					body = strings.Replace(body, "gemini-4-argon", "kimi-k3", 1)
 				}
@@ -159,7 +175,7 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 				}
 				req, err := http.NewRequest("POST", server.URL+service.ChatReceiptEndpoint, strings.NewReader(body))
 				require.NoError(t, err)
-				if mode != "gemini_duplicate_no_receipt" && mode != "gemini_duplicate_responses" {
+				if mode != "gemini_duplicate_no_receipt" && mode != "gemini_duplicate_responses" && mode != "astra_none_no_receipt" && mode != "astra_none_responses" {
 					req.Header.Set(service.ChatReceiptVersionHeader, "v2")
 					req.Header.Set(service.ChatReceiptIDHeader, id)
 				}
@@ -171,6 +187,27 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 				return resp
 			}
 			resp := send()
+			if strings.HasPrefix(mode, "astra_none") {
+				if mode == "astra_none_queued" {
+					require.Equal(t, 200, resp.StatusCode)
+					require.Contains(t, lastBody, `"status_code":400`)
+				} else {
+					require.Equal(t, 400, resp.StatusCode)
+				}
+				require.Contains(t, lastBody, "unsupported_value")
+				if mode == "astra_none_responses" {
+					require.Contains(t, lastBody, "reasoning.effort")
+				} else {
+					require.Contains(t, lastBody, "reasoning_effort")
+				}
+				require.Empty(t, resp.Header.Get(service.ChatReceiptVersionHeader))
+				require.Nil(t, repo.claim)
+				require.Nil(t, repo.receipt)
+				require.Zero(t, upstream.calls)
+				require.Zero(t, len(billing.commands))
+				require.Zero(t, len(repo.created))
+				return
+			}
 			if mode == "journal_capacity" {
 				require.Equal(t, 503, resp.StatusCode)
 				require.Empty(t, resp.Header.Get(service.ChatReceiptVersionHeader))
@@ -231,7 +268,7 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 				return
 			}
 			require.Equal(t, 200, resp.StatusCode)
-			if mode == "normal" {
+			if mode == "normal" || mode == "astra_high" {
 				require.Equal(t, "v2", resp.Header.Get(service.ChatReceiptVersionHeader))
 				require.Equal(t, id, resp.Header.Get(service.ChatReceiptIDHeader))
 			} else {
@@ -249,7 +286,7 @@ func TestChatReceiptActualHandlerNegotiation(t *testing.T) {
 			require.NotContains(t, string(data), "account_id")
 			require.NotContains(t, string(data), `"claim"`)
 			require.Equal(t, 1, upstream.calls)
-			if mode == "normal" {
+			if mode == "normal" || mode == "astra_high" {
 				again := send()
 				require.Equal(t, 409, again.StatusCode)
 				require.Empty(t, again.Header.Get(service.ChatReceiptVersionHeader))
