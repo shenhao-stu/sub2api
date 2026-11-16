@@ -20,6 +20,9 @@ import (
 const (
 	// AffinityTagsExtraKey 账号 extra 中保存标签数组的键。
 	AffinityTagsExtraKey = "affinity_tags"
+	// AffinityWaitBeforeSharedExtraKey keeps new selections on eligible dedicated
+	// accounts while busy. Existing sticky sessions and eligibility gates still apply.
+	AffinityWaitBeforeSharedExtraKey = "affinity_wait_before_shared"
 	// AccountAffinityHeader 可信调用方传递用户标识的请求头。
 	AccountAffinityHeader = "X-GeToken-User-Id"
 	// defaultAccountAffinityTagPrefix 由用户标识派生标签时使用的默认前缀。
@@ -262,6 +265,29 @@ func filterByAffinityPreference(ctx context.Context, accounts []accountWithLoad)
 	}
 	if len(preferred) == 0 {
 		return accounts
+	}
+	return preferred
+}
+
+// filterAffinityWaitCandidates runs after eligibility and sticky selection, but
+// before load filtering. Disabled or quota-limited accounts cannot hold the pool.
+func filterAffinityWaitCandidates(ctx context.Context, accounts []*Account) []*Account {
+	tags := AccountAffinityTagsFromContext(ctx)
+	wait := false
+	for _, account := range accounts {
+		if isAffinityPreferred(tags, account) {
+			enabled, _ := account.Extra[AffinityWaitBeforeSharedExtraKey].(bool)
+			wait = wait || enabled
+		}
+	}
+	if !wait {
+		return accounts
+	}
+	preferred := make([]*Account, 0, len(accounts))
+	for _, account := range accounts {
+		if isAffinityPreferred(tags, account) {
+			preferred = append(preferred, account)
+		}
 	}
 	return preferred
 }
