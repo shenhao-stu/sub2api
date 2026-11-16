@@ -18,10 +18,16 @@ func (h *GatewayHandler) rejectInvalidNativeToolResult(c *gin.Context, key *serv
 	if platform, forced := middleware.GetForcePlatformFromContext(c); forced && platform != service.PlatformAnthropic {
 		return false
 	}
-	if err := service.ValidateNativeClaudeToolResults(parsed.MessagesRaw()); err != nil {
+	err := service.ValidateNativeClaudeToolDefinitions(parsed.Body.Bytes())
+	code := "invalid_tool_definition"
+	if err == nil {
+		err = service.ValidateNativeClaudeToolResults(parsed.MessagesRaw())
+		code = "invalid_tool_result"
+	}
+	if err != nil {
 		setOpsRequestContext(c, parsed.Model, parsed.Stream)
 		setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(parsed.Stream, false)))
-		h.errorResponseWithCode(c, http.StatusBadRequest, "invalid_request_error", "invalid_tool_result", err.Error())
+		h.errorResponseWithCode(c, http.StatusBadRequest, "invalid_request_error", code, err.Error())
 		return true
 	}
 	return false

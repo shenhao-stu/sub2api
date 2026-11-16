@@ -11,6 +11,37 @@ import (
 
 var nativeClaudeToolReferenceName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
+// ValidateNativeClaudeToolDefinitions mirrors the native relay's stateless
+// tool schema contract. Error messages identify fields without echoing values.
+func ValidateNativeClaudeToolDefinitions(body []byte) error {
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.Exists() {
+		return nil
+	}
+	if !tools.IsArray() {
+		return fmt.Errorf("tools: expected an array")
+	}
+	names := make(map[string]struct{})
+	var invalid error
+	tools.ForEach(func(i, tool gjson.Result) bool {
+		name := tool.Get("name")
+		_, duplicate := names[name.Str]
+		switch {
+		case !tool.IsObject():
+			invalid = fmt.Errorf("tools[%d]: expected an object", i.Int())
+		case name.Type != gjson.String || !nativeClaudeToolReferenceName.MatchString(name.Str) || duplicate:
+			invalid = fmt.Errorf("tools[%d].name: expected a unique name with 1–64 letters, digits, underscores or hyphens", i.Int())
+		case !tool.Get("input_schema").IsObject():
+			invalid = fmt.Errorf("tools[%d].input_schema: expected an object", i.Int())
+		case tool.Get("description").Exists() && tool.Get("description").Type != gjson.String:
+			invalid = fmt.Errorf("tools[%d].description: expected a string", i.Int())
+		}
+		names[name.Str] = struct{}{}
+		return invalid == nil
+	})
+	return invalid
+}
+
 // ValidateNativeClaudeToolResults checks the stateless part of the native
 // Messages tool result contract. The relay still owns session validation.
 func ValidateNativeClaudeToolResults(messages []byte) error {
