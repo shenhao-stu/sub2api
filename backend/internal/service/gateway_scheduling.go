@@ -273,6 +273,15 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		}
 	}
 
+	// A queue remains available when no eligible peer can acquire a real slot.
+	var deferredSticky *Account
+	stickyWait := func(account *Account) (*AccountSelectionResult, error) {
+		return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
+			AccountID: account.ID, MaxConcurrency: account.Concurrency,
+			Timeout: cfg.StickySessionWaitTimeout, MaxWaiting: cfg.StickySessionMaxWaiting,
+		})
+	}
+
 	// ============ Layer 1: 模型路由优先选择（优先级高于粘性会话） ============
 	if len(routingAccountIDs) > 0 && s.concurrencyService != nil {
 		// 1. 过滤出路由列表中可调度的账号
@@ -387,7 +396,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 							}
 
 							if stickyCacheMissReason == "" {
-								waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, stickyAccountID)
+								waitingCount, waitErr := s.concurrencyService.GetAccountWaitingCount(ctx, stickyAccountID)
 								if waitingCount < cfg.StickySessionMaxWaiting {
 									// 会话数量限制检查（等待计划也需要占用会话配额）
 									if !s.checkAndRegisterSession(ctx, stickyAccount, sessionHash) {
@@ -397,12 +406,10 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 										// 必须走 newSelectionResult 以 hydrate 账号凭证：
 										// 调度快照中的账号是精简版（OAuth token 等被剥离），
 										// 直接返回会导致后续转发缺少凭证而鉴权失败。
-										return s.newSelectionResult(ctx, stickyAccount, false, nil, &AccountWaitPlan{
-											AccountID:      stickyAccountID,
-											MaxConcurrency: stickyAccount.Concurrency,
-											Timeout:        cfg.StickySessionWaitTimeout,
-											MaxWaiting:     cfg.StickySessionMaxWaiting,
-										})
+										if err != nil || waitErr != nil || result == nil || result.Acquired || !stickyAccount.prefersReadyPeer(ctx) {
+											return stickyWait(stickyAccount)
+										}
+										deferredSticky = stickyAccount
 									}
 								} else {
 									stickyCacheMissReason = "wait_queue_full"
@@ -499,24 +506,25 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 						return s.newSelectionResult(ctx, item.account, true, result.ReleaseFunc, nil)
 					}
 				}
-
-				// 5. 所有路由账号槽位满，尝试返回等待计划（选择负载最低的）
-				// 遍历找到第一个满足会话限制的账号
-				for _, item := range routingAvailable {
-					if !s.checkAndRegisterSession(ctx, item.account, sessionHash) {
-						continue // 会话限制已满，尝试下一个
-					}
-					if s.debugModelRoutingEnabled() {
-						logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] routed wait: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), item.account.ID)
-					}
-					return s.newSelectionResult(ctx, item.account, false, nil, &AccountWaitPlan{
-						AccountID:      item.account.ID,
-						MaxConcurrency: item.account.Concurrency,
-						Timeout:        cfg.StickySessionWaitTimeout,
-						MaxWaiting:     cfg.StickySessionMaxWaiting,
-					})
+			}
+			if deferredSticky != nil {
+				return stickyWait(deferredSticky)
+			}
+			// 5. 所有路由账号槽位满，尝试返回等待计划（选择负载最低的）
+			// 遍历找到第一个满足会话限制的账号
+			for _, item := range routingAvailable {
+				if !s.checkAndRegisterSession(ctx, item.account, sessionHash) {
+					continue // 会话限制已满，尝试下一个
 				}
-				// 所有路由账号会话限制都已满，继续到 Layer 2 回退
+				if s.debugModelRoutingEnabled() {
+					logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] routed wait: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), item.account.ID)
+				}
+				return s.newSelectionResult(ctx, item.account, false, nil, &AccountWaitPlan{
+					AccountID:      item.account.ID,
+					MaxConcurrency: item.account.Concurrency,
+					Timeout:        cfg.StickySessionWaitTimeout,
+					MaxWaiting:     cfg.StickySessionMaxWaiting,
+				})
 			}
 			// 路由列表中的账号都不可用（负载率 >= 100），继续到 Layer 2 回退
 			logger.LegacyPrintf("service.gateway", "[ModelRouting] All routed accounts unavailable for model=%s, falling back to normal selection", requestedModel)
@@ -597,7 +605,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 						)
 					}
 
-					waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, accountID)
+					waitingCount, waitErr := s.concurrencyService.GetAccountWaitingCount(ctx, accountID)
 					if waitingCount < cfg.StickySessionMaxWaiting {
 						// 会话数量限制检查（等待计划也需要占用会话配额）
 						if !s.checkAndRegisterSession(ctx, account, sessionHash) {
@@ -608,12 +616,10 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 								"session", shortSessionHash(sessionHash),
 								"result", "wait_plan",
 							)
-							return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
-								AccountID:      accountID,
-								MaxConcurrency: account.Concurrency,
-								Timeout:        cfg.StickySessionWaitTimeout,
-								MaxWaiting:     cfg.StickySessionMaxWaiting,
-							})
+							if err != nil || waitErr != nil || result == nil || result.Acquired || !account.prefersReadyPeer(ctx) {
+								return stickyWait(account)
+							}
+							deferredSticky = account
 						}
 					}
 				} else if !clearSticky {
@@ -697,6 +703,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	}
 
 	if len(candidates) == 0 {
+		if deferredSticky != nil {
+			return stickyWait(deferredSticky)
+		}
 		if channelRestrictedCount > 0 {
 			slog.Warn("channel pricing restriction blocked request",
 				"group_id", derefGroupID(groupID),
@@ -780,6 +789,10 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 			available = newAvailable
 		}
+	}
+
+	if deferredSticky != nil {
+		return stickyWait(deferredSticky)
 	}
 
 	// ============ Layer 3: 兜底排队 ============
