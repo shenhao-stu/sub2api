@@ -810,10 +810,15 @@ func (s *OpenAIGatewayService) ValidateGrokChatReceiptAdmission(c *gin.Context, 
 
 // validatePublicGrokChatReasoningEffort also applies when Chat is bridged to Responses.
 func validatePublicGrokChatReasoningEffort(c *gin.Context, targetURL, upstreamModel, effort string) error {
-	if effort != "none" || !xai.IsOfficialBaseURL(targetURL) || isGrokCLIProxyTarget(targetURL) {
+	if effort != "none" || !xai.IsOfficialBaseURL(targetURL) {
 		return nil
 	}
 	model := xai.ResolveGrokTextResponsesModelID(upstreamModel)
+	// The CLI provider rejects none on 4.7. Earlier CLI models retain their
+	// existing behavior; the public API restriction also covers 4.5 and 4.6.
+	if isGrokCLIProxyTarget(targetURL) && model != "grok-4.7" {
+		return nil
+	}
 	if model != "grok-4.5" && model != "grok-4.6" && model != "grok-4.7" {
 		return nil
 	}
