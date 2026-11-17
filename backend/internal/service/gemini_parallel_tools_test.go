@@ -65,6 +65,7 @@ func TestGeminiParallelToolStreams(t *testing.T) {
 				_, _ = upstream.WriteString(`data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":7,"cachedContentTokenCount":3}}` + "\n\ndata: [DONE]\n\n")
 				rec := httptest.NewRecorder()
 				c, _ := gin.CreateTestContext(rec)
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 				svc := &GeminiMessagesCompatService{}
 				resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(upstream.String()))}
 				var result *geminiStreamResult

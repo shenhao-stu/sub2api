@@ -560,6 +560,16 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 		descriptor.Slug = modelID
 		descriptor.officialMetadata = openai.CodexGPT61TerraMetadata
 	}
+	if id := openai.GPT62ModelID(modelID); id != "" {
+		raw := openai.CodexGPT62AstraMetadata
+		if id == "gpt-6.2-sol" {
+			raw = openai.CodexGPT62SolMetadata
+		}
+		if err := json.Unmarshal(raw, &descriptor); err != nil {
+			panic(err)
+		}
+		descriptor.Slug = modelID
+	}
 	return descriptor
 }
 
@@ -583,6 +593,9 @@ func configuredCodexServiceTiersForModel(modelID string) []configuredCodexServic
 }
 
 func configuredCodexSupportsPriorityServiceTier(modelID string) bool {
+	if openai.GPT62ModelID(modelID) != "" {
+		return true
+	}
 	normalized := canonicalizeOpenAIModelAliasSpelling(modelID)
 	for _, family := range []string{"gpt-5.4", "gpt-5.5", "gpt-5.6"} {
 		if normalized == family || strings.HasPrefix(normalized, family+"-") {
@@ -594,6 +607,9 @@ func configuredCodexSupportsPriorityServiceTier(modelID string) bool {
 }
 
 func configuredCodexSupportsUltrafastServiceTier(modelID string) bool {
+	if openai.GPT62ModelID(modelID) != "" {
+		return true
+	}
 	return normalizeKnownOpenAICodexModel(modelID) == "gpt-5.6-sol"
 }
 
