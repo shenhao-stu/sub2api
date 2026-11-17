@@ -14,6 +14,8 @@ const sessionAdmissionBodyLimit = 64 << 10
 const sessionAdmissionRejection = "This group only accepts sessions first seen here."
 const sessionPolicyBlockRejection = "当前会话因内容审核违规已被拉黑，请使用 /new 开启新会话，或联系管理员解除。"
 const nativeSessionBusy = "session_busy"
+const nativeSessionCapacity = "native_session_capacity"
+const nativeMemoryPressure = "native_memory_pressure"
 const nativeIngressBusy = "Relay capacity is busy; retry later."
 
 // Match request admission errors separately from provider-wide 429 responses.
@@ -60,6 +62,13 @@ func sessionAdmissionRejectionMessage(status int, body []byte) string {
 		return message
 	case kind == "rate_limit_error" && code == "upstream_rate_limit" && message == nativeSessionBusy:
 		return message
+	case kind == "rate_limit_error" && code == "upstream_rate_limit" && (message == nativeSessionCapacity || message == nativeMemoryPressure):
+		// vm2api wraps local CLI admission failures in a generic 429. Require
+		// its full no-reset envelope before suppressing account-level cooldown.
+		details, ok := receiptObject(fields["details"])
+		if ok && string(details["upstream_status"]) == "429" && string(details["upstream_type"]) == `"api_error"` && string(details["retry_after"]) == "null" {
+			return message
+		}
 	case kind == "overloaded_error" && code == "native_ingress_busy" && message == nativeIngressBusy && envelope["type"] != nil:
 		return message
 	}
@@ -84,6 +93,8 @@ func (s *GatewayService) handleSessionAdmissionResponse(c *gin.Context, account 
 		fields = openAIClientErrorFields{Type: "permission_error", Code: "upstream_session_policy_blocked", Message: "The upstream blocked this conversation under its Usage Policy. In Claude Code, use /new to start a new conversation. Contact support if you believe this was a mistake.", StatusCode: http.StatusForbidden}
 	case nativeSessionBusy:
 		fields = openAIClientErrorFields{Type: "rate_limit_error", Code: "conversation_rate_limited", Message: "This conversation already has a request in progress. Wait for it to finish before retrying.", StatusCode: http.StatusTooManyRequests}
+	case nativeSessionCapacity, nativeMemoryPressure:
+		fields = openAIClientErrorFields{Type: "overloaded_error", Code: message, Message: "The model relay is temporarily at capacity. Please retry shortly.", StatusCode: http.StatusTooManyRequests}
 	case nativeIngressBusy:
 		fields = openAIClientErrorFields{Type: "overloaded_error", Code: "native_ingress_busy", Message: "The model relay is temporarily at capacity. Please retry shortly.", StatusCode: http.StatusTooManyRequests}
 	}
