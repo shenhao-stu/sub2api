@@ -124,6 +124,15 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			input.Body = input.Parsed.Body.Bytes()
 		}
 
+		if attempt == 1 {
+			release, err := s.acquireNativeIngress(c, account, len(wireBody))
+			if err != nil {
+				return nil, err
+			}
+			if release != nil {
+				defer release()
+			}
+		}
 		if err := checkAnthropicRefusalSession(ctx, c); err != nil {
 			return nil, err
 		}
@@ -162,7 +171,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			}
 		}
 
-		if failover := s.anthropicPoolWindowRejection(c, account, resp); failover != nil {
+		if failover := s.anthropicPoolWindowRejection(c, account, resp, attempt); failover != nil {
 			return nil, failover
 		}
 

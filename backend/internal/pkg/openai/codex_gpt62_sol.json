@@ -1,0 +1,43 @@
+{
+  "slug": "gpt-6.2-sol",
+  "display_name": "GPT-6.2-Sol",
+  "description": "Fast, go-to model for coding and everyday work.",
+  "default_reasoning_level": "low",
+  "supported_reasoning_levels": [
+    {
+      "effort": "low",
+      "description": "Fast responses with lighter reasoning"
+    },
+    {
+      "effort": "medium",
+      "description": "Balances speed and reasoning depth for everyday tasks"
+    },
+    {
+      "effort": "high",
+      "description": "Greater reasoning depth for complex problems"
+    },
+    {
+      "effort": "xhigh",
+      "description": "Extra high reasoning depth for complex problems"
+    },
+    {
+      "effort": "max",
+      "description": "Maximum reasoning depth for the hardest problems"
+    },
+    {
+      "effort": "ultra",
+      "description": "Maximum reasoning with automatic task delegation"
+    }
+  ],
+  "context_window": 500000,
+  "max_context_window": 872000,
+  "input_modalities": [
+    "text",
+    "image"
+  ],
+  "supports_search_tool": true,
+  "supports_image_detail_original": true,
+  "effective_context_window_percent": 95,
+  "apply_patch_tool_type": "freeform",
+  "web_search_tool_type": "text_and_image"
+}

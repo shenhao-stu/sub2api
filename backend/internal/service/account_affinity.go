@@ -20,6 +20,11 @@ import (
 const (
 	// AffinityTagsExtraKey 账号 extra 中保存标签数组的键。
 	AffinityTagsExtraKey = "affinity_tags"
+	// AffinityWaitBeforeSharedExtraKey keeps new selections on eligible dedicated
+	// accounts while busy. Existing sticky sessions and eligibility gates still apply.
+	AffinityWaitBeforeSharedExtraKey = "affinity_wait_before_shared"
+	// BusyStickyFallbackTagsExtraKey opts trusted tenants into ready-peer selection on a saturated shared account.
+	BusyStickyFallbackTagsExtraKey = "busy_sticky_fallback_tags"
 	// AccountAffinityHeader 可信调用方传递用户标识的请求头。
 	AccountAffinityHeader = "X-GeToken-User-Id"
 	// defaultAccountAffinityTagPrefix 由用户标识派生标签时使用的默认前缀。
@@ -152,10 +157,14 @@ func normalizeAffinityTags(raw []string) []string {
 
 // AffinityTags 返回账号 extra.affinity_tags（兼容 JSON 反序列化出的 []any 与 []string）。
 func (a *Account) AffinityTags() []string {
+	return a.extraAffinityTags(AffinityTagsExtraKey)
+}
+
+func (a *Account) extraAffinityTags(key string) []string {
 	if a == nil || len(a.Extra) == 0 {
 		return nil
 	}
-	raw, ok := a.Extra[AffinityTagsExtraKey]
+	raw, ok := a.Extra[key]
 	if !ok || raw == nil {
 		return nil
 	}
@@ -185,13 +194,17 @@ func (a *Account) IsAffinityReserved() bool {
 
 // MatchesAffinityTags 账号标签与请求标签存在交集。
 func (a *Account) MatchesAffinityTags(requestTags []string) bool {
-	if len(requestTags) == 0 {
+	return affinityTagsOverlap(requestTags, a.AffinityTags())
+}
+
+func (a *Account) prefersReadyPeer(ctx context.Context) bool {
+	if !a.IsAnthropicAPIKeyPassthroughEnabled() || a.IsAffinityReserved() {
 		return false
 	}
-	accountTags := a.AffinityTags()
-	if len(accountTags) == 0 {
-		return false
-	}
+	return affinityTagsOverlap(AccountAffinityTagsFromContext(ctx), a.extraAffinityTags(BusyStickyFallbackTagsExtraKey))
+}
+
+func affinityTagsOverlap(requestTags, accountTags []string) bool {
 	for _, want := range requestTags {
 		for _, have := range accountTags {
 			if want == have {
@@ -262,6 +275,29 @@ func filterByAffinityPreference(ctx context.Context, accounts []accountWithLoad)
 	}
 	if len(preferred) == 0 {
 		return accounts
+	}
+	return preferred
+}
+
+// filterAffinityWaitCandidates runs after eligibility and sticky selection, but
+// before load filtering. Disabled or quota-limited accounts cannot hold the pool.
+func filterAffinityWaitCandidates(ctx context.Context, accounts []*Account) []*Account {
+	tags := AccountAffinityTagsFromContext(ctx)
+	wait := false
+	for _, account := range accounts {
+		if isAffinityPreferred(tags, account) {
+			enabled, _ := account.Extra[AffinityWaitBeforeSharedExtraKey].(bool)
+			wait = wait || enabled
+		}
+	}
+	if !wait {
+		return accounts
+	}
+	preferred := make([]*Account, 0, len(accounts))
+	for _, account := range accounts {
+		if isAffinityPreferred(tags, account) {
+			preferred = append(preferred, account)
+		}
 	}
 	return preferred
 }

@@ -758,6 +758,9 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 	var seenText geminiTextDelta
 	var seenThought geminiTextDelta
 	openToolIndex := -1
+	openToolName := ""
+	var openToolSignature string
+	var toolBoundary geminiToolCallBoundary
 	var seenToolJSON geminiTextDelta
 
 	closeOpenBlock := func() bool {
@@ -773,10 +776,27 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 		if openToolIndex < 0 {
 			return false
 		}
-		disconnected := emitAnthropicEvent(&apicompat.AnthropicStreamEvent{Type: "content_block_stop"})
+		idx := openToolIndex
+		name, signature, args := openToolName, openToolSignature, seenToolJSON.seen.String()
 		openToolIndex = -1
+		openToolSignature = ""
 		seenToolJSON.reset()
-		return disconnected
+		toolBoundary = geminiToolCallBoundary{}
+		if fields := validateGeminiOpenAIFunction(map[string]any{"name": name, "args": args}); fields != nil {
+			upstreamFailure = fields
+			return false
+		}
+		id := "toolu_" + randomHex(8)
+		if signature != "" {
+			toolSignatures[id] = signature
+		}
+		if emitAnthropicEvent(&apicompat.AnthropicStreamEvent{Type: "content_block_start", Index: &idx, ContentBlock: &apicompat.AnthropicContentBlock{Type: "tool_use", ID: id, Name: name, Input: json.RawMessage(`{}`)}}) {
+			return true
+		}
+		if emitAnthropicEvent(&apicompat.AnthropicStreamEvent{Type: "content_block_delta", Delta: &apicompat.AnthropicDelta{Type: "input_json_delta", PartialJSON: args}}) {
+			return true
+		}
+		return emitAnthropicEvent(&apicompat.AnthropicStreamEvent{Type: "content_block_stop"})
 	}
 
 	stream := newAnthropicCompatStream(s.cfg, c, resp, "gemini-openai", "")
@@ -915,14 +935,15 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 
 							if fc, ok := part["functionCall"].(map[string]any); ok && fc != nil {
 								name, _ := fc["name"].(string)
-								if fields := validateGeminiOpenAIFunction(fc); fields != nil {
-									upstreamFailure = fields
+								if strings.TrimSpace(name) == "" {
+									upstreamFailure = geminiMalformedToolError()
 									continue
 								}
 								if closeOpenBlock() {
 									return streamResult(), nil
 								}
-								if openToolIndex >= 0 {
+								argsJSONText := geminiToolCallArgsJSON(fc["args"])
+								if openToolIndex >= 0 && toolBoundary.startsNewBlock(openToolName, seenToolJSON.seen.String(), argsJSONText, fc) {
 									if closeOpenTool() {
 										return streamResult(), nil
 									}
@@ -931,49 +952,14 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 									idx := nextBlockIndex
 									nextBlockIndex++
 									openToolIndex = idx
+									openToolName = name
 									sawToolUse = true
-									callID := "toolu_" + randomHex(8)
-									if signature, _ := part["thoughtSignature"].(string); signature != "" {
-										toolSignatures[callID] = signature
-									}
-									if emitAnthropicEvent(&apicompat.AnthropicStreamEvent{
-										Type:  "content_block_start",
-										Index: &idx,
-										ContentBlock: &apicompat.AnthropicContentBlock{
-											Type:  "tool_use",
-											ID:    callID,
-											Name:  name,
-											Input: json.RawMessage(`{}`),
-										},
-									}) {
-										return streamResult(), nil
-									}
 								}
-
-								argsJSONText := "{}"
-								switch v := fc["args"].(type) {
-								case nil:
-								case string:
-									if strings.TrimSpace(v) != "" {
-										argsJSONText = v
-									}
-								default:
-									if b, err := json.Marshal(v); err == nil && len(b) > 0 {
-										argsJSONText = string(b)
-									}
+								if signature, _ := part["thoughtSignature"].(string); signature != "" {
+									openToolSignature = signature
 								}
-								delta := seenToolJSON.next(argsJSONText)
-								if delta != "" {
-									if emitAnthropicEvent(&apicompat.AnthropicStreamEvent{
-										Type: "content_block_delta",
-										Delta: &apicompat.AnthropicDelta{
-											Type:        "input_json_delta",
-											PartialJSON: delta,
-										},
-									}) {
-										return streamResult(), nil
-									}
-								}
+								seenToolJSON.next(argsJSONText)
+								toolBoundary.observe(fc)
 							}
 						}
 					}
@@ -1005,6 +991,9 @@ func (s *GeminiMessagesCompatService) handleOpenAIStreamingResponseFromGemini(c 
 	}
 	if closeOpenTool() {
 		return streamResult(), nil
+	}
+	if upstreamFailure != nil {
+		return streamResult(), fail(upstreamFailure.Code, upstreamFailure.Message, nil)
 	}
 
 	stopReason := mapGeminiFinishReasonToClaudeStopReason(finishReason)

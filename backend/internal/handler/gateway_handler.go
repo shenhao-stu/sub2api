@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -40,6 +41,7 @@ var gatewayCompatibilityMetricsLogCounter atomic.Uint64
 
 // GatewayHandler handles API gateway requests
 type GatewayHandler struct {
+	quotaWait                 *quotaAdmissionWait
 	gatewayService            *service.GatewayService
 	openAIGatewayService      *service.OpenAIGatewayService
 	geminiCompatService       *service.GeminiMessagesCompatService
@@ -100,6 +102,7 @@ func NewGatewayHandler(
 	}
 
 	return &GatewayHandler{
+		quotaWait:                 newQuotaAdmissionWait(os.Getenv("ANTHROPIC_QUOTA_WAIT_AFFINITY_TAG")),
 		gatewayService:            gatewayService,
 		openAIGatewayService:      openAIGatewayService,
 		geminiCompatService:       geminiCompatService,
@@ -379,11 +382,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.Bool("model_not_found", cls.ModelNotFound),
 						zap.Error(err),
 					)
-					message := cls.Message
-					if !cls.ModelNotFound {
-						message = "No available accounts: " + err.Error()
-					}
-					h.handleStreamingAwareError(c, cls.Status, cls.ErrType, message, streamStarted)
+					h.handleStreamingAwareErrorWithCode(c, cls.Status, cls.ErrType,
+						noAccountSelectionErrorCode(err, cls), cls.Message, streamStarted)
 					return
 				}
 				action := fs.HandleSelectionExhausted(c.Request.Context())
@@ -681,9 +681,14 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		}
 	}()
 
+	// A request may wait once. A prior dispatch, even on a different group,
+	// permanently disqualifies this request from the additional admission retry.
+	waitAllowed := reqStream && currentAPIKey.GroupID != nil && platform == service.PlatformAnthropic && len(body) <= 16<<20 && h.quotaWait.matches(c.Request.Context())
+
 	for {
 		fs := NewFailoverState(h.maxAccountSwitches, hasBoundSession)
 		retryWithFallback := false
+		selectionCtx := c.Request.Context()
 
 		for {
 			attemptParsedReq, err := parsedReq.CloneForBody(body)
@@ -699,7 +704,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				zap.Bool("has_bound_session", hasBoundSession),
 				zap.Int("failed_account_count", len(fs.FailedAccountIDs)),
 			)
-			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
+			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(selectionCtx, currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
+			selectionCtx = c.Request.Context()
 			if err != nil {
 				if failoverClientGone(c) {
 					reqLog.Info("gateway.account_select_aborted_client_disconnected", zap.Error(err))
@@ -707,6 +713,33 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 				if h.handleAccountSelectionPolicyError(c, err, streamStarted) {
 					return
+				}
+				if waitAllowed && errors.Is(err, service.ErrNoAvailableAccounts) && !fallbackUsed && (service.AnthropicKeepaliveAdjustedWrittenSize(c) <= 0 || gatewayStreamHasOnlyHeartbeats(c)) {
+					diag := h.gatewayService.DiagnoseModelAvailabilityExcluding(c.Request.Context(), currentAPIKey.GroupID, reqModel, platform, fs.FailedAccountIDs)
+					if h.quotaWait.canWait(diag.RetryAfterSeconds) {
+						waitAllowed = false
+						reqLog.Info("gateway.quota_admission_wait", zap.Int("retry_after_seconds", diag.RetryAfterSeconds), zap.Int("excluded", len(fs.FailedAccountIDs)))
+						waited, waitErr := h.quotaWait.wait(c, time.Duration(diag.RetryAfterSeconds)*time.Second, &streamStarted, waitTenant(c.Request.Context(), subject.UserID), len(body))
+						if waitErr != nil {
+							failoverClientGone(c)
+							return
+						}
+						if waited {
+							fresh, valid := h.recheckQuotaWaitKey(c, currentAPIKey)
+							if !valid || (currentSubscription != nil && !currentSubscription.IsActive()) {
+								h.handleStreamingAwareError(c, http.StatusForbidden, "permission_error", "Request authorization changed while waiting", streamStarted)
+								return
+							}
+							if err := h.billingCacheService.RecheckBillingEligibility(c.Request.Context(), fresh.User, fresh, fresh.Group, currentSubscription, service.QuotaPlatform(c.Request.Context(), fresh)); err != nil {
+								status, code, msg, _ := billingErrorDetails(err)
+								h.handleStreamingAwareError(c, status, code, msg, streamStarted)
+								return
+							}
+							currentAPIKey = fresh
+							selectionCtx = service.WithQuotaWindowRecheck(c.Request.Context())
+							continue
+						}
+					}
 				}
 				if fs.isInitialSelection() {
 					cls := classifyNoAccountErrorFromGin(c, h.gatewayService, currentAPIKey, reqModel, reqModel, platform)
@@ -721,11 +754,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.Bool("model_not_found", cls.ModelNotFound),
 						zap.Error(err),
 					)
-					message := cls.Message
-					if !cls.ModelNotFound {
-						message = "No available accounts: " + err.Error()
-					}
-					h.handleStreamingAwareError(c, cls.Status, cls.ErrType, message, streamStarted)
+					h.handleStreamingAwareErrorWithCode(c, cls.Status, cls.ErrType,
+						noAccountSelectionErrorCode(err, cls), cls.Message, streamStarted)
 					return
 				}
 				action := fs.HandleSelectionExhausted(c.Request.Context())
@@ -1024,6 +1054,12 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						).Error("gateway.record_usage_failed", zap.Error(err))
 					}
 				})
+			}
+
+			if waitAllowed && err != nil {
+				var failure *service.UpstreamFailoverError
+				waitAllowed = result == nil && errors.As(err, &failure) && isUndispatchedQuotaGuard(account.Platform, failure) &&
+					service.AnthropicKeepaliveAdjustedWrittenSize(c) == writerSizeBeforeForward
 			}
 
 			if err != nil {

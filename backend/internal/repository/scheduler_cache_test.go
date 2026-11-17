@@ -62,6 +62,21 @@ func TestFilterSchedulerExtraKeepsAffinityTags(t *testing.T) {
 	require.True(t, metadata.MatchesAffinityTags([]string{"getoken:1"}))
 }
 
+func TestSchedulerMetadataPreservesDedicatedWaitPolicy(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		account := service.Account{ID: 7, Platform: service.PlatformAnthropic, Type: service.AccountTypeAPIKey,
+			Extra: map[string]any{service.AffinityTagsExtraKey: []any{"getoken:1"}, service.AffinityWaitBeforeSharedExtraKey: enabled, service.BusyStickyFallbackTagsExtraKey: []any{"getoken:2"}, "private_note": "excluded"}}
+		_, payload, err := marshalSchedulerCacheAccount(account)
+		require.NoError(t, err)
+		var metadata service.Account
+		require.NoError(t, json.Unmarshal(payload, &metadata))
+		require.Equal(t, enabled, metadata.Extra[service.AffinityWaitBeforeSharedExtraKey])
+		require.Equal(t, []any{"getoken:2"}, metadata.Extra[service.BusyStickyFallbackTagsExtraKey])
+		require.True(t, metadata.MatchesAffinityTags([]string{"getoken:1"}))
+		require.NotContains(t, metadata.Extra, "private_note")
+	}
+}
+
 func TestFilterSchedulerCredentialsKeepsSubscriptionPlanType(t *testing.T) {
 	filtered := filterSchedulerCredentials(map[string]any{
 		"plan_type":     "plus",
