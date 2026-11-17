@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -356,7 +357,6 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	finishDrain := boundDisconnectedResponseDrain(c.Request.Context(), resp.Body)
 	defer finishDrain()
 	writeStreamHeaders := s.newStreamHeaderWriter(c, resp.Header)
-	scanner := s.newUpstreamSSEScanner(resp.Body)
 	// Transfer sole writer ownership from the header-wait heartbeat to this
 	// stream loop. Heartbeat bytes stay excluded from semantic-output checks.
 	StopOpenAICompactSSEKeepaliveCommitted(c)
@@ -371,6 +371,21 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	var firstTokenMs *int
 	clientDisconnected := false
 	clientOutputStarted := false
+	flushPending := false
+	flushToClient := func() {
+		if flushPending && !clientDisconnected && clientOutputStarted {
+			c.Writer.Flush()
+			lastWriteAt = time.Now()
+		}
+		flushPending = false
+	}
+	var streamReader io.Reader = resp.Body
+	// With heartbeats the scanner runs in a separate goroutine. Leave writes
+	// to the event loop in that case so the response writer has one owner.
+	if keepaliveInterval <= 0 {
+		streamReader = &flushBeforeUpstreamRead{r: resp.Body, flush: flushToClient}
+	}
+	scanner := s.newUpstreamSSEScanner(streamReader)
 	pendingLines := make([]string, 0, 8)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
 	var terminal openAIRawStreamTerminalState
@@ -502,8 +517,10 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 		writeLine(line)
 		if !clientDisconnected && clientOutputStarted {
-			c.Writer.Flush()
-			lastWriteAt = time.Now()
+			flushPending = true
+			if keepaliveInterval > 0 {
+				flushToClient()
+			}
 			downstreamFrameOpen = line != ""
 		}
 	}, func() {
@@ -527,6 +544,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		c.Writer.Flush()
 		lastWriteAt = time.Now()
 	})
+	flushToClient()
 
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
