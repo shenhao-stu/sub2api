@@ -68,12 +68,13 @@ func TestQuotaAdmissionWaitTransport(t *testing.T) {
 				defer timer.Stop()
 			}
 			if tc == "full" {
-				for range cap(q.slots) {
-					q.slots <- struct{}{}
+				for range 2 {
+					_, ok := q.reserve("fixture", 1)
+					require.True(t, ok)
 				}
 			}
 			started := false
-			waited, err := q.wait(c, wait, &started)
+			waited, err := q.wait(c, wait, &started, "fixture", 1)
 			require.Equal(t, tc == "reset", waited)
 			if tc == "cancel" {
 				require.ErrorIs(t, err, context.Canceled)
@@ -93,7 +94,39 @@ func TestQuotaAdmissionWaitTransport(t *testing.T) {
 				require.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
 				require.Empty(t, strings.ReplaceAll(rec.Body.String(), string(SSEPingFormatClaude), ""))
 			}
-			require.Empty(t, q.slots)
+			require.Empty(t, q.tenants)
+			require.Zero(t, q.count)
+			require.Zero(t, q.bytes)
 		})
 	}
+}
+
+func TestQuotaAdmissionWaitGeneralTenantLimits(t *testing.T) {
+	q := newQuotaAdmissionWait("*")
+	direct := t.Context()
+	require.True(t, q.matches(direct))
+	tagged := service.WithAccountAffinityTags(direct, []string{"customer:1"})
+	require.NotEqual(t, waitTenant(direct, 1), waitTenant(tagged, 1))
+	require.NotEqual(t, waitTenant(direct, 1), waitTenant(direct, 2))
+	require.Equal(t, waitTenant(tagged, 1), waitTenant(tagged, 2))
+	a, ok := q.reserve("a", 16<<20)
+	require.True(t, ok)
+	b, ok := q.reserve("a", 1)
+	require.True(t, ok)
+	_, ok = q.reserve("a", 1)
+	require.False(t, ok)
+	_, ok = q.reserve("b", 16<<20)
+	require.False(t, ok)
+	c, ok := q.reserve("b", 1)
+	require.True(t, ok)
+	d, ok := q.reserve("c", 1)
+	require.True(t, ok)
+	_, ok = q.reserve("d", 1)
+	require.False(t, ok)
+	a()
+	b()
+	c()
+	d()
+	require.Zero(t, q.bytes)
+	require.Empty(t, q.tenants)
 }

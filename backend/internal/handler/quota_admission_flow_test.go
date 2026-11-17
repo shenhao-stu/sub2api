@@ -58,7 +58,7 @@ func (u *admissionUpstream) DoWithTLS(r *http.Request, p string, id int64, n int
 }
 
 func TestQuotaAdmissionWaitMessages(t *testing.T) {
-	for _, mode := range []string{"reset", "guard_then_reset", "revoked", "cancel", "no_opt_in"} {
+	for _, mode := range []string{"reset", "general_direct", "general_tagged", "guard_then_reset", "revoked", "cancel", "no_opt_in"} {
 		t.Run(mode, func(t *testing.T) {
 			gid := int64(1)
 			group := &service.Group{ID: gid, Hydrated: true, Platform: service.PlatformAnthropic, Status: service.StatusActive, RateMultiplier: 1}
@@ -104,13 +104,16 @@ func TestQuotaAdmissionWaitMessages(t *testing.T) {
 			gw := service.NewGatewayService(repo, &fakeGroupRepo{group: group}, usage, nil, nil, nil, nil, nil, cfg, snapshot, nil, service.NewBillingService(cfg, nil), nil, nil, nil, up, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			h := &GatewayHandler{gatewayService: gw, concurrencyHelper: NewConcurrencyHelper(service.NewConcurrencyService(&fakeConcurrencyCache{}), SSEPingFormatClaude, 0), billingCacheService: cost,
 				settingService: service.NewSettingService(admissionSettings{}, cfg), apiKeyService: service.NewAPIKeyService(keyRepo, nil, nil, nil, nil, nil, cfg), maxAccountSwitches: 2, cfg: cfg, quotaWait: newQuotaAdmissionWait("customer:1")}
+			if strings.HasPrefix(mode, "general_") {
+				h.quotaWait = newQuotaAdmissionWait("*")
+			}
 			h.quotaWait.heartbeat = 10 * time.Millisecond
 			rec := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(rec)
 			req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-5","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"original-fixture-history"}]}`))
 			ctx, cancel := context.WithCancel(req.Context())
 			defer cancel()
-			if mode != "no_opt_in" {
+			if mode != "no_opt_in" && mode != "general_direct" {
 				ctx = service.WithAccountAffinityTags(ctx, []string{"customer:1"})
 			}
 			if mode == "cancel" {
@@ -118,11 +121,13 @@ func TestQuotaAdmissionWaitMessages(t *testing.T) {
 				defer timer.Stop()
 			}
 			c.Request = req.WithContext(ctx)
-			c.Request.Header.Set(service.AccountAffinityHeader, "1")
+			if mode != "general_direct" {
+				c.Request.Header.Set(service.AccountAffinityHeader, "1")
+			}
 			c.Set(string(middleware.ContextKeyAPIKey), key)
 			c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: key.UserID, Concurrency: 2})
 			h.Messages(c)
-			if mode == "reset" || mode == "guard_then_reset" {
+			if mode == "reset" || mode == "guard_then_reset" || strings.HasPrefix(mode, "general_") {
 				expectedForwards := 1
 				if mode == "guard_then_reset" {
 					expectedForwards++

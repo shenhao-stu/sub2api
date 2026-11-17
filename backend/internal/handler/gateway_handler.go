@@ -683,7 +683,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 	// A request may wait once. A prior dispatch, even on a different group,
 	// permanently disqualifies this request from the additional admission retry.
-	waitAllowed := reqStream && platform == service.PlatformAnthropic && len(body) <= 16<<20 && h.quotaWait.matches(c.Request.Context())
+	waitAllowed := reqStream && currentAPIKey.GroupID != nil && platform == service.PlatformAnthropic && len(body) <= 16<<20 && h.quotaWait.matches(c.Request.Context())
 
 	for {
 		fs := NewFailoverState(h.maxAccountSwitches, hasBoundSession)
@@ -717,7 +717,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					if h.quotaWait.canWait(diag.RetryAfterSeconds) {
 						waitAllowed = false
 						reqLog.Info("gateway.quota_admission_wait", zap.Int("retry_after_seconds", diag.RetryAfterSeconds), zap.Int("excluded", len(fs.FailedAccountIDs)))
-						waited, waitErr := h.quotaWait.wait(c, time.Duration(diag.RetryAfterSeconds)*time.Second, &streamStarted)
+						waited, waitErr := h.quotaWait.wait(c, time.Duration(diag.RetryAfterSeconds)*time.Second, &streamStarted, waitTenant(c.Request.Context(), subject.UserID), len(body))
 						if waitErr != nil {
 							failoverClientGone(c)
 							return

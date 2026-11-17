@@ -3,6 +3,8 @@ package handler
 import (
 	"context"
 	"slices"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
@@ -12,7 +14,10 @@ import (
 
 type quotaAdmissionWait struct {
 	tag       string
-	slots     chan struct{}
+	mu        sync.Mutex
+	tenants   map[string]int
+	count     int
+	bytes     int
 	heartbeat time.Duration
 }
 
@@ -20,11 +25,11 @@ func newQuotaAdmissionWait(tag string) *quotaAdmissionWait {
 	if tag == "" {
 		return nil
 	}
-	return &quotaAdmissionWait{tag: tag, slots: make(chan struct{}, 2), heartbeat: 15 * time.Second}
+	return &quotaAdmissionWait{tag: tag, tenants: make(map[string]int), heartbeat: 15 * time.Second}
 }
 
 func (q *quotaAdmissionWait) matches(ctx context.Context) bool {
-	return q != nil && slices.Contains(service.AccountAffinityTagsFromContext(ctx), q.tag)
+	return q != nil && (q.tag == "*" || slices.Contains(service.AccountAffinityTagsFromContext(ctx), q.tag))
 }
 
 func (q *quotaAdmissionWait) canWait(seconds int) bool {
@@ -36,19 +41,49 @@ func isUndispatchedQuotaGuard(platform string, failure *service.UpstreamFailover
 		service.IsAnthropicQuotaGuardRejection(failure.StatusCode, failure.ResponseBody)
 }
 
+// The trusted gateway tag identifies the end tenant behind a shared key.
+// A direct caller shares its cap across all keys of the same Sub2API user.
+func waitTenant(ctx context.Context, userID int64) string {
+	tags := service.AccountAffinityTagsFromContext(ctx)
+	if len(tags) == 1 {
+		return "tag/" + tags[0]
+	}
+	return "user/" + strconv.FormatInt(userID, 10)
+}
+
+func (q *quotaAdmissionWait) reserve(tenant string, size int) (func(), bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if size < 0 || size > 16<<20 || q.count >= 4 || q.bytes+size > 32<<20 || q.tenants[tenant] >= 2 {
+		return nil, false
+	}
+	q.tenants[tenant]++
+	q.count++
+	q.bytes += size
+	return func() {
+		q.mu.Lock()
+		defer q.mu.Unlock()
+		q.tenants[tenant]--
+		if q.tenants[tenant] == 0 {
+			delete(q.tenants, tenant)
+		}
+		q.count--
+		q.bytes -= size
+	}, true
+}
+
 // Retain the original HTTP request while waiting for a known reset. No model,
 // receipt, or scheduler probe is issued by the timer. Client abort stops it.
-func (q *quotaAdmissionWait) wait(c *gin.Context, delay time.Duration, streamStarted *bool) (bool, error) {
+func (q *quotaAdmissionWait) wait(c *gin.Context, delay time.Duration, streamStarted *bool, tenant string, size int) (bool, error) {
 	ctx := c.Request.Context()
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	select {
-	case q.slots <- struct{}{}:
-		defer func() { <-q.slots }()
-	default:
+	release, admitted := q.reserve(tenant, size)
+	if !admitted {
 		return false, nil
 	}
+	defer release()
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	beats := time.NewTicker(q.heartbeat)
@@ -93,5 +128,9 @@ func (h *GatewayHandler) recheckQuotaWaitKey(c *gin.Context, original *service.A
 	cfg := h.settingService.GetAccountAffinitySettingsCached(ctx)
 	tag, ok := service.AffinityTagFromUserID(cfg.TagPrefix, c.GetHeader(service.AccountAffinityHeader))
 	allowedIP, _ := ip.CheckIPRestrictionWithCompiledRules(ip.GetClientIP(c), key.CompiledIPWhitelist, key.CompiledIPBlacklist)
-	return key, allowedIP && ok && tag == h.quotaWait.tag && cfg.TrustsAPIKey(key.ID)
+	originalTags := service.AccountAffinityTagsFromContext(ctx)
+	if !cfg.TrustsAPIKey(key.ID) || !ok {
+		return key, allowedIP && len(originalTags) == 0
+	}
+	return key, allowedIP && len(originalTags) == 1 && originalTags[0] == tag
 }
