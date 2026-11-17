@@ -1053,9 +1053,25 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 	return visible, useMixed, nil
 }
 
+type quotaWindowRecheckKey struct{}
+
+// WithQuotaWindowRecheck selects from the database on the first selection
+// after a timed quota wait. A snapshot published during cooldown can omit the
+// recovered account until the next rebuild.
+func WithQuotaWindowRecheck(ctx context.Context) context.Context {
+	return context.WithValue(ctx, quotaWindowRecheckKey{}, true)
+}
+
+func (s *GatewayService) selectionSnapshot(ctx context.Context) *SchedulerSnapshotService {
+	if ctx.Value(quotaWindowRecheckKey{}) == true {
+		return nil
+	}
+	return s.schedulerSnapshot
+}
+
 func (s *GatewayService) listSchedulableAccountsUnfiltered(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
-	if s.schedulerSnapshot != nil {
-		accounts, useMixed, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
+	if snapshot := s.selectionSnapshot(ctx); snapshot != nil {
+		accounts, useMixed, err := snapshot.ListSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
 		if err == nil {
 			accounts = s.filterAccountsBySchedulingThreshold(ctx, accounts)
 			if platform == PlatformGrok || strings.EqualFold(platform, PlatformGrok) {
@@ -1570,8 +1586,8 @@ func (s *GatewayService) getSchedulableAccount(ctx context.Context, accountID in
 		account *Account
 		err     error
 	)
-	if s.schedulerSnapshot != nil {
-		account, err = s.schedulerSnapshot.GetAccount(ctx, accountID)
+	if snapshot := s.selectionSnapshot(ctx); snapshot != nil {
+		account, err = snapshot.GetAccount(ctx, accountID)
 	} else {
 		account, err = s.accountRepo.GetByID(ctx, accountID)
 	}
@@ -1613,10 +1629,11 @@ func (s *GatewayService) isAccountBlockedBySchedulingThreshold(ctx context.Conte
 }
 
 func (s *GatewayService) hydrateSelectedAccount(ctx context.Context, account *Account) (*Account, error) {
-	if account == nil || s.schedulerSnapshot == nil {
+	snapshot := s.selectionSnapshot(ctx)
+	if account == nil || snapshot == nil {
 		return account, nil
 	}
-	hydrated, err := s.schedulerSnapshot.GetAccount(ctx, account.ID)
+	hydrated, err := snapshot.GetAccount(ctx, account.ID)
 	if err != nil {
 		return nil, err
 	}

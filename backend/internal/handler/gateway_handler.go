@@ -688,6 +688,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	for {
 		fs := NewFailoverState(h.maxAccountSwitches, hasBoundSession)
 		retryWithFallback := false
+		selectionCtx := c.Request.Context()
 
 		for {
 			attemptParsedReq, err := parsedReq.CloneForBody(body)
@@ -703,7 +704,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				zap.Bool("has_bound_session", hasBoundSession),
 				zap.Int("failed_account_count", len(fs.FailedAccountIDs)),
 			)
-			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
+			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(selectionCtx, currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
+			selectionCtx = c.Request.Context()
 			if err != nil {
 				if failoverClientGone(c) {
 					reqLog.Info("gateway.account_select_aborted_client_disconnected", zap.Error(err))
@@ -734,6 +736,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 								return
 							}
 							currentAPIKey = fresh
+							selectionCtx = service.WithQuotaWindowRecheck(c.Request.Context())
 							continue
 						}
 					}

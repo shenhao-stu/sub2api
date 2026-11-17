@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -21,11 +22,27 @@ import (
 
 type admissionAccounts struct {
 	service.AccountRepository
-	candidates []service.Account
+	candidates     []service.Account
+	currentReads   int
+	disabledAtWake bool
 }
 
 func (r *admissionAccounts) ListModelAvailabilityCandidates(context.Context, *int64, []string, bool) ([]service.Account, error) {
 	return r.candidates, nil
+}
+
+func (r *admissionAccounts) ListSchedulableByGroupIDAndPlatforms(_ context.Context, group int64, platforms []string) ([]service.Account, error) {
+	r.currentReads++
+	if r.disabledAtWake {
+		return nil, nil
+	}
+	var result []service.Account
+	for _, account := range r.candidates {
+		if account.IsSchedulable() && slices.Contains(account.GroupIDs, group) && slices.Contains(platforms, account.Platform) {
+			result = append(result, account)
+		}
+	}
+	return result, nil
 }
 
 type admissionKey struct {
@@ -58,7 +75,7 @@ func (u *admissionUpstream) DoWithTLS(r *http.Request, p string, id int64, n int
 }
 
 func TestQuotaAdmissionWaitMessages(t *testing.T) {
-	for _, mode := range []string{"reset", "general_direct", "general_tagged", "guard_then_reset", "revoked", "cancel", "no_opt_in"} {
+	for _, mode := range []string{"reset", "general_direct", "general_tagged", "stale_membership", "disabled_at_wake", "guard_then_reset", "revoked", "cancel", "no_opt_in"} {
 		t.Run(mode, func(t *testing.T) {
 			gid := int64(1)
 			group := &service.Group{ID: gid, Hydrated: true, Platform: service.PlatformAnthropic, Status: service.StatusActive, RateMultiplier: 1}
@@ -75,6 +92,12 @@ func TestQuotaAdmissionWaitMessages(t *testing.T) {
 				guard.AccountGroups = []service.AccountGroup{{AccountID: 1, GroupID: gid}}
 				slots = append(slots, &guard)
 				repo.candidates = append(repo.candidates, guard)
+			}
+			if mode == "stale_membership" || mode == "disabled_at_wake" {
+				repo.disabledAtWake = mode == "disabled_at_wake"
+				// Production builds the group snapshot while this account is cooling.
+				// Its ID can still be missing from Redis when the database reset expires.
+				slots = nil
 			}
 			snapshot := service.NewSchedulerSnapshotService(&fakeSchedulerCache{accounts: slots}, nil, nil, nil, nil)
 			up := &admissionUpstream{}
@@ -127,7 +150,10 @@ func TestQuotaAdmissionWaitMessages(t *testing.T) {
 			c.Set(string(middleware.ContextKeyAPIKey), key)
 			c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: key.UserID, Concurrency: 2})
 			h.Messages(c)
-			if mode == "reset" || mode == "guard_then_reset" || strings.HasPrefix(mode, "general_") {
+			if mode == "stale_membership" || mode == "disabled_at_wake" {
+				require.Equal(t, 1, repo.currentReads, "one fresh selection after the window")
+			}
+			if mode == "stale_membership" || mode == "reset" || mode == "guard_then_reset" || strings.HasPrefix(mode, "general_") {
 				expectedForwards := 1
 				if mode == "guard_then_reset" {
 					expectedForwards++
