@@ -426,7 +426,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			})
 		}
 
-		if failover := s.anthropicPoolWindowRejection(c, account, resp); failover != nil {
+		if failover := s.anthropicPoolWindowRejection(c, account, resp, attempt); failover != nil {
 			return nil, failover
 		}
 

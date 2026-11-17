@@ -57,6 +57,12 @@ func (s *GatewayService) DiagnoseModelAvailabilityForPlatform(
 	requestedModel string,
 	platform string,
 ) ModelAvailabilityDiagnosis {
+	return s.DiagnoseModelAvailabilityExcluding(ctx, groupID, requestedModel, platform, nil)
+}
+
+// DiagnoseModelAvailabilityExcluding uses the same visibility and model rules as
+// normal diagnosis, omitting accounts that rejected this particular request.
+func (s *GatewayService) DiagnoseModelAvailabilityExcluding(ctx context.Context, groupID *int64, requestedModel, platform string, excluded map[int64]struct{}) ModelAvailabilityDiagnosis {
 	if s == nil {
 		return ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: true}
 	}
@@ -106,6 +112,9 @@ func (s *GatewayService) DiagnoseModelAvailabilityForPlatform(
 	diag := ModelAvailabilityDiagnosis{}
 	var supported []*Account
 	for i := range accounts {
+		if _, skip := excluded[accounts[i].ID]; skip {
+			continue
+		}
 		if useMixed && accounts[i].Platform == PlatformAntigravity && !accounts[i].IsMixedSchedulingEnabled() {
 			continue
 		}

@@ -54,7 +54,7 @@ func onlyPoolWindowFields(object map[string]json.RawMessage, allowed ...string) 
 	return true
 }
 
-func (s *GatewayService) anthropicPoolWindowRejection(c *gin.Context, account *Account, resp *http.Response) *UpstreamFailoverError {
+func (s *GatewayService) anthropicPoolWindowRejection(c *gin.Context, account *Account, resp *http.Response, attempt int) *UpstreamFailoverError {
 	if account == nil || resp == nil || account.Platform != PlatformAnthropic || account.Type != AccountTypeAPIKey ||
 		account.IsCustomErrorCodesEnabled() || resp.StatusCode != http.StatusTooManyRequests || resp.Body == nil {
 		return nil
@@ -85,6 +85,6 @@ func (s *GatewayService) anthropicPoolWindowRejection(c *gin.Context, account *A
 	})
 	return &UpstreamFailoverError{
 		StatusCode: resp.StatusCode, ResponseBody: body, ResponseHeaders: resp.Header.Clone(),
-		Reason: reason, ExcludeFromRetry: true,
+		Reason: reason, ExcludeFromRetry: true, FirstAttemptQuotaGuard: quotaGuard && attempt == 1,
 	}
 }

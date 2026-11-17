@@ -60,3 +60,31 @@ func TestAvailabilityCooldownRespectsDedicatedVisibility(t *testing.T) {
 	other := WithAccountAffinityTags(context.Background(), []string{"getoken:2"})
 	require.Zero(t, svc.DiagnoseModelAvailabilityForPlatform(other, nil, "claude-opus-5-5", PlatformAnthropic).RetryAfterSeconds)
 }
+
+func TestQuotaAdmissionWaitExcludedGuardAndTenantScope(t *testing.T) {
+	reset := time.Now().Add(20 * time.Minute)
+	accounts := []Account{
+		{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true},
+		{ID: 2, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, RateLimitResetAt: &reset},
+		{ID: 3, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Extra: map[string]any{"affinity_tags": []string{"customer:2"}}},
+	}
+	svc := &GatewayService{accountRepo: &mockAccountRepoForPlatform{accounts: accounts}, cfg: testConfig()}
+	ctx := WithAccountAffinityTags(t.Context(), []string{"customer:1"})
+	diagnose := func(excluded map[int64]struct{}) int {
+		return svc.DiagnoseModelAvailabilityExcluding(ctx, nil, "claude-opus-5-5", PlatformAnthropic, excluded).RetryAfterSeconds
+	}
+	require.Zero(t, diagnose(nil))
+	require.InDelta(t, 1200, diagnose(map[int64]struct{}{1: {}}), 1)
+	require.Zero(t, diagnose(map[int64]struct{}{1: {}, 2: {}}))
+}
+
+func TestQuotaAdmissionWaitTransportAttemptEvidence(t *testing.T) {
+	for _, attempt := range []int{1, 2} {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest("POST", "/v1/messages", nil)
+		resp := &http.Response{StatusCode: 429, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(predispatchQuotaFixture))}
+		failure := (&GatewayService{}).anthropicPoolWindowRejection(c, newAnthropicAPIKeyAccountForTest(), resp, attempt)
+		require.NotNil(t, failure)
+		require.Equal(t, attempt == 1, failure.FirstAttemptQuotaGuard)
+	}
+}

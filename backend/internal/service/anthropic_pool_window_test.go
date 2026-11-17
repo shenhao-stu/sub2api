@@ -71,7 +71,7 @@ func TestAnthropicPoolWindowPreservesMatchingAdminCooldown(t *testing.T) {
 		"error_code": 429, "duration_minutes": 5, "keywords": []any{"upstream_rate_limit"},
 	}}
 	resp := &http.Response{StatusCode: http.StatusTooManyRequests, Body: io.NopCloser(strings.NewReader(poolWindowFixture))}
-	require.Nil(t, (&GatewayService{}).anthropicPoolWindowRejection(c, a, resp))
+	require.Nil(t, (&GatewayService{}).anthropicPoolWindowRejection(c, a, resp, 1))
 	got, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	require.Equal(t, poolWindowFixture, string(got))
@@ -86,7 +86,7 @@ func TestAnthropicPoolWindowProbePreservesNonmatchingBody(t *testing.T) {
 	for _, pool := range []bool{false, true} {
 		a.Credentials["pool_mode"] = pool
 		resp := &http.Response{StatusCode: http.StatusTooManyRequests, Body: io.NopCloser(strings.NewReader(body))}
-		require.Nil(t, (&GatewayService{}).anthropicPoolWindowRejection(c, a, resp))
+		require.Nil(t, (&GatewayService{}).anthropicPoolWindowRejection(c, a, resp, 1))
 		got, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 		require.Equal(t, body, string(got))
