@@ -12,15 +12,21 @@ import (
 
 const sessionAdmissionBodyLimit = 64 << 10
 const sessionAdmissionRejection = "This group only accepts sessions first seen here."
+const newSessionRequired = "请开新会话再使用."
+const upstreamClaudeCodeOnly = "No available accounts: this group only allows Claude Code clients"
 const sessionPolicyBlockRejection = "当前会话因内容审核违规已被拉黑，请使用 /new 开启新会话，或联系管理员解除。"
 const nativeSessionBusy = "session_busy"
 const nativeSessionCapacity = "native_session_capacity"
 const nativeMemoryPressure = "native_memory_pressure"
 const nativeIngressBusy = "Relay capacity is busy; retry later."
 
-// Match request admission errors separately from provider-wide 429 responses.
+func admissionResponseStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable
+}
+
+// A provider can report a request restriction as a retryable HTTP error.
 func sessionAdmissionRejectionMessage(status int, body []byte) string {
-	if status != http.StatusTooManyRequests || len(body) >= sessionAdmissionBodyLimit {
+	if !admissionResponseStatus(status) || len(body) >= sessionAdmissionBodyLimit {
 		return ""
 	}
 	envelope, ok := receiptObject(body)
@@ -57,8 +63,14 @@ func sessionAdmissionRejectionMessage(status int, body []byte) string {
 	if json.Unmarshal(fields["type"], &kind) != nil || json.Unmarshal(fields["message"], &message) != nil {
 		return ""
 	}
+	if status == http.StatusServiceUnavailable {
+		if envelope["type"] != nil && kind == "api_error" && code == "" && message == upstreamClaudeCodeOnly {
+			return message
+		}
+		return ""
+	}
 	switch {
-	case kind == "upstream_error" && code == "" && (message == sessionAdmissionRejection || message == sessionPolicyBlockRejection):
+	case kind == "upstream_error" && code == "" && (message == sessionAdmissionRejection || message == sessionPolicyBlockRejection || message == newSessionRequired):
 		return message
 	case kind == "rate_limit_error" && code == "upstream_rate_limit" && message == nativeSessionBusy:
 		return message
@@ -76,7 +88,7 @@ func sessionAdmissionRejectionMessage(status int, body []byte) string {
 }
 
 func (s *GatewayService) handleSessionAdmissionResponse(c *gin.Context, account *Account, resp *http.Response, model, upstreamModel string, stream bool, start time.Time) (*ForwardResult, error, bool) {
-	if account == nil || account.Type != AccountTypeAPIKey || resp == nil || resp.Body == nil || resp.StatusCode != http.StatusTooManyRequests {
+	if account == nil || account.Type != AccountTypeAPIKey || resp == nil || resp.Body == nil || !admissionResponseStatus(resp.StatusCode) {
 		return nil, nil, false
 	}
 	source := resp.Body
@@ -89,6 +101,8 @@ func (s *GatewayService) handleSessionAdmissionResponse(c *gin.Context, account 
 	defer resp.Body.Close()
 	fields := openAIClientErrorFields{Type: "invalid_request_error", Code: "upstream_session_not_accepted", Message: "This session is not accepted by the upstream group. Please start a new session.", StatusCode: http.StatusBadRequest}
 	switch message {
+	case upstreamClaudeCodeOnly:
+		fields = openAIClientErrorFields{Type: "permission_error", Code: "claude_code_only", Message: "This group is restricted to Claude Code clients", StatusCode: http.StatusForbidden}
 	case sessionPolicyBlockRejection:
 		fields = openAIClientErrorFields{Type: "permission_error", Code: "upstream_session_policy_blocked", Message: "The upstream blocked this conversation under its Usage Policy. In Claude Code, use /new to start a new conversation. Contact support if you believe this was a mistake.", StatusCode: http.StatusForbidden}
 	case nativeSessionBusy:
