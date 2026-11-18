@@ -95,6 +95,20 @@ func (s *UsageService) GetAPIKeyUsageReceipt(ctx context.Context, apiKeyID int64
 	return receipt, nil
 }
 
+// GetAPIKeyResponsesLedgerReceipt uses the authenticated key from the gateway.
+func (s *UsageService) GetAPIKeyResponsesLedgerReceipt(ctx context.Context, key int64, id string) (*UsageReceipt, error) {
+	if key <= 0 || !ValidUsageReceiptID(id) {
+		return nil, ErrUsageLogNotFound
+	}
+	reader, ok := s.usageRepo.(interface {
+		GetResponsesLedgerReceipt(context.Context, int64, string) (*UsageReceipt, error)
+	})
+	if !ok {
+		return nil, ErrUsageReceiptUnavailable
+	}
+	return reader.GetResponsesLedgerReceipt(ctx, key, id)
+}
+
 // Receipt evidence freezes the final meter on the downstream wire, before
 // RecordUsage applies any additional local account billing transformations.
 // A message_start primer is not a final meter. Unknown/invalid counters never

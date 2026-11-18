@@ -29,7 +29,11 @@ func (h *GatewayHandler) KeyUsageReceipt(c *gin.Context) {
 		h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Usage receipt is unavailable")
 		return
 	}
-	receipt, err := h.usageService.GetAPIKeyUsageReceipt(c.Request.Context(), key.ID, id)
+	lookup := h.usageService.GetAPIKeyUsageReceipt
+	if c.GetHeader("X-Sub2API-Receipt-Version") == "4" {
+		lookup = h.usageService.GetAPIKeyResponsesLedgerReceipt
+	}
+	receipt, err := lookup(c.Request.Context(), key.ID, id)
 	if errors.Is(err, service.ErrUsageReceiptPending) {
 		c.Header("Retry-After", "60")
 		c.JSON(http.StatusAccepted, service.PendingUsageReceipt{
