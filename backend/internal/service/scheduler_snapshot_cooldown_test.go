@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -44,6 +45,49 @@ func (r *cooldownMembershipRepo) ListModelAvailabilityCandidates(_ context.Conte
 
 func (*cooldownMembershipRepo) ListSchedulableByGroupIDAndPlatform(context.Context, int64, string) ([]Account, error) {
 	return nil, nil // The database excludes accounts still in cooldown.
+}
+
+func (*cooldownMembershipRepo) ListSchedulableByGroupIDAndPlatforms(context.Context, int64, []string) ([]Account, error) {
+	return nil, nil
+}
+
+func TestGroupedAnthropicSnapshotRecoversRelayWithoutRefresh(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		forced bool
+	}{{"mixed", false}, {"forced", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx := context.Background()
+				groupID := int64(25)
+				reset := time.Now().Add(time.Hour)
+				cache := &cooldownSnapshotCache{}
+				repo := &cooldownMembershipRepo{account: Account{
+					ID: 33871, Platform: PlatformAnthropic, Status: StatusActive,
+					Schedulable: true, TempUnschedulableUntil: &reset,
+				}}
+				svc := NewSchedulerSnapshotService(cache, nil, repo, nil, nil)
+				check := func(want int) {
+					t.Helper()
+					selected, mixed, err := svc.ListSchedulableAccounts(ctx, &groupID, PlatformAnthropic, tc.forced)
+					require.NoError(t, err)
+					require.Equal(t, !tc.forced, mixed)
+					require.Len(t, selected, want)
+					if want == 1 {
+						require.Equal(t, repo.account.ID, selected[0].ID)
+					}
+				}
+				check(0)
+				require.Len(t, cache.members, 1, "keep the relay in the group across cooldown")
+				check(0)
+				time.Sleep(time.Until(reset))
+				check(1)
+				require.Equal(t, 1, repo.reads)
+				cache.members[0].Schedulable = false
+				check(0)
+			})
+		})
+	}
 }
 
 func TestGroupedOpenAISnapshotRetainsCoolingMember(t *testing.T) {
