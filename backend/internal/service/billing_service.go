@@ -1684,7 +1684,7 @@ func (s *BillingService) calculateTokenCost(resolved *ResolvedPricing, input Cos
 	// 仅作用于默认价卡（Source=LiteLLM，无分组/渠道自定义定价）——分组/渠道
 	// 自定义定价保持运营者语义，不叠加。先克隆再乘，避免污染共享 fallbackPrices 指针。
 	if resolved.Source == PricingSourceLiteLLM && isDeepSeekModel(input.Model) {
-		if mult := deepseekPeakMultiplierAt(pricingAt); mult > 1 {
+		if mult := deepseekGroupPeakMultiplierAt(pricingAt, input.Group); mult > 1 {
 			cloned := *pricing
 			cloned.InputPricePerToken *= mult
 			cloned.OutputPricePerToken *= mult
