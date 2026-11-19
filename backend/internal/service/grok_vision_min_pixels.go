@@ -3,62 +3,46 @@ package service
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/json"
 	"image"
 	"image/jpeg"
 	"image/png"
 	"io"
 	"strings"
 
-	"github.com/tidwall/gjson"
 	"golang.org/x/image/draw"
 )
 
 // Grok 4.7 rejects vision inputs under 512 total pixels. Replicate each pixel
 // by an integer factor; keep the caller's original request for accounting.
-func fitGrokTinyVisionInputs(body []byte) []byte {
-	if !bytes.Contains(body, []byte("input_image")) {
-		return body
-	}
-	var out bytes.Buffer
-	last := 0
-	// Bound transcoding work per request even when many distinct tiny images arrive.
-	fitted := 0
-	const maxFitted = 64
-	gjson.GetBytes(body, "input").ForEach(func(_, item gjson.Result) bool {
-		parts := item.Get("content")
-		if item.Get("type").Str == "function_call_output" {
-			parts = item.Get("output")
+func fitGrokTinyVisionInputs(items []any) {
+	// Bound work on untrusted data URLs, including malformed images.
+	bytesLeft, attemptsLeft := 2<<20, 64
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		parts, _ := item["content"].([]any)
+		for _, rawPart := range parts {
+			part, _ := rawPart.(map[string]any)
+			if part["type"] != "input_image" && part["type"] != "image_url" {
+				continue
+			}
+			holder, field := part, "image_url"
+			if nested, ok := holder[field].(map[string]any); ok {
+				holder, field = nested, "url"
+			}
+			url, ok := holder[field].(string)
+			if !ok || len(url) > 128<<10 || len(url) > bytesLeft || len(url) < 5 || !strings.EqualFold(url[:5], "data:") {
+				continue
+			}
+			bytesLeft -= len(url)
+			if updated := fitGrokTinyImageURL(url); updated != "" {
+				holder[field] = updated
+			}
+			attemptsLeft--
+			if attemptsLeft == 0 {
+				return
+			}
 		}
-		if !parts.IsArray() {
-			return true
-		}
-		parts.ForEach(func(_, part gjson.Result) bool {
-			if part.Get("type").Str != "input_image" {
-				return true
-			}
-			url := part.Get("image_url")
-			if fitted >= maxFitted || url.Type != gjson.String || url.Index <= last || url.Index+len(url.Raw) > len(body) || len(url.Raw) > 128<<10 {
-				return true
-			}
-			updated := fitGrokTinyImageURL(url.Str)
-			if updated == "" {
-				return true
-			}
-			quoted, _ := json.Marshal(updated)
-			out.Write(body[last:url.Index])
-			out.Write(quoted)
-			fitted++
-			last = url.Index + len(url.Raw)
-			return true
-		})
-		return true
-	})
-	if last == 0 {
-		return body
 	}
-	out.Write(body[last:])
-	return out.Bytes()
 }
 
 func fitGrokTinyImageURL(url string) string {

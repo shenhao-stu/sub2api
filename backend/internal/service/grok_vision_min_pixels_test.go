@@ -40,8 +40,8 @@ func TestGrokVisionMinPixels(t *testing.T) {
 		if !bytes.Equal(raw, saved) {
 			t.Fatal("mutated original request")
 		}
-		for _, path := range []string{"input.0.content", "input.1.output"} {
-			val := gjson.GetBytes(patched, path+".0.image_url").String()
+		for _, prefix := range []string{"input.0.content.0", "input.2.content.1"} {
+			val := gjson.GetBytes(patched, prefix+".image_url").String()
 			if model == "grok-4.7" {
 				data, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(val, "data:image/png;base64,"))
 				if err != nil {
@@ -60,9 +60,9 @@ func TestGrokVisionMinPixels(t *testing.T) {
 			} else if val != small {
 				t.Fatal("changed another model")
 			}
-			if gjson.GetBytes(patched, path+".0.detail").String() != "high" || gjson.GetBytes(patched, path+".1.image_url").String() != edge || gjson.GetBytes(patched, path+".2.image_url").String() != url || gjson.GetBytes(patched, path+".3.text").String() != small {
-				t.Fatal("changed unrelated content")
-			}
+		}
+		if gjson.GetBytes(patched, "input.0.content.0.detail").String() != "high" || gjson.GetBytes(patched, "input.0.content.1.image_url").String() != edge || gjson.GetBytes(patched, "input.0.content.2.image_url").String() != url || gjson.GetBytes(patched, "input.0.content.3.text").String() != small {
+			t.Fatal("changed unrelated content")
 		}
 	}
 }

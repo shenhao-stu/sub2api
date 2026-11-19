@@ -162,6 +162,10 @@ func sanitizeGrokResponsesModelInput(body []byte) ([]byte, error) {
 	}
 	filtered = appendGrokToolOutputImageMessage(filtered, pendingOutputImages)
 
+	if gjson.GetBytes(body, "model").Str == "grok-4.7" {
+		fitGrokTinyVisionInputs(filtered)
+	}
+
 	encoded, err := json.Marshal(filtered)
 	if err != nil {
 		return nil, fmt.Errorf("serialize Grok Responses model input: %w", err)
