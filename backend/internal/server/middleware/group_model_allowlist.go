@@ -57,7 +57,9 @@ func GroupModelAllowlist(configs ...*config.Config) gin.HandlerFunc {
 		// models 收集该请求全部可被下游解析器绑定到的模型值（路径参数/查询参数
 		// 单值；请求体候选集含重复键与大小写变体），逐一校验，任一未命中即拒绝。
 		var models []string
-		if model := groupModelAllowlistModelFromParams(c); model != "" {
+		if tool := service.DeepSeekToolModel(c.FullPath()); tool != "" {
+			models = []string{tool}
+		} else if model := groupModelAllowlistModelFromParams(c); model != "" {
 			models = []string{model}
 		} else {
 			switch c.Request.Method {
