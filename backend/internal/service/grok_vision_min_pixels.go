@@ -3,18 +3,22 @@ package service
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"image"
 	"image/jpeg"
 	"image/png"
 	"io"
 	"strings"
 
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"golang.org/x/image/draw"
 )
 
 // Grok 4.7 rejects vision inputs under 512 total pixels. Replicate each pixel
 // by an integer factor; keep the caller's original request for accounting.
-func fitGrokTinyVisionInputs(items []any) {
+func fitGrokTinyVisionInputs(items []any) bool {
+	changed := false
 	// Bound work on untrusted data URLs, including malformed images.
 	bytesLeft, attemptsLeft := 2<<20, 64
 	for _, raw := range items {
@@ -36,13 +40,15 @@ func fitGrokTinyVisionInputs(items []any) {
 			bytesLeft -= len(url)
 			if updated := fitGrokTinyImageURL(url); updated != "" {
 				holder[field] = updated
+				changed = true
 			}
 			attemptsLeft--
 			if attemptsLeft == 0 {
-				return
+				return changed
 			}
 		}
 	}
+	return changed
 }
 
 func fitGrokTinyImageURL(url string) string {
@@ -92,4 +98,26 @@ func fitGrokTinyImageURL(url string) string {
 		return ""
 	}
 	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(encoded.Bytes())
+}
+
+// Fit raw Chat pictures after routing and cache identity selection. Unknown
+// message fields and JSON number precision survive the outbound rewrite.
+func fitGrokTinyChatImages(body []byte) ([]byte, error) {
+	if !bytes.Contains(body, []byte("image_url")) {
+		return body, nil
+	}
+	raw := gjson.GetBytes(body, "messages")
+	if !raw.IsArray() {
+		return body, nil
+	}
+	var items []any
+	dec := json.NewDecoder(strings.NewReader(raw.Raw))
+	dec.UseNumber()
+	if err := dec.Decode(&items); err != nil {
+		return nil, err
+	}
+	if !fitGrokTinyVisionInputs(items) {
+		return body, nil
+	}
+	return sjson.SetBytes(body, "messages", items)
 }
