@@ -669,6 +669,9 @@ func patchGrokResponsesBodyBase(body []byte, upstreamModel string) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
+	if upstreamModel == "grok-4.7" {
+		out = fitGrokTinyVisionInputs(out)
+	}
 	out, err = sanitizeGrokResponsesModelInput(out)
 	if err != nil {
 		return nil, err
