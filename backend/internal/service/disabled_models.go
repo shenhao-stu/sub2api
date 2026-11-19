@@ -64,6 +64,14 @@ func FilterEnabledModels(cfg *config.Config, models []string) []string {
 
 func rejectDisabledModels(c *gin.Context, cfg *config.Config, models ...string) error {
 	err := RequireEnabledModels(cfg, models...)
+	if err == nil && c != nil {
+		for _, m := range models {
+			if (m == "deepseek-tools-search" || m == "deepseek-tools-fetch") && DeepSeekToolModel(c.FullPath()) != m {
+				err = errors.New("tool model requires its own endpoint")
+				break
+			}
+		}
+	}
 	if err == nil || c == nil {
 		return err
 	}
