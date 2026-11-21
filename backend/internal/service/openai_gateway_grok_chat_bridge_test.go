@@ -5,7 +5,10 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -859,4 +862,31 @@ func grokChatBridgeCompletedResponse(responseID string, cachedTokens int) *http.
 		},
 		Body: io.NopCloser(strings.NewReader(body)),
 	}
+}
+
+func TestGrokVisionRawChatForwardedImage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tiny := pixelTestPNG(t, 16, 16)
+	body, err := json.Marshal(map[string]any{"model": "grok-4.7", "stop": "END", "messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "image_url", "image_url": map[string]string{"url": tiny, "detail": "low"}}}}}})
+	require.NoError(t, err)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, grokChatRawEndpoint, bytes.NewReader(body))
+	c.Set("api_key", &APIKey{ID: 7601})
+	account := grokChatBridgeTestAccount(76)
+	account.Credentials["model_mapping"] = map[string]any{"grok-4.7": "grok-4.7"}
+	repo := &grokQuotaAccountRepo{mockAccountRepoForPlatform: &mockAccountRepoForPlatform{accountsByID: map[int64]*Account{account.ID: account}}}
+	up := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"chat_test","object":"chat.completion","model":"grok-4.7","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`))}}
+	svc := &OpenAIGatewayService{billingService: newLocalFixtureBilling(), httpUpstream: up, grokTokenProvider: NewGrokTokenProvider(repo, nil), accountRepo: repo}
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+	require.NoError(t, err)
+	require.Equal(t, grokChatRawEndpoint, result.UpstreamEndpoint)
+	part := gjson.GetBytes(up.lastBody, "messages.0.content.0.image_url")
+	require.Equal(t, "low", part.Get("detail").Str)
+	data, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(part.Get("url").Str, "data:image/png;base64,"))
+	require.NoError(t, err)
+	cfg, err := png.DecodeConfig(bytes.NewReader(data))
+	require.NoError(t, err)
+	require.Equal(t, 32, cfg.Width)
+	require.Equal(t, 32, cfg.Height)
+	require.Equal(t, tiny, gjson.GetBytes(body, "messages.0.content.0.image_url.url").Str)
 }

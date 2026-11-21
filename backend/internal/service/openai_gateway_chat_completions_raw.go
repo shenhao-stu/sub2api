@@ -142,6 +142,12 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletionsWithStartTime(
 			return nil, fmt.Errorf("strip redundant Grok Chat view_image tool: %w", stripErr)
 		}
 		upstreamBody = strippedBody
+		if upstreamModel == "grok-4.7" {
+			upstreamBody, stripErr = fitGrokTinyChatImages(upstreamBody)
+			if stripErr != nil {
+				return nil, fmt.Errorf("normalize Grok raw Chat images: %w", stripErr)
+			}
+		}
 	}
 
 	targetURL, err := s.rawChatCompletionsURL(account)

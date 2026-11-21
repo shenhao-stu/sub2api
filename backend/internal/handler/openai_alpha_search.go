@@ -20,6 +20,19 @@ import (
 
 // AlphaSearch proxies the standalone search endpoint used by Codex Responses Lite.
 func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
+	h.standaloneSearch(c, "")
+}
+
+func (h *OpenAIGatewayHandler) DeepSeekTool(c *gin.Context) {
+	model := service.DeepSeekToolModel(c.FullPath())
+	if model == "" {
+		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Unknown tool")
+		return
+	}
+	h.standaloneSearch(c, model)
+}
+
+func (h *OpenAIGatewayHandler) standaloneSearch(c *gin.Context, toolModel string) {
 	streamStarted := false
 	defer h.recoverResponsesPanic(c, &streamStarted)
 	setOpenAIClientTransportHTTP(c)
@@ -30,7 +43,16 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
 		return
 	}
-	if apiKey.Group.Platform != service.PlatformOpenAI && apiKey.Group.Platform != service.PlatformComposite {
+	platform := service.PlatformOpenAI
+	capability := service.OpenAIEndpointCapabilityAlphaSearch
+	if toolModel != "" {
+		if apiKey.Group.Platform != service.PlatformDeepseek {
+			h.errorResponse(c, http.StatusForbidden, "permission_error", "This tool requires a DeepSeek group")
+			return
+		}
+		platform = service.PlatformDeepseek
+		capability = ""
+	} else if apiKey.Group.Platform != service.PlatformOpenAI && apiKey.Group.Platform != service.PlatformComposite {
 		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Codex alpha search is only available for OpenAI and Composite groups")
 		return
 	}
@@ -70,11 +92,21 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 	}
 
 	modelResult := gjson.GetBytes(body, "model")
-	if !modelResult.Exists() || modelResult.Type != gjson.String || strings.TrimSpace(modelResult.String()) == "" {
+	requestedModel := strings.TrimSpace(modelResult.String())
+	if toolModel != "" {
+		if modelResult.Exists() && (modelResult.Type != gjson.String || requestedModel != toolModel) {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "The endpoint determines the tool model")
+			return
+		}
+		if err := service.ValidateDeepSeekToolBody(toolModel, body); err != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+		requestedModel = toolModel
+	} else if !modelResult.Exists() || modelResult.Type != gjson.String || requestedModel == "" {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
 		return
 	}
-	requestedModel := strings.TrimSpace(modelResult.String())
 	if !compositeTargetPlatformAllowed(c, apiKey, requestedModel, service.PlatformOpenAI) {
 		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Codex alpha search only supports OpenAI models for Composite groups")
 		return
@@ -145,11 +177,11 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 			requestedModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportHTTPSSE,
-			service.OpenAIEndpointCapabilityAlphaSearch,
+			capability,
 			false,
 			false,
 			false,
-			service.PlatformOpenAI,
+			platform,
 		)
 		if err != nil || selection == nil || selection.Account == nil {
 			if failoverClientGone(c) {
@@ -157,7 +189,7 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 				return
 			}
 			if len(failedAccountIDs) == 0 {
-				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, requestedModel, requestedModel, service.PlatformOpenAI)
+				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, requestedModel, requestedModel, platform)
 				if !cls.ModelNotFound {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 				}
@@ -193,6 +225,9 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 		result, err = func() (*service.OpenAIForwardResult, error) {
 			if accountRelease != nil {
 				defer accountRelease()
+			}
+			if toolModel != "" {
+				return h.gatewayService.ForwardDeepSeekTool(c.Request.Context(), c, account, toolModel, body)
 			}
 			return h.gatewayService.ForwardAlphaSearch(c.Request.Context(), c, account, forwardBody)
 		}()

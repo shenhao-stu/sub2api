@@ -143,3 +143,36 @@ func TestSharedStickyRelayAtCapacity(t *testing.T) {
 		}
 	}
 }
+
+func TestDedicatedFallbackFableRespectsModelAndOwner(t *testing.T) {
+	for _, model := range []string{"claude-fable-5-1", "claude-fable-5-2"} {
+		t.Run(model, func(t *testing.T) {
+			f := dedicatedFallbackChain()
+			g := &Group{ID: 25, Platform: PlatformAnthropic, Status: StatusActive, Hydrated: true,
+				ModelRoutingEnabled: true, ModelRouting: map[string][]int64{model: {1, 3, 4}}}
+			f.svc.groupRepo = &mockGroupRepoForGateway{groups: map[int64]*Group{g.ID: g}}
+			for i := range f.repo.accounts {
+				a := &f.repo.accounts[i]
+				a.AccountGroups = []AccountGroup{{AccountID: a.ID, GroupID: g.ID}}
+				allowed := model
+				if a.ID == 2 { // Dedicated Pro has no Fable entitlement.
+					allowed = affinityTestModel
+				}
+				a.Credentials = map[string]any{"model_mapping": map[string]any{allowed: allowed}}
+			}
+			ctx := WithAccountAffinityTags(context.Background(), []string{"getoken:1"})
+			reset := time.Now().Add(time.Hour)
+			for _, want := range []int64{1, 3, 4} {
+				got, err := f.svc.SelectAccountWithLoadAwareness(ctx, &g.ID, "", model, nil, "", 0)
+				require.NoError(t, err)
+				require.True(t, got.Acquired)
+				require.Equal(t, want, got.Account.ID)
+				got.ReleaseFunc()
+				f.repo.accountsByID[want].RateLimitResetAt = &reset
+			}
+			got, err := f.svc.SelectAccountWithLoadAwareness(ctx, &g.ID, "", model, nil, "", 0)
+			require.Error(t, err)
+			require.Nil(t, got, "neither Pro nor another customer's Max may serve this request")
+		})
+	}
+}

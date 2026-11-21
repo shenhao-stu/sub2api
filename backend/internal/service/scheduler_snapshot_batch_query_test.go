@@ -57,6 +57,9 @@ func (r *batchAccountQueryRepo) ListSchedulableUngroupedByPlatforms(_ context.Co
 }
 
 func (r *batchAccountQueryRepo) ListModelAvailabilityCandidates(ctx context.Context, groupID *int64, platforms []string, _ bool) ([]Account, error) {
+	if len(platforms) > 1 {
+		return r.ListSchedulableByGroupIDAndPlatforms(ctx, *groupID, platforms)
+	}
 	return r.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, platforms[0])
 }
 

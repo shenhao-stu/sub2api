@@ -1487,7 +1487,9 @@ func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucke
 		platforms := []string{bucket.Platform, PlatformAntigravity}
 		var accounts []Account
 		var err error
-		if groupID > 0 {
+		if bucketRetainsCoolingMembers(groupID, bucket.Platform) {
+			accounts, err = s.accountRepo.ListModelAvailabilityCandidates(ctx, &groupID, platforms, false)
+		} else if groupID > 0 {
 			accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatforms(ctx, groupID, platforms)
 		} else if s.isRunModeSimple() {
 			accounts, err = s.accountRepo.ListSchedulableByPlatforms(ctx, platforms)
@@ -1508,8 +1510,7 @@ func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucke
 	}
 
 	if groupID > 0 {
-		if bucket.Platform == PlatformOpenAI {
-			// Publish membership independently of cooldown so expiry needs no rebuild.
+		if bucketRetainsCoolingMembers(groupID, bucket.Platform) {
 			return s.accountRepo.ListModelAvailabilityCandidates(ctx, &groupID, []string{bucket.Platform}, false)
 		}
 		return s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, groupID, bucket.Platform)
@@ -1664,10 +1665,13 @@ func dedupeBuckets(in []SchedulerBucket) []SchedulerBucket {
 	return out
 }
 
-// Grouped OpenAI snapshots retain transiently unavailable members. Only the
-// read path checks their current eligibility before handing them to selectors.
+// Keep membership stable across a timed cooldown; evaluate eligibility on each read.
+func bucketRetainsCoolingMembers(groupID int64, platform string) bool {
+	return groupID > 0 && (platform == PlatformOpenAI || platform == PlatformAnthropic)
+}
+
 func snapshotEligibilityTime(bucket SchedulerBucket) time.Time {
-	if bucket.GroupID > 0 && bucket.Platform == PlatformOpenAI {
+	if bucketRetainsCoolingMembers(bucket.GroupID, bucket.Platform) {
 		return time.Now()
 	}
 	return time.Time{}
