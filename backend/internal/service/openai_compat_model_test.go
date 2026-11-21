@@ -2336,3 +2336,43 @@ func TestForwardAsAnthropic_AstraContinuationRestoresHistoryAndDisablesUnsupport
 	require.False(t, isOpenAICompatPreviousResponseUnsupported(http.StatusUnauthorized, "previous_response_id is not available for this user", nil))
 	require.False(t, isOpenAICompatPreviousResponseUnsupported(http.StatusBadRequest, "The model is not available for this user", nil))
 }
+
+func TestForwardAsAnthropic_FullHistoryOnStatelessAndScopedRelays(t *testing.T) {
+	for _, flag := range []string{"openai_relay_session_scope", "openai_messages_full_history"} {
+		t.Run(flag, func(t *testing.T) {
+			const model = "gpt-6.2-astra"
+			account := rawGPT56ResponsesAPIKeyAccount(model, model)
+			account.Extra[flag] = true
+			upstream := &httpUpstreamRecorder{}
+			svc := &OpenAIGatewayService{httpUpstream: upstream, cfg: &config.Config{}, billingService: NewBillingService(&config.Config{}, nil)}
+			history := []map[string]any{{"role": "user", "content": "remember the first marker"}}
+			for i := 0; i < openAICompatAnthropicReplayMaxTailMessages; i++ {
+				history = append(history, map[string]any{"role": "assistant", "content": "ok"}, map[string]any{"role": "user", "content": "continue"})
+			}
+			history = append(history, map[string]any{"role": "assistant", "content": []map[string]any{{"type": "tool_use", "id": "call_fixture", "name": "lookup", "input": map[string]any{}}}}, map[string]any{"role": "user", "content": []map[string]any{{"type": "tool_result", "tool_use_id": "call_fixture", "content": "fixture result"}}})
+			body, err := json.Marshal(map[string]any{"model": model, "max_tokens": 32, "messages": history})
+			require.NoError(t, err)
+			for round := 0; round < 2; round++ {
+				c := relayScopeContext(3, 4, "getoken:test", "fixture-session")
+				c.Request.URL.Path = "/v1/messages"
+				if round == 0 {
+					svc.bindOpenAICompatSessionResponseID(c.Request.Context(), c, account, "fixture-session", "resp_stale")
+				}
+				upstream.resp = openAICompatSSECompletedResponse(fmt.Sprintf("resp_fixture_%d", round), model)
+				result, err := svc.ForwardAsAnthropic(c.Request.Context(), c, account, body, "fixture-session", model)
+				require.NoError(t, err)
+				require.Positive(t, result.Usage.OutputTokens)
+				require.Len(t, upstream.bodies, round+1)
+				require.False(t, gjson.GetBytes(upstream.lastBody, "previous_response_id").Exists())
+				require.Contains(t, string(upstream.lastBody), "remember the first marker")
+				if flag == "openai_relay_session_scope" {
+					want := scopedOpenAIRelayValue(openAIRelayPrincipal(c.Request.Context(), 3, 4), "fixture-session")
+					require.Equal(t, want, upstream.lastReq.Header.Get("session_id"))
+				}
+				require.Contains(t, string(upstream.lastBody), "fixture result")
+				require.Contains(t, string(upstream.lastBody), "function_call_output")
+				require.NotEmpty(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
+			}
+		})
+	}
+}
