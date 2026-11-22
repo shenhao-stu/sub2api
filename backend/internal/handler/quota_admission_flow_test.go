@@ -75,7 +75,7 @@ func (u *admissionUpstream) DoWithTLS(r *http.Request, p string, id int64, n int
 }
 
 func TestQuotaAdmissionWaitMessages(t *testing.T) {
-	for _, mode := range []string{"reset", "general_direct", "general_tagged", "stale_membership", "disabled_at_wake", "guard_then_reset", "revoked", "cancel", "no_opt_in"} {
+	for _, mode := range []string{"same_guard_reset", "reset", "general_direct", "general_tagged", "stale_membership", "disabled_at_wake", "guard_then_reset", "revoked", "cancel", "no_opt_in"} {
 		t.Run(mode, func(t *testing.T) {
 			gid := int64(1)
 			group := &service.Group{ID: gid, Hydrated: true, Platform: service.PlatformAnthropic, Status: service.StatusActive, RateMultiplier: 1}
@@ -84,6 +84,9 @@ func TestQuotaAdmissionWaitMessages(t *testing.T) {
 			account := service.Account{ID: 2, Name: "fixture", Platform: service.PlatformAnthropic, Type: service.AccountTypeAPIKey,
 				Extra: map[string]any{"anthropic_passthrough": true}, Credentials: map[string]any{"api_key": "fixture", "base_url": "https://api.anthropic.com"},
 				Status: service.StatusActive, Schedulable: true, Priority: 1, Concurrency: 1, RateLimitResetAt: &reset, GroupIDs: []int64{gid}, AccountGroups: []service.AccountGroup{{AccountID: 2, GroupID: gid}}}
+			if mode == "same_guard_reset" {
+				account.RateLimitResetAt = nil
+			}
 			repo := &admissionAccounts{candidates: []service.Account{account}}
 			slots := []*service.Account{&account}
 			if mode == "guard_then_reset" {
@@ -102,6 +105,9 @@ func TestQuotaAdmissionWaitMessages(t *testing.T) {
 			snapshot := service.NewSchedulerSnapshotService(&fakeSchedulerCache{accounts: slots}, nil, nil, nil, nil)
 			up := &admissionUpstream{}
 			up.call = func(req *http.Request, id int64) (*http.Response, error) {
+				if mode == "same_guard_reset" && up.calls == 1 {
+					return &http.Response{StatusCode: 429, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(strings.Replace(admissionGuardFixture, `"attempt_count":0`, `"retry_after_ms":500,"attempt_count":0`, 1)))}, nil
+				}
 				if mode == "guard_then_reset" && id == 1 {
 					require.Equal(t, 1, up.calls, "request rejected by the guard must not return to this account")
 					return &http.Response{StatusCode: 429, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(admissionGuardFixture))}, nil
@@ -153,9 +159,9 @@ func TestQuotaAdmissionWaitMessages(t *testing.T) {
 			if mode == "stale_membership" || mode == "disabled_at_wake" {
 				require.Equal(t, 1, repo.currentReads, "one fresh selection after the window")
 			}
-			if mode == "stale_membership" || mode == "reset" || mode == "guard_then_reset" || strings.HasPrefix(mode, "general_") {
+			if mode == "stale_membership" || mode == "same_guard_reset" || mode == "reset" || mode == "guard_then_reset" || strings.HasPrefix(mode, "general_") {
 				expectedForwards := 1
-				if mode == "guard_then_reset" {
+				if mode == "guard_then_reset" || mode == "same_guard_reset" {
 					expectedForwards++
 				}
 				require.Equal(t, expectedForwards, up.calls, rec.Body.String())

@@ -688,6 +688,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 	for {
 		fs := NewFailoverState(h.maxAccountSwitches, hasBoundSession)
+		var guardAccountID int64
+		var guardReset time.Time
 		retryWithFallback := false
 		selectionCtx := c.Request.Context()
 
@@ -717,6 +719,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 				if waitAllowed && errors.Is(err, service.ErrNoAvailableAccounts) && !fallbackUsed && (service.AnthropicKeepaliveAdjustedWrittenSize(c) <= 0 || gatewayStreamHasOnlyHeartbeats(c)) {
 					diag := h.gatewayService.DiagnoseModelAvailabilityExcluding(c.Request.Context(), currentAPIKey.GroupID, reqModel, platform, fs.FailedAccountIDs)
+					guardDelay := int(math.Ceil(time.Until(guardReset).Seconds()))
+					useGuardReset := guardAccountID != 0 && h.quotaWait.canWait(guardDelay) && (diag.RetryAfterSeconds <= 0 || guardDelay <= diag.RetryAfterSeconds)
+					if useGuardReset {
+						diag.RetryAfterSeconds = guardDelay
+					}
 					if h.quotaWait.canWait(diag.RetryAfterSeconds) {
 						waitAllowed = false
 						reqLog.Info("gateway.quota_admission_wait", zap.Int("retry_after_seconds", diag.RetryAfterSeconds), zap.Int("excluded", len(fs.FailedAccountIDs)))
@@ -737,6 +744,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 								return
 							}
 							currentAPIKey = fresh
+							if useGuardReset {
+								delete(fs.FailedAccountIDs, guardAccountID)
+							}
 							selectionCtx = service.WithQuotaWindowRecheck(c.Request.Context())
 							continue
 						}
@@ -1061,6 +1071,24 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				var failure *service.UpstreamFailoverError
 				waitAllowed = result == nil && errors.As(err, &failure) && isUndispatchedQuotaGuard(account.Platform, failure) &&
 					service.AnthropicKeepaliveAdjustedWrittenSize(c) == writerSizeBeforeForward
+				if waitAllowed {
+					var envelope struct {
+						Error struct {
+							Details struct {
+								RetryAfterMS int64 `json:"retry_after_ms"`
+							} `json:"details"`
+						} `json:"error"`
+					}
+					if json.Unmarshal(failure.ResponseBody, &envelope) == nil {
+						ms := envelope.Error.Details.RetryAfterMS
+						if ms > 0 && ms <= (45*time.Minute).Milliseconds() {
+							reset := time.Now().Add(time.Duration(ms) * time.Millisecond)
+							if guardReset.IsZero() || reset.Before(guardReset) {
+								guardReset, guardAccountID = reset, account.ID
+							}
+						}
+					}
+				}
 			}
 
 			if err != nil {
