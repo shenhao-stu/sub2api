@@ -357,8 +357,29 @@ func (h *ConcurrencyHelper) waitForSlotWithPing(c *gin.Context, slotType string,
 	return h.waitForSlotWithPingTimeout(c, slotType, id, maxConcurrency, maxConcurrencyWait, isStream, streamStarted, false)
 }
 
+// A pre-dispatch queue must finish before the outer Messages gateway emits
+// its first keepalive. Once HTTP 200 is flushed, an admission rejection cannot
+// be returned as an HTTP 429 to Claude Code's JSON fallback.
+const claudeCodeAdmissionDeadlineKey = "claude_code_messages_slot_deadline"
+
+func setClaudeCodeAdmissionDeadline(c *gin.Context, group *service.Group) {
+	if group != nil && group.Platform == service.PlatformAnthropic && group.ClaudeCodeOnly {
+		c.Set(claudeCodeAdmissionDeadlineKey, time.Now().Add(maxConcurrencyWait))
+	}
+}
+
 // waitForSlotWithPingTimeout waits for a concurrency slot with a custom timeout.
 func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType string, id int64, maxConcurrency int, timeout time.Duration, isStream bool, streamStarted *bool, tryImmediate bool) (func(), error) {
+	if deadline, ok := c.Get(claudeCodeAdmissionDeadlineKey); ok {
+		if err := c.Request.Context().Err(); err != nil {
+			return nil, err
+		}
+		timeout = min(timeout, time.Until(deadline.(time.Time)))
+		if timeout <= 0 {
+			return nil, &ConcurrencyError{SlotType: slotType, IsTimeout: true}
+		}
+		isStream = false // Keep headers writable until admission is decided.
+	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
 	defer cancel()
 

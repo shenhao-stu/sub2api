@@ -516,3 +516,48 @@ func TestSetClaudeCodeClientContext_ParsedRequestProbeWithoutSystemPrompt(t *tes
 	SetClaudeCodeClientContext(c2, nil, &service.ParsedRequest{Model: "claude-sonnet-4-5", MaxTokens: 64})
 	require.False(t, service.IsClaudeCodeClient(c2.Request.Context()))
 }
+
+func TestClaudeCodeSlotAdmissionReturnsHTTP429BeforeAnyPing(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, slot := range []string{"user", "account"} {
+			c, w := newHelperTestContext(http.MethodPost, "/v1/messages")
+			setClaudeCodeAdmissionDeadline(c, &service.Group{Platform: service.PlatformAnthropic, ClaudeCodeOnly: true})
+			d, ok := c.Get(claudeCodeAdmissionDeadlineKey)
+			require.True(t, ok)
+			require.InDelta(t, 30, time.Until(d.(time.Time)).Seconds(), 1)
+			// Only this much of the shared admission budget remains at the second queue.
+			c.Set(claudeCodeAdmissionDeadlineKey, time.Now().Add(25*time.Millisecond))
+			helper := NewConcurrencyHelper(service.NewConcurrencyService(&helperConcurrencyCacheStub{waitAllowed: true}), SSEPingFormatClaude, time.Millisecond)
+			started := false
+			_, err := helper.waitForSlotWithPingTimeout(c, slot, 42, 1, 2*time.Minute, stream, &started, true)
+			var ce *ConcurrencyError
+			require.ErrorAs(t, err, &ce)
+			require.False(t, started)
+			require.False(t, c.Writer.Written())
+			(&GatewayHandler{}).handleConcurrencyError(c, err, slot, started)
+			require.Equal(t, http.StatusTooManyRequests, w.Code)
+			require.Contains(t, w.Body.String(), gatewayConcurrencyLimitCode)
+			require.NotContains(t, w.Body.String(), "event:")
+		}
+	}
+}
+
+func TestClaudeCodeAdmissionScopeAndSuccessfulDispatch(t *testing.T) {
+	c, _ := newHelperTestContext(http.MethodPost, "/v1/messages")
+	for _, g := range []*service.Group{nil, {Platform: service.PlatformOpenAI, ClaudeCodeOnly: true}, {Platform: service.PlatformAnthropic}} {
+		setClaudeCodeAdmissionDeadline(c, g)
+		_, ok := c.Get(claudeCodeAdmissionDeadlineKey)
+		require.False(t, ok)
+	}
+	setClaudeCodeAdmissionDeadline(c, &service.Group{Platform: service.PlatformAnthropic, ClaudeCodeOnly: true})
+	cache := &helperConcurrencyCacheStub{accountSeq: []bool{true}}
+	helper := NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatClaude, time.Millisecond)
+	started := false
+	release, err := helper.AcquireAccountSlotWithWaitTimeout(c, 42, 1, time.Minute, true, &started)
+	require.NoError(t, err)
+	require.NoError(t, c.Request.Context().Err())
+	_, hasGenerationDeadline := c.Request.Context().Deadline()
+	require.False(t, hasGenerationDeadline)
+	release()
+	require.Equal(t, 1, cache.accountReleaseCalls)
+}
