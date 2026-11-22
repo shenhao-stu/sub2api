@@ -2053,6 +2053,17 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 		return
 	}
 
+	if platform == service.PlatformAnthropic {
+		if delay := failoverErr.AnthropicProviderBusyRetryAfter(); delay > 0 {
+			if !streamStarted && !c.Writer.Written() {
+				c.Header("Retry-After", strconv.Itoa(delay))
+			}
+			h.handleStreamingAwareErrorWithCode(c, statusCode, "rate_limit_error", "upstream_pool_busy",
+				"上游账号池暂时没有可用账号，请稍后再试并避免并行重试。", streamStarted)
+			return
+		}
+	}
+
 	seconds := failoverErr.AnthropicPoolRetryAfter()
 	if seconds > 0 || failoverErr.Reason == service.AnthropicPoolWindowCooldownReason {
 		if seconds > 0 && !c.Writer.Written() {

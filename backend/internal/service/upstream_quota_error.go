@@ -16,6 +16,27 @@ const (
 	UpstreamQuotaExhaustedMessage = "Upstream account quota is exhausted, please contact administrator"
 )
 
+// AnthropicProviderBusyRetryAfter returns client backoff for a provider-declared
+// pool shortage. This does not establish a quota reset or cool a local account.
+func (e *UpstreamFailoverError) AnthropicProviderBusyRetryAfter() int {
+	if e == nil || e.StatusCode != http.StatusTooManyRequests {
+		return 0
+	}
+	var envelope struct {
+		Type  string
+		Error struct{ Type, Message string }
+	}
+	const exhausted = "No available account in group 'auth' (all disabled, cooling down, or busy), please retry later"
+	if json.Unmarshal(e.ResponseBody, &envelope) != nil || envelope.Type != "error" ||
+		envelope.Error.Type != "upstream_error" || envelope.Error.Message != exhausted {
+		return 0
+	}
+	if delay, ok := parseRetryAfterDelay(time.Now(), e.ResponseHeaders); ok && delay > 0 {
+		return int((delay + time.Second - 1) / time.Second)
+	}
+	return 30
+}
+
 // IsUpstreamQuotaExhausted classifies a provider response, never a customer balance check.
 func IsUpstreamQuotaExhausted(statusCode int, body []byte) bool {
 	if statusCode != http.StatusTooManyRequests {

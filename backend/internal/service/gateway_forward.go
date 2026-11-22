@@ -823,6 +823,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
+				ResponseHeaders:        http.Header{"Retry-After": resp.Header.Values("Retry-After")},
 				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
 			}
 		}
@@ -859,6 +860,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		return nil, &UpstreamFailoverError{
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           respBody,
+			ResponseHeaders:        http.Header{"Retry-After": resp.Header.Values("Retry-After")},
 			ExcludeFromRetry:       shouldStop,
 			RetryableOnSameAccount: !shouldStop && account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
 		}
