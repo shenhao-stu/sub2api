@@ -27,6 +27,8 @@ type ModelAvailabilityDiagnosis struct {
 	HasRetiredSubscriptionModel bool
 	// RetryAfterSeconds is positive only when every model-capable candidate has a known active rate limit for this request.
 	RetryAfterSeconds int
+	// HasPausedRoute means an explicit route supports this model for this caller, but is paused.
+	HasPausedRoute bool
 }
 
 // ModelAvailabilityDiagnoser is implemented by gateway services that can
@@ -124,6 +126,50 @@ func (s *GatewayService) DiagnoseModelAvailabilityExcluding(ctx context.Context,
 			supported = append(supported, &accounts[i])
 		}
 	}
+	if !diag.HasModelSupport && platform == PlatformAnthropic && groupID != nil {
+		paused, err := s.hasPausedModelRoute(ctx, *groupID, requestedModel, excluded)
+		if err != nil {
+			return ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: true}
+		}
+		diag.HasPausedRoute = paused
+	}
 	diag.RetryAfterSeconds = modelPoolRetryAfter(ctx, supported, requestedModel, time.Now())
 	return diag
+}
+
+// Consult explicit routes only on a selection failure. Paused accounts never
+// re-enter the scheduler, and routes reserved for another tenant stay invisible.
+func (s *GatewayService) hasPausedModelRoute(ctx context.Context, groupID int64, model string, excluded map[int64]struct{}) (bool, error) {
+	group := s.groupFromContext(ctx, groupID)
+	if group == nil && s.groupRepo != nil {
+		var err error
+		group, err = s.resolveGroupByID(ctx, groupID)
+		if err != nil {
+			return false, err
+		}
+	}
+	if group == nil || !modelRoutingAppliesToPlatform(PlatformAnthropic, group.Platform) {
+		return false, nil
+	}
+	ids := group.GetRoutingAccountIDs(model)
+	if len(ids) == 0 {
+		return false, nil
+	}
+	accounts, err := s.accountRepo.GetByIDs(ctx, ids)
+	if err != nil {
+		return false, err
+	}
+	tags := AccountAffinityTagsFromContext(ctx)
+	for _, account := range accounts {
+		if account == nil || account.Schedulable || account.Status != StatusActive || account.Platform != PlatformAnthropic {
+			continue
+		}
+		if _, skip := excluded[account.ID]; skip || !s.isAccountInGroup(account, &groupID) || !isAccountVisibleForAffinity(tags, account) {
+			continue
+		}
+		if s.isModelSupportedByAccountWithContext(ctx, account, model) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

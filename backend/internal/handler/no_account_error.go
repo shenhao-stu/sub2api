@@ -36,6 +36,7 @@ type noAccountErrorClassification struct {
 	ErrType           string
 	Message           string
 	RetryAfterSeconds int
+	PausedRoute       bool
 	ModelNotFound     bool // true when this is a 404 model_not_found classification
 }
 
@@ -70,7 +71,7 @@ func classifySelectionFailureError(err error, fallback noAccountErrorClassificat
 	// one message that names the real problem. It also flips the ops attribution
 	// from a local model-configuration issue to routing capacity, because call
 	// sites gate markOpsRoutingCapacityLimitedIfNoAvailable on ModelNotFound.
-	if fallback.ModelNotFound || fallback.RetryAfterSeconds > 0 {
+	if fallback.ModelNotFound || fallback.PausedRoute || fallback.RetryAfterSeconds > 0 {
 		return fallback
 	}
 	match := selectionModelRateLimitedPattern.FindStringSubmatch(strings.ToLower(err.Error()))
@@ -136,6 +137,9 @@ func classifyNoAccountError(
 	}
 
 	result := diag.DiagnoseModelAvailabilityForPlatform(ctx, apiKey.GroupID, routingModel, platform)
+	if result.HasPausedRoute {
+		return noAccountErrorClassification{Status: http.StatusServiceUnavailable, ErrType: "api_error", PausedRoute: true, Message: "Service temporarily unavailable: the configured capacity for this model is paused."}
+	}
 	if result.HasAccountsInPool && !result.HasModelSupport {
 		message := fmt.Sprintf("Model %q is not supported by any configured account in this group", displayModel)
 		if result.HasRetiredSubscriptionModel {

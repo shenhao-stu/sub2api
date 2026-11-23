@@ -333,3 +333,12 @@ func TestClassifyNoAccountError_CooledPoolSurvivesEmptySchedulerSnapshot(t *test
 	require.Equal(t, cls, classifySelectionFailureError(fmt.Errorf("no accounts (model_rate_limited=1)"), cls))
 	require.Empty(t, noAccountSelectionErrorCode(service.ErrNoAvailableAccounts, cls))
 }
+
+func TestClassifyNoAccountPausedRoute(t *testing.T) {
+	diag := &fakeDiagnoser{resp: service.ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasPausedRoute: true}}
+	cls := classifyNoAccountError(context.Background(), diag, &service.APIKey{GroupID: ptrInt64(25)}, "claude-fable-5-2", "", service.PlatformAnthropic)
+	require.Equal(t, 503, cls.Status)
+	require.Contains(t, cls.Message, "paused")
+	require.Zero(t, cls.RetryAfterSeconds)
+	require.Equal(t, cls, classifySelectionFailureError(fmt.Errorf("model_rate_limited=2"), cls))
+}
