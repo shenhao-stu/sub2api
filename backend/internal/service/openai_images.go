@@ -986,7 +986,7 @@ func (s *OpenAIGatewayService) buildOpenAIImagesRequest(
 		req.Header.Set("Content-Type", contentType)
 	}
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
-	account.ApplyHeaderOverrides(req.Header)
+	account.ApplyHeaderOverrides(req.Context(), req.Header)
 	// Even an administrator header override must not make a paid POST replayable
 	// inside net/http on a reused connection or through a redirect.
 	req.Header.Del("Idempotency-Key")
